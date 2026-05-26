@@ -1,0 +1,29 @@
+Preciso refatorar a função recalculate do meu arquivo planningEngine.ts para implementar cálculos bidirecionais (engenharia reversa) baseados em 'triângulos de dependência', respeitando os estados free, locked e calculated.
+
+REFORÇO DE SEGURANÇA IMPORTANTE: A alteração deve ser feita EXCLUSIVAMENTE na lógica matemática dentro do arquivo planningEngine.ts. NÃO É PARA APAGAR NEM ALTERAR nenhum outro card, container ou elemento visual que exista na tela de interface!!!!
+
+O código atual faz a cascata apenas de cima para baixo, mas preciso que atenda estritamente às seguintes regras de negócio:
+
+1. Escala Proporcional pela Receita (Fator de Crescimento)
+Se o usuário alterar apenas a receitaBruta (ou seja, se receitaBruta for o único campo em touched além das derivações automáticas), calcule um Fator de Crescimento em relação ao baseline (v.receitaBruta / baseline.receitaBruta). Esse fator deve ser multiplicado automaticamente nos campos: estoqueMedio, otb e producaoPecas, mantendo-os com o status calculated (sem travar com cadeado).
+
+2. Triângulo de Margem x Custo Médio x Receita (Engenharia Reversa)
+
+Se edita margemBruta e a Receita Líquida está dada, calcule o custoMedio necessário e trave (locked) o custoMedio.
+
+Se edita custoMedio e margemBruta, force o recálculo do PMV / Receita.
+
+Fórmula: Margem Bruta (%) = ((Receita Líquida - (Custo Médio * Peças Vendidas)) / Receita Líquida) * 100.
+
+3. Triângulo PMV x Volume
+Se alterar PMV, impacta pecasVendidas. O volume de peças deve ser a base para o recálculo do Estoque e OTB logo a seguir.
+
+4. Triângulo de Giro/Cobertura impactando OTB
+
+Se alterar giro ou cobertura, o estoqueMedio necessário é ajustado.
+
+O Novo OTB deve considerar a variação do estoque: OTB em peças = Peças Vendidas + (Estoque Médio Planejado - Estoque Médio Baseline). Multiplique pelo custoMedio para ter o OTB(R$).
+
+Com isso, Estoque Médio, OTB e Produção devem ser recalculados silenciosamente (calculated).
+
+Reescreva a função recalculate garantindo a ordem de execução dessas prioridades. Mantenha as assinaturas das interfaces."

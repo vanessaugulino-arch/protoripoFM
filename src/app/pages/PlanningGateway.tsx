@@ -1,0 +1,566 @@
+import { useEffect, useState, useMemo } from "react"
+import { useNavigate } from "react-router"
+import {
+  ArrowLeft, LogOut, User, ChevronRight, RotateCcw,
+  PlusCircle, Settings, TrendingUp, TrendingDown, Minus,
+  Calendar, CheckCircle2, AlertCircle, Target,
+} from "lucide-react"
+import { isOnboardingComplete } from "../types/onboarding"
+import { getPlanCycle, getPlannedYears } from "../types/planCycle"
+import {
+  computeCycleState, formatYearProgress, yearProgressRatio, prorated,
+} from "../utils/cycleManager"
+import {
+  STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_COLORS, STRATEGIC_FOCUS_ICONS,
+} from "../types/planCycle"
+
+// Indica se o indicador é um valor de fluxo (precisa prorate) ou taxa/ratio
+const IS_FLOW: Record<string, boolean> = {
+  receitaBruta: true,
+  otbCompra:    true,
+  margemBruta:  false,
+  pmv:          false,
+  giro:         false,
+  gmroi:        false,
+}
+
+interface UserData { name: string; email: string; profile: string }
+
+// ─── Mock ACC data for current year (May 2026) ────────────────────────────────
+// Reference = prorated 2025 historical; ACC = realistic Jan-Mai 2026 actuals
+const HIST_2025 = { receita: 2_850_000, margemBruta: 42.3, pmv: 155, otb: 1_140_000, gmroi: 1.77, giro: 4.19 }
+const ACC_ACTUAL = { receita: 1_243_750, margemBruta: 41.8, pmv: 162, otb: 498_000, gmroi: 1.82, giro: 1.72 }
+
+function delta(actual: number, ref: number, higherIsBetter = true) {
+  const pct = ((actual - ref) / Math.abs(ref)) * 100
+  const positive = higherIsBetter ? pct >= 0 : pct <= 0
+  return { pct, positive }
+}
+
+function fmtBRL(v: number) {
+  return `R$ ${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
+}
+
+export default function PlanningGateway() {
+  const navigate = useNavigate()
+  const [user, setUser] = useState<UserData | null>(null)
+  const [reviewYear, setReviewYear] = useState<number | null>(null)
+
+  const cycleState = useMemo(() => computeCycleState(), [])
+  const progressRatio = yearProgressRatio(cycleState.monthsElapsed)
+  const progressLabel = formatYearProgress(cycleState)
+
+  useEffect(() => {
+    if (!isOnboardingComplete()) { navigate("/onboarding"); return }
+    const stored = sessionStorage.getItem("currentUser")
+    if (stored) {
+      const u = JSON.parse(stored)
+      setUser(u)
+      if (u.profile !== "CEO") navigate("/dashboard")
+    } else navigate("/")
+  }, [navigate])
+
+  useEffect(() => {
+    if (cycleState.reviewableYears.length > 0) {
+      setReviewYear(cycleState.reviewableYears[0])
+    }
+  }, [cycleState])
+
+  const handleReview = () => {
+    if (!reviewYear) return
+    const cycle = getPlanCycle(reviewYear)
+    navigate("/planning", {
+      state: {
+        year: reviewYear,
+        mode: "review",
+        focus: cycle?.focus ?? "margem",
+        fieldPriorities: cycle?.fieldPriorities ?? [],
+      },
+    })
+  }
+
+  const handleNewCycle = () => {
+    navigate("/planning-setup", {
+      state: { year: cycleState.nextNewCycle },
+    })
+  }
+
+  const refProrated = {
+    receita:     prorated(HIST_2025.receita, cycleState.monthsElapsed),
+    margemBruta: HIST_2025.margemBruta,
+    pmv:         HIST_2025.pmv,
+    otb:         prorated(HIST_2025.otb, cycleState.monthsElapsed),
+    gmroi:       HIST_2025.gmroi,
+  }
+
+  // All possible ACC rows with their fieldKey for filtering
+  const allAccRows = [
+    {
+      fieldKey: "receitaBruta",
+      label: "Receita",
+      ref: fmtBRL(refProrated.receita),
+      acc: fmtBRL(ACC_ACTUAL.receita),
+      ...delta(ACC_ACTUAL.receita, refProrated.receita),
+      unit: "%",
+    },
+    {
+      fieldKey: "margemBruta",
+      label: "Margem Bruta",
+      ref: `${HIST_2025.margemBruta}%`,
+      acc: `${ACC_ACTUAL.margemBruta}%`,
+      ...delta(ACC_ACTUAL.margemBruta, HIST_2025.margemBruta),
+      unit: "pp",
+    },
+    {
+      fieldKey: "pmv",
+      label: "PMV",
+      ref: fmtBRL(HIST_2025.pmv),
+      acc: fmtBRL(ACC_ACTUAL.pmv),
+      ...delta(ACC_ACTUAL.pmv, HIST_2025.pmv),
+      unit: "%",
+    },
+    {
+      fieldKey: "otbCompra",
+      label: "OTB de Compra",
+      ref: fmtBRL(refProrated.otb),
+      acc: fmtBRL(ACC_ACTUAL.otb),
+      ...delta(ACC_ACTUAL.otb, refProrated.otb),
+      unit: "%",
+    },
+    {
+      fieldKey: "giro",
+      label: "Giro de Estoque",
+      ref: HIST_2025.giro.toFixed(2),
+      acc: ACC_ACTUAL.giro.toFixed(2),
+      ...delta(ACC_ACTUAL.giro, HIST_2025.giro),
+      unit: "%",
+    },
+    {
+      fieldKey: "gmroi",
+      label: "GMROI",
+      ref: HIST_2025.gmroi.toFixed(2),
+      acc: ACC_ACTUAL.gmroi.toFixed(2),
+      ...delta(ACC_ACTUAL.gmroi, HIST_2025.gmroi),
+      unit: "%",
+    },
+  ]
+
+  // Filter ACC rows by the saved plan's active indicators (if plan exists for current year)
+  const currentYearPlan = getPlanCycle(cycleState.currentCalendarYear)
+  const activeFieldKeys: Set<string> | null = currentYearPlan
+    ? new Set(
+        currentYearPlan.fieldPriorities
+          .filter(fp => (fp.status ? fp.status !== 'inactive' : fp.isPriority))
+          .map(fp => fp.key),
+      )
+    : null
+
+  const accRows = activeFieldKeys
+    ? allAccRows.filter(row => activeFieldKeys.has(row.fieldKey))
+    : allAccRows
+
+  const accIsFiltered = activeFieldKeys !== null && accRows.length < allAccRows.length
+
+  // ─── Plan-vs-actual mode: ativo quando há cenário salvo para o ano corrente ──
+  const hasSavedPlan = Boolean(currentYearPlan?.versions?.length)
+  const planValues   = hasSavedPlan ? currentYearPlan!.versions[0].values : null
+
+  const getPlanProrated = (fieldKey: string): number | null => {
+    if (!planValues) return null
+    const annual = planValues[fieldKey]
+    if (typeof annual !== 'number') return null
+    return IS_FLOW[fieldKey] ? prorated(annual, cycleState.monthsElapsed) : annual
+  }
+
+  const getProjection = (accVal: number, fieldKey: string): number | null => {
+    if (cycleState.monthsElapsed <= 0) return null
+    return IS_FLOW[fieldKey]
+      ? Math.round(accVal * 12 / cycleState.monthsElapsed)
+      : accVal
+  }
+
+  const plannedYears = getPlannedYears()
+
+  if (!user) return null
+
+  return (
+    <div className="min-h-screen w-full bg-[#E7E7E6]">
+      {/* HEADER */}
+      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+        <div className="max-w-[1400px] mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
+              <ArrowLeft className="w-6 h-6" />
+            </button>
+            <div>
+              <p className="text-[#F6F3AA]/70 text-xs uppercase tracking-widest">Módulo 1</p>
+              <p className="text-[#F6F3AA] font-semibold text-lg leading-tight">Planejamento Estratégico — Ano Fiscal</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => navigate("/profile-adjust")}
+              className="flex items-center gap-1.5 text-[#F6F3AA]/80 hover:text-[#F6F3AA] text-sm transition-colors"
+            >
+              <Settings className="w-4 h-4" />
+              <span>Ajustar Perfil</span>
+            </button>
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" /><span className="text-sm">{user.name}</span>
+            </div>
+            <button
+              onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/") }}
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+
+        {/* ─── ACC SECTION ─────────────────────────────────────────────────── */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#28071C]/8">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-[#7598CF]/15 flex items-center justify-center">
+                  <Calendar className="w-4 h-4 text-[#7598CF]" />
+                </div>
+                <div>
+                  <p className="text-[#28071C] font-semibold text-base">
+                    Acompanhamento {cycleState.currentCalendarYear} — Ano em Curso
+                  </p>
+                  <p className="text-[#28071C]/50 text-xs mt-0.5">{progressLabel}</p>
+                </div>
+              </div>
+              {plannedYears.includes(cycleState.currentCalendarYear) ? (
+                <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />Plano formal registrado
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-3 py-1">
+                  <AlertCircle className="w-3.5 h-3.5" />Usando histórico 2025 como referência
+                </span>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between text-[10px] text-[#28071C]/40 mb-1.5">
+                <span>Jan</span>
+                <span>Dez</span>
+              </div>
+              <div className="h-2 bg-[#28071C]/8 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] rounded-full transition-all"
+                  style={{ width: `${progressRatio * 100}%` }}
+                />
+              </div>
+              <p className="text-[10px] text-[#28071C]/40 mt-1 text-right">
+                {Math.round(progressRatio * 100)}% do ano transcorrido
+              </p>
+            </div>
+          </div>
+
+          <div className="p-6">
+            {hasSavedPlan ? (
+              /* ── MODO: HÁ PLANO SALVO → performance realizada vs meta + projeção ── */
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <Target className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="text-[10px] text-emerald-700 font-semibold uppercase tracking-widest">
+                    Performance vs Plano {cycleState.currentCalendarYear}
+                  </span>
+                </div>
+                <div className="grid grid-cols-5 gap-3 mb-2 px-2">
+                  <span className="col-span-1 text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Indicador</span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">Meta (prorat.)</span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">
+                    ACC Jan–{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][cycleState.monthsElapsed - 1] ?? 'Mai'}
+                  </span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">vs Meta</span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">Projeção Ano</span>
+                </div>
+                <div className="space-y-1">
+                  {accRows.map((row) => {
+                    const planProrated = getPlanProrated(row.fieldKey)
+                    const accRaw       = row.fieldKey === 'receitaBruta' ? ACC_ACTUAL.receita
+                                       : row.fieldKey === 'margemBruta'  ? ACC_ACTUAL.margemBruta
+                                       : row.fieldKey === 'pmv'          ? ACC_ACTUAL.pmv
+                                       : row.fieldKey === 'otbCompra'    ? ACC_ACTUAL.otb
+                                       : row.fieldKey === 'giro'         ? ACC_ACTUAL.giro
+                                       : ACC_ACTUAL.gmroi
+                    const vsPlan = planProrated
+                      ? ((accRaw - planProrated) / Math.abs(planProrated)) * 100
+                      : null
+                    const projection = getProjection(accRaw, row.fieldKey)
+                    const isGood = vsPlan !== null && vsPlan >= 0
+
+                    const fmtProj = (val: number | null) => {
+                      if (val === null) return '—'
+                      if (row.unit === '%') return `${val.toFixed(1)}%`
+                      return `R$ ${val.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
+                    }
+
+                    return (
+                      <div
+                        key={row.label}
+                        className="grid grid-cols-5 gap-3 items-center py-2.5 px-2 rounded-lg hover:bg-[#28071C]/4 transition-colors"
+                      >
+                        <span className="text-[#28071C]/70 text-sm">{row.label}</span>
+                        <span className="text-[#28071C]/50 text-sm text-right font-mono">
+                          {planProrated !== null
+                            ? row.unit === '%' ? `${planProrated.toFixed(1)}%` : fmtBRL(planProrated)
+                            : '—'}
+                        </span>
+                        <span className="text-[#28071C] text-sm text-right font-mono font-semibold">{row.acc}</span>
+                        <div className="flex items-center justify-end gap-1">
+                          {vsPlan !== null ? (
+                            <>
+                              {isGood ? <TrendingUp className="w-3.5 h-3.5 text-emerald-500" /> : <TrendingDown className="w-3.5 h-3.5 text-red-500" />}
+                              <span className={`text-xs font-semibold ${isGood ? "text-emerald-600" : "text-red-600"}`}>
+                                {vsPlan >= 0 ? "+" : ""}{vsPlan.toFixed(1)}%
+                              </span>
+                            </>
+                          ) : <Minus className="w-3.5 h-3.5 text-gray-300" />}
+                        </div>
+                        <span className="text-[#28071C]/60 text-sm text-right font-mono">{fmtProj(projection)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="mt-4 pt-3 border-t border-[#28071C]/8">
+                  <p className="text-[9px] text-[#28071C]/30">
+                    Meta prorat. = meta anual × {cycleState.monthsElapsed}/12 (indicadores de fluxo) ou valor absoluto (taxas).
+                    Projeção = ACC extrapolado para 12 meses.
+                  </p>
+                </div>
+              </>
+            ) : (
+              /* ── MODO: SEM PLANO → comparativo com ano anterior (comportamento original) ── */
+              <>
+                <div className="grid grid-cols-4 gap-4 mb-2 px-2">
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Indicador</span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">
+                    Ref. {cycleState.currentCalendarYear - 1} prorat.
+                  </span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">
+                    ACC Jan–Mai {cycleState.currentCalendarYear}
+                  </span>
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold text-right">Δ</span>
+                </div>
+
+                <div className="space-y-1">
+                  {accRows.map((row) => (
+                    <div
+                      key={row.label}
+                      className="grid grid-cols-4 gap-4 items-center py-2.5 px-2 rounded-lg hover:bg-[#28071C]/4 transition-colors"
+                    >
+                      <span className="text-[#28071C]/70 text-sm">{row.label}</span>
+                      <span className="text-[#28071C]/50 text-sm text-right font-mono">{row.ref}</span>
+                      <span className="text-[#28071C] text-sm text-right font-mono font-semibold">{row.acc}</span>
+                      <div className="flex items-center justify-end gap-1">
+                        {row.positive ? (
+                          <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : Math.abs(row.pct) < 0.1 ? (
+                          <Minus className="w-3.5 h-3.5 text-gray-400" />
+                        ) : (
+                          <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+                        )}
+                        <span className={`text-xs font-semibold ${row.positive ? "text-emerald-600" : "text-red-600"}`}>
+                          {row.pct >= 0 ? "+" : ""}{row.pct.toFixed(1)}{row.unit}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-[#28071C]/8 space-y-1">
+                  <p className="text-[9px] text-[#28071C]/30">
+                    Referência = {cycleState.monthsElapsed}/12 do fechamento anual {cycleState.currentCalendarYear - 1} (histórico). ACC = realizado estimado Jan–Mai {cycleState.currentCalendarYear}.
+                  </p>
+                  {accIsFiltered && (
+                    <p className="text-[9px] text-[#7598CF]/70 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#7598CF]/60 inline-block" />
+                      Exibindo apenas os {accRows.length} indicadores definidos no plano {cycleState.currentCalendarYear}.
+                    </p>
+                  )}
+                  {activeFieldKeys && !accIsFiltered && (
+                    <p className="text-[9px] text-[#28071C]/25 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#28071C]/20 inline-block" />
+                      Indicadores alinhados ao plano {cycleState.currentCalendarYear} definido.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ─── ACTION CARDS ────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 gap-6">
+
+          {/* REVISAR PLANO */}
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-6 pt-6 pb-4 border-b border-[#28071C]/8">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-8 h-8 rounded-lg bg-[#7598CF]/15 flex items-center justify-center">
+                  <RotateCcw className="w-4 h-4 text-[#7598CF]" />
+                </div>
+                <h2 className="text-[#28071C] font-semibold text-base">Revisar Plano Existente</h2>
+              </div>
+              <p className="text-[#28071C]/50 text-sm ml-11">
+                Ajuste o plano para frente sem sobrescrever o histórico original.
+              </p>
+            </div>
+
+            <div className="p-6">
+              {cycleState.canReview ? (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-[#28071C]/50 uppercase tracking-widest font-semibold mb-2">
+                      Selecionar ano para revisão
+                    </label>
+                    <div className="space-y-2">
+                      {cycleState.reviewableYears.map((yr) => {
+                        const cycle = getPlanCycle(yr)
+                        const focus = cycle?.focus
+                        return (
+                          <button
+                            key={yr}
+                            onClick={() => setReviewYear(yr)}
+                            className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left ${
+                              reviewYear === yr
+                                ? "border-[#7598CF] bg-[#7598CF]/8"
+                                : "border-[#28071C]/10 hover:border-[#7598CF]/40"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="text-[#28071C] font-bold text-lg">{yr}</span>
+                              {focus && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                                  {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
+                                </span>
+                              )}
+                            </div>
+                            {reviewYear === yr && (
+                              <CheckCircle2 className="w-4 h-4 text-[#7598CF]" />
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleReview}
+                    disabled={!reviewYear}
+                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-[#7598CF] text-white rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 transition-all shadow-sm"
+                  >
+                    <span>Abrir revisão {reviewYear}</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center py-6">
+                  <div className="w-12 h-12 rounded-full bg-[#28071C]/6 flex items-center justify-center mx-auto mb-3">
+                    <AlertCircle className="w-6 h-6 text-[#28071C]/30" />
+                  </div>
+                  <p className="text-[#28071C]/50 text-sm">Nenhum plano registrado ainda.</p>
+                  <p className="text-[#28071C]/35 text-xs mt-1">
+                    Inicie um novo ciclo para ter um plano disponível para revisão.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* NOVO CICLO */}
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-2 border-[#7598CF]/20">
+            <div className="px-6 pt-6 pb-4 border-b border-[#28071C]/8">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-8 h-8 rounded-lg bg-[#7598CF] flex items-center justify-center">
+                  <PlusCircle className="w-4 h-4 text-white" />
+                </div>
+                <h2 className="text-[#28071C] font-semibold text-base">Iniciar Novo Ciclo de Planejamento</h2>
+              </div>
+              <p className="text-[#28071C]/50 text-sm ml-11">
+                Defina prioridades estratégicas e inicie o planejamento do próximo ano fiscal.
+              </p>
+            </div>
+
+            <div className="p-6 flex flex-col gap-4">
+              {/* Next cycle info */}
+              <div className="bg-[#7598CF]/8 rounded-xl px-5 py-4">
+                <p className="text-[10px] text-[#7598CF] uppercase tracking-widest font-semibold mb-1">
+                  Próximo ciclo disponível
+                </p>
+                <p className="text-[#28071C] font-black text-4xl">{cycleState.nextNewCycle}</p>
+                <p className="text-[#28071C]/50 text-xs mt-1">
+                  {cycleState.plannedYears.length === 0
+                    ? "Nenhum plano anterior registrado"
+                    : `Após plano de ${cycleState.reviewableYears[0]}`}
+                </p>
+              </div>
+
+              {/* Steps preview */}
+              <div className="space-y-2">
+                {[
+                  { n: "1", label: "Escolher foco estratégico do ano" },
+                  { n: "2", label: "Definir prioridade dos indicadores" },
+                  { n: "3", label: "Lançar metas e cenários" },
+                ].map((step) => (
+                  <div key={step.n} className="flex items-center gap-3 text-sm text-[#28071C]/60">
+                    <span className="w-5 h-5 rounded-full bg-[#7598CF]/20 text-[#7598CF] text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                      {step.n}
+                    </span>
+                    {step.label}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={handleNewCycle}
+                className="w-full flex items-center justify-center gap-2 px-6 py-3.5 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] text-white rounded-xl font-semibold hover:opacity-90 transition-all shadow-md mt-auto"
+              >
+                <TrendingUp className="w-4 h-4" />
+                <span>Configurar e iniciar {cycleState.nextNewCycle}</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ─── CYCLE INDEX ─────────────────────────────────────────────────── */}
+        {plannedYears.length > 0 && (
+          <div className="bg-white/50 backdrop-blur-sm rounded-xl px-6 py-4 shadow-sm">
+            <p className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold mb-3">
+              Histórico de ciclos planejados
+            </p>
+            <div className="flex gap-3 flex-wrap">
+              {plannedYears.map((yr) => {
+                const cycle = getPlanCycle(yr)
+                const focus = cycle?.focus
+                return (
+                  <div
+                    key={yr}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-[#28071C]/10 text-sm"
+                  >
+                    <span className="font-semibold text-[#28071C]">{yr}</span>
+                    {focus && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                        {STRATEGIC_FOCUS_ICONS[focus]}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  )
+}

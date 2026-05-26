@@ -1,0 +1,25 @@
+# Dependencies
+node_modules
+.pnpm-debug.log
+
+# Build outputs
+dist
+.vercel
+.turbo
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Replit specific
+.replit
+replit.nix
+.local
+
+# IDEs
+.vscode
+.DS_Store
+
+# Logs
+npm-debug.log*

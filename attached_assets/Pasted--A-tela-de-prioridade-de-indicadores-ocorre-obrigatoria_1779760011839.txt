@@ -1,0 +1,79 @@
+
+A tela de prioridade de indicadores ocorre obrigatoriamente antes da abertura de um novo plano anual.
+
+Comportamento da Tela de Prioridade de Indicadores
+
+1) Exibição Inicial
+- O sistema deve exibir os indicadores sugeridos automaticamente, ordenados de acordo com o foco principal do plano selecionado.
+- Os indicadores não sugeridos devem aparecer inicialmente como:
+  - “Somente leitura”
+  - Não editáveis
+  - Visualmente diferenciados (ex: desabilitados)
+
+2) Liberação de Indicadores Adicionais
+- O usuário deve ter a opção de:
+  - Liberar até DOIS indicadores adicionais que originalmente estariam apenas para leitura
+- Esses indicadores passam a:
+  - Ser editáveis
+  - Fazer parte do conjunto de controle ativo do plano
+- O sistema deve impedir a liberação de mais de dois indicadores adicionais, garantindo disciplina no modelo de gestão.
+
+3) Indicadores de Referência
+- O usuário deve poder marcar um ou mais indicadores como:
+  - “Indicador de Referência”
+- Um indicador de referência pode:
+  - Ter vindo originalmente como prioritário pelo sistema
+  - Ou ter sido um dos indicadores liberados manualmente
+- Indicadores de referência não precisam, obrigatoriamente, estar no topo da ordem, mas devem ser destacados visualmente.
+
+4) Autoridade Final do Usuário
+- A decisão final sobre quais indicadores são realmente importantes é sempre do usuário.
+- O sistema deve respeitar integralmente a seleção feita nesta tela, mesmo que diverja da sugestão automática inicial.
+
+Impacto no Plano Anual
+
+1) Definição Oficial do Plano
+- Ao confirmar o plano, o conjunto final de indicadores selecionados nesta tela passa a ser:
+  - O grupo oficial de indicadores de controle do ano
+  - Os únicos indicadores com metas editáveis durante o ciclo
+
+2) Indicadores Não Selecionados
+- Permanecem visíveis no Módulo 1 apenas para:
+  - Consulta
+  - Conferência de impactos indiretos
+- Não devem permitir lançamento ou ajuste de metas.
+
+Impacto nas Próximas Entradas do Módulo 1
+
+1) Prévia do Ano Anterior
+- Na próxima vez que o usuário acessar o Módulo 1:
+  - A tela de prévia “Ano Anterior – ACC Realizado x Plano” deve exibir APENAS:
+    - Os indicadores que foram selecionados na tela de prioridade de indicadores do plano vigente
+- Indicadores não selecionados naquele plano não devem aparecer nesta prévia, mesmo que existam dados históricos.
+
+2) Coerência Histórica
+- A prévia deve respeitar:
+  - O conjunto de indicadores válido para aquele ciclo específico
+  - A configuração definida no momento da criação do plano
+
+Regras de UX e Clareza
+- O usuário deve compreender claramente:
+  - Quais indicadores estão ativos
+  - Quais estão apenas para leitura
+  - Quais são indicadores de referência
+- O sistema deve sinalizar visualmente qualquer divergência entre:
+  - Sugestão do sistema
+  - Decisão final do usuário
+
+Persistência e Rastreabilidade
+- As escolhas feitas na tela de prioridade:
+  - Devem ser salvas junto ao plano anual
+  - Não devem ser alteradas retroativamente
+- Revisões de plano não podem alterar o conjunto original de indicadores definidos na criação do ciclo, apenas seus valores futuros.
+
+Critérios de Aceite
+- O usuário consegue liberar no máximo dois indicadores adicionais
+- Indicadores de referência podem ser definidos livremente
+- Apenas indicadores selecionados permitem lançamento de metas
+- A prévia do ano anterior mostra exclusivamente os indicadores definidos naquele plano
+- O sistema respeita a decisão final do usuário, independentemente da sugestão automática

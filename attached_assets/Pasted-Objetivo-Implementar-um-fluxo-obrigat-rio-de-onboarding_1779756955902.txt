@@ -1,0 +1,108 @@
+Objetivo
+Implementar um fluxo obrigatório de onboarding no primeiro acesso ao aplicativo, no qual o usuário responde perguntas estratégicas sobre o modelo de negócio. Com base nas respostas, o sistema deve configurar dinamicamente os indicadores macroeconômicos exibidos na tela do Módulo 1.
+
+Contexto
+Este aplicativo é um sistema de apoio à gestão para negócios de moda, vestuário, calçados e acessórios. Diferentes segmentos possuem sensibilidades distintas a variáveis econômicas como matérias-primas, petróleo, câmbio, emprego, confiança do consumidor e logística internacional.
+
+O onboarding deve ocorrer apenas no primeiro acesso do usuário (ou até ser concluído) e suas respostas devem ser persistidas para uso contínuo na personalização das visualizações e indicadores.
+
+Escopo Funcional – Onboarding Inicial
+No primeiro acesso, apresentar obrigatoriamente as seguintes perguntas:
+
+1) Segmento(s) de produto do negócio  
+Permitir múltipla seleção entre:
+- Vestuário Feminino
+- Vestuário Masculino
+- Vestuário Infantil
+- Acessórios (Bolsas e Cintos) Femininos
+- Acessórios (Bolsas e Cintos) Masculino
+- Acessórios (Bolsas e Cintos) Infantil
+- Calçados Femininos
+- Calçados Masculinos
+- Calçados Infantis
+- Underwear Feminino
+- Underwear Masculino
+- Underwear Infantil
+- Moda Fitness Feminino
+- Moda Fitness Masculino
+- Moda Fitness Infantil
+- Moda Praia Feminino
+- Moda Praia Masculino
+- Moda Praia Infantil
+- Acessórios (Bijuterias / Jóia / Semijóia)
+
+2) Matérias-primas relevantes  
+Selecionar e ranquear as principais matérias-primas que compõem os produtos, sendo:
+- Ranking obrigatório
+- 1 = maior impacto no negócio
+
+Lista disponível:
+Algodão, EVA, PVC, Poliéster, Couro, Zamac, Cobre, Alumínio, Ouro, Prata
+
+3) Origem das peças vendidas  
+Selecionar uma opção:
+- Produção própria
+- White label
+- Multimarca
+- Híbrido (combinação entre produção própria e white label ou multimarca)
+
+4) (Pergunta 4 intencionalmente inexistente – manter numeração conforme especificação original)
+
+5) Caso produza total ou parcialmente:
+Possui matéria-prima relevante importada?
+- Sim
+- Não
+
+6) Você exporta?
+- Sim
+- Não
+
+Regras de Lógica e Configuração dos Indicadores
+Após o onboarding, o sistema deve:
+
+1) Determinar os indicadores macroeconômicos relevantes para o usuário com base:
+- Nos segmentos selecionados (pergunta 1)
+- Na tabela de correspondência de segmentos x indicadores (conforme anexo fornecido)
+- Nas matérias-primas ranqueadas (pergunta 2)
+- Na origem da produção e exposição internacional (perguntas 3, 5 e 6)
+
+2) Exibir automaticamente no Módulo 1 apenas os indicadores aplicáveis ao perfil do negócio.
+
+Indicadores possíveis (conforme tabela):
+- Preço do Algodão (Pluma)
+- Preço do Petróleo (Brent)
+- Preço da Nafta Petroquímica (EVA / PVC / Poliéster)
+- Couro Bovino (Índice)
+- Metais (Zamac, Cobre, Alumínio, Ouro, Prata)
+- Emprego Formal (CAGED)
+- Renda Média Real do Trabalhador
+- Confiança do Consumidor
+- Taxa de Natalidade (Projeções)
+- Volume de Serviços – Turismo
+
+3) Regras adicionais obrigatórias:
+- Se o usuário importar matéria-prima OU exportar produtos:
+  - Incluir obrigatoriamente:
+    - Frete Marítimo Global (Drewry World Container Index – WCI)
+    - Taxa de Câmbio
+- Caso contrário, esses dois indicadores não devem ser exibidos.
+
+Persistência e Reuso
+- As respostas do onboarding devem ser salvas no perfil do usuário.
+- O onboarding não deve ser exibido novamente após conclusão, exceto se o usuário optar explicitamente por reconfigurar seu perfil.
+- O sistema deve permitir uso futuro dessas respostas para personalizações adicionais.
+
+Critérios de Aceite
+- O usuário não acessa o Módulo 1 sem concluir o onboarding.
+- Os indicadores exibidos refletem corretamente:
+  - Os segmentos selecionados
+  - As matérias-primas relevantes
+  - A exposição ao comércio internacional
+- Nenhum indicador irrelevante é exibido.
+- Frete Marítimo e Câmbio aparecem exclusivamente quando houver importação ou exportação.
+
+Expectativas Técnicas
+- Implementar de forma modular e escalável.
+- Estruturar lógica de decisão clara e documentada.
+- Evitar hardcode de regras sempre que possível.
+- Preparar o sistema para inclusão futura de novos segmentos ou indicadores.
