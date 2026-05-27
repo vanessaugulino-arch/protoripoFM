@@ -1,0 +1,120 @@
+Objetivo
+Ajustar o comportamento da PRIMEIRA TELA do Módulo 1 para:
+- Tornar os dados exibidos coerentes com a existência (ou não) de plano salvo
+- Garantir que os indicadores exibidos sejam sempre os mais relevantes para o objetivo do plano
+- Permitir ação mesmo quando não há plano salvo, utilizando a projeção como base de planejamento
+
+IMPORTANTE:
+Este ajuste é incremental e não deve alterar:
+- A lógica de cálculo existente
+- O fluxo de ciclos
+- O modelo de planejamento já implementado
+
+--------------------------------
+AJUSTE 1 – COMPOSIÇÃO DA PRIMEIRA TELA DO MÓDULO 1
+--------------------------------
+
+A primeira tela do Módulo 1 deve sempre exibir três colunas:
+
+1) Resultados acumulados realizados
+2) Resultado acumulado vs plano acumulado (quando houver plano)
+3) Projeção de fechamento do período considerando a performance até o momento
+
+--------------------------------
+AJUSTE 2 – INDICADORES EXIBIDOS NA PRIMEIRA TELA
+--------------------------------
+
+Os indicadores exibidos nesta primeira tela devem ser SEMPRE:
+- Os indicadores mais importantes para os OBJETIVOS DO PLANO
+- Exatamente aqueles selecionados na tela de planejamento do Módulo 1
+- Incluindo obrigatoriamente:
+  - Receita do período
+
+Nunca exibir:
+- Indicadores secundários
+- Indicadores que não foram selecionados no planejamento daquele ciclo
+
+--------------------------------
+AJUSTE 3 – COMPORTAMENTO QUANDO EXISTE PLANO DO ANO CORRENTE
+--------------------------------
+
+Quando houver plano salvo para o ano corrente:
+
+- Exibir:
+  - Realizado acumulado sobre o plano acumulado
+  - Projeção de fechamento considerando a performance até o momento
+- A tela funciona como acompanhamento e leitura
+- Mantém comportamento atual, apenas garantindo coerência de indicadores
+
+--------------------------------
+AJUSTE 4 – COMPORTAMENTO QUANDO NÃO EXISTE PLANO DO ANO CORRENTE
+--------------------------------
+
+Quando NÃO houver plano salvo para o ano corrente:
+
+- O sistema deve exibir:
+  - Performance realizada em comparação com o ano anterior
+  - Projeção de fechamento seguindo a curva atual
+
+Neste caso, o card deve:
+- Deixar claro visualmente e textualmente que:
+  - Não existe plano salvo para o período
+  - A projeção apresentada pode ser utilizada como base de planejamento
+
+Mensagem orientativa no card (exemplo):
+"Você ainda não possui um plano salvo para este período.
+A projeção apresentada pode ser utilizada como plano inicial,
+permitindo revisar e ajustar os indicadores do ano corrente."
+
+--------------------------------
+AJUSTE 5 – ATIVAÇÃO DE AÇÃO QUANDO NÃO HÁ PLANO
+--------------------------------
+
+Hoje o card é apenas informativo quando não há plano.
+Este ajuste deve permitir ação.
+
+Quando não houver plano:
+- Habilitar uma ação no card, como:
+  - “Usar projeção como plano”
+  - ou “Revisar projeção e transformar em plano”
+
+Ao acionar:
+- O sistema deve:
+  - Levar o usuário para o fluxo de planejamento do Módulo 1
+  - Utilizar a projeção como ponto de partida
+  - Permitir ajustes nos indicadores do ano corrente
+- Sem alterar histórico
+- Sem sobrescrever dados anteriores automaticamente
+
+--------------------------------
+REGRAS CONCEITUAIS OBRIGATÓRIAS
+--------------------------------
+
+- O sistema parte sempre da premissa:
+  "Quanto queremos vender" → Receita
+  depois:
+  "Como" → indicadores operacionais
+  e só então:
+  "Por quê" → objetivo macro
+
+- Receita deve estar presente em TODOS os cenários
+- Nenhum plano pode existir sem receita
+
+--------------------------------
+REGRAS DE SEGURANÇA FUNCIONAL
+--------------------------------
+
+- NÃO alterar cálculos existentes
+- NÃO alterar lógica de ciclos
+- NÃO remover visualizações atuais
+- Apenas:
+  - Ajustar indicadores exibidos
+  - Ativar ação quando não houver plano
+  - Melhorar clareza da mensagem ao usuário
+
+Critérios de Aceite
+- A primeira tela mostra sempre três colunas
+- Indicadores exibidos refletem os objetivos do plano
+- Quando não há plano, a projeção é claramente comunicada como base possível
+- O usuário consegue transformar a projeção em plano
+- Nenhuma regressão ocorre quando já existe plano salvo
