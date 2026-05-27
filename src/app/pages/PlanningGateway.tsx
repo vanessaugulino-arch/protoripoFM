@@ -433,17 +433,6 @@ export default function PlanningGateway() {
                   </p>
                 </div>
 
-                {/* AJUSTE 5 – Ação: transformar projeção em plano */}
-                <div className="mt-5 pt-4 border-t border-[#28071C]/8">
-                  <button
-                    onClick={handleUseProjectionAsPlan}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-xl font-semibold hover:opacity-90 transition-all shadow-sm"
-                  >
-                    <Target className="w-4 h-4" />
-                    <span>Revisar projeção e transformar em plano</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
               </>
             )}
           </div>
@@ -452,56 +441,29 @@ export default function PlanningGateway() {
         {/* ─── ACTION CARDS ────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 gap-6">
 
-          {/* REVISAR PLANO */}
+          {/* REVISAR PLANO EXISTENTE OU PROJEÇÃO */}
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
             <div className="px-6 pt-6 pb-4 border-b border-[#28071C]/8">
               <div className="flex items-center gap-3 mb-1">
                 <div className="w-8 h-8 rounded-lg bg-[#7598CF]/15 flex items-center justify-center">
                   <RotateCcw className="w-4 h-4 text-[#7598CF]" />
                 </div>
-                <h2 className="text-[#28071C] font-semibold text-base">Revisar Plano Existente</h2>
+                <h2 className="text-[#28071C] font-semibold text-base">Revisar Plano Existente ou Projeção</h2>
               </div>
-              <p className="text-[#28071C]/50 text-sm ml-11">
-                Ajuste o plano para frente sem sobrescrever o histórico original.
-              </p>
             </div>
 
-            <div className="p-6">
-              {cycleState.canReview ? (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs text-[#28071C]/50 uppercase tracking-widest font-semibold mb-2">
-                      Selecionar ano para revisão
-                    </label>
-                    <div className="space-y-2">
-                      {cycleState.reviewableYears.map((yr) => {
-                        const cycle = getPlanCycle(yr)
-                        const focus = cycle?.focus
-                        return (
-                          <button
-                            key={yr}
-                            onClick={() => setReviewYear(yr)}
-                            className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left ${
-                              reviewYear === yr
-                                ? "border-[#7598CF] bg-[#7598CF]/8"
-                                : "border-[#28071C]/10 hover:border-[#7598CF]/40"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <span className="text-[#28071C] font-bold text-lg">{yr}</span>
-                              {focus && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
-                                  {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
-                                </span>
-                              )}
-                            </div>
-                            {reviewYear === yr && (
-                              <CheckCircle2 className="w-4 h-4 text-[#7598CF]" />
-                            )}
-                          </button>
-                        )
-                      })}
-                    </div>
+            <div className="p-6 flex flex-col gap-5">
+              {hasSavedPlan ? (
+                /* ── Há plano salvo para o ano corrente ── */
+                <>
+                  <div className="space-y-2">
+                    <p className="text-[#28071C] text-sm font-semibold">Seu plano está em andamento</p>
+                    <p className="text-[#28071C]/60 text-sm leading-relaxed">
+                      A projeção de fechamento considera sua performance atual e ajuda a identificar ajustes necessários nos indicadores para melhorar o resultado até o fim do período.
+                    </p>
+                    <p className="text-[#28071C]/70 text-sm">
+                      👉 Revise seu plano para capturar oportunidades, corrigir desvios e impulsionar o resultado até o fim do período.
+                    </p>
                   </div>
 
                   <button
@@ -509,20 +471,115 @@ export default function PlanningGateway() {
                     disabled={!reviewYear}
                     className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-[#7598CF] text-white rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 transition-all shadow-sm"
                   >
-                    <span>Abrir revisão {reviewYear}</span>
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Revisar plano</span>
                     <ChevronRight className="w-4 h-4" />
                   </button>
-                </div>
+
+                  {/* Seletor de ano caso haja múltiplos anos revisáveis */}
+                  {cycleState.reviewableYears.length > 1 && (
+                    <div>
+                      <label className="block text-xs text-[#28071C]/50 uppercase tracking-widest font-semibold mb-2">
+                        Selecionar ano para revisão
+                      </label>
+                      <div className="space-y-2">
+                        {cycleState.reviewableYears.map((yr) => {
+                          const cycle = getPlanCycle(yr)
+                          const focus = cycle?.focus
+                          return (
+                            <button
+                              key={yr}
+                              onClick={() => setReviewYear(yr)}
+                              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left ${
+                                reviewYear === yr
+                                  ? "border-[#7598CF] bg-[#7598CF]/8"
+                                  : "border-[#28071C]/10 hover:border-[#7598CF]/40"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className="text-[#28071C] font-bold text-lg">{yr}</span>
+                                {focus && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                                    {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
+                                  </span>
+                                )}
+                              </div>
+                              {reviewYear === yr && <CheckCircle2 className="w-4 h-4 text-[#7598CF]" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="text-center py-6">
-                  <div className="w-12 h-12 rounded-full bg-[#28071C]/6 flex items-center justify-center mx-auto mb-3">
-                    <AlertCircle className="w-6 h-6 text-[#28071C]/30" />
+                /* ── Sem plano para o ano corrente ── */
+                <>
+                  <div className="space-y-2">
+                    <p className="text-[#28071C] text-sm font-semibold">
+                      Você ainda não possui um plano para este período
+                    </p>
+                    <p className="text-[#28071C]/60 text-sm leading-relaxed">
+                      Com base na sua performance atual, geramos uma projeção de fechamento que pode servir como referência para ajuste das suas decisões ao longo deste período.
+                    </p>
+                    <p className="text-[#28071C]/70 text-sm">
+                      👉 Revise os indicadores e adapte os direcionadores para aproveitar oportunidades e melhorar seus resultados ainda neste ciclo.
+                    </p>
                   </div>
-                  <p className="text-[#28071C]/50 text-sm">Nenhum plano registrado ainda.</p>
-                  <p className="text-[#28071C]/35 text-xs mt-1">
-                    Inicie um novo ciclo para ter um plano disponível para revisão.
-                  </p>
-                </div>
+
+                  <button
+                    onClick={handleUseProjectionAsPlan}
+                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] text-white rounded-xl font-semibold hover:opacity-90 transition-all shadow-sm"
+                  >
+                    <Target className="w-4 h-4" />
+                    <span>Revisar projeção e criar plano</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  {/* Seletor de anos passados, se houver */}
+                  {cycleState.canReview && (
+                    <div>
+                      <label className="block text-xs text-[#28071C]/50 uppercase tracking-widest font-semibold mb-2">
+                        Ou revisar ano anterior
+                      </label>
+                      <div className="space-y-2">
+                        {cycleState.reviewableYears.map((yr) => {
+                          const cycle = getPlanCycle(yr)
+                          const focus = cycle?.focus
+                          return (
+                            <button
+                              key={yr}
+                              onClick={() => setReviewYear(yr)}
+                              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left ${
+                                reviewYear === yr
+                                  ? "border-[#7598CF] bg-[#7598CF]/8"
+                                  : "border-[#28071C]/10 hover:border-[#7598CF]/40"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className="text-[#28071C] font-bold text-lg">{yr}</span>
+                                {focus && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                                    {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
+                                  </span>
+                                )}
+                              </div>
+                              {reviewYear === yr && <CheckCircle2 className="w-4 h-4 text-[#7598CF]" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <button
+                        onClick={handleReview}
+                        disabled={!reviewYear}
+                        className="w-full mt-3 flex items-center justify-center gap-2 px-6 py-3 bg-[#7598CF]/15 text-[#7598CF] rounded-xl font-semibold hover:bg-[#7598CF]/25 disabled:opacity-40 transition-all"
+                      >
+                        <span>Abrir revisão {reviewYear}</span>
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
