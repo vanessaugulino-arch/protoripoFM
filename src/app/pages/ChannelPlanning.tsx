@@ -395,6 +395,11 @@ export default function ChannelPlanning() {
     const mk = CHANNEL_TO_MACRO[key] ?? (key as string);
     return impactedMacro.some(i => i.key === mk);
   };
+  // Returns the macro plan target for a channel field when it is off-target
+  const getMacroTarget = (key: keyof ChannelData): number | null => {
+    const mk = CHANNEL_TO_MACRO[key] ?? (key as string);
+    return impactedMacro.find(i => i.key === mk)?.planned ?? null;
+  };
 
   const gridStyle = { gridTemplateColumns: `155px repeat(${visibleChannels.length + 1}, 1fr)` };
 
@@ -598,6 +603,9 @@ export default function ChannelPlanning() {
                 const isLastFocus  = isMacroFocus && (idx === kpiFields.length - 1 || !macroKeyOrder.has(kpiFields[idx + 1]?.macroKey ?? ""));
                 const fieldTooltip = getFieldTooltip(field.key, field.isDriver);
                 const consImpacted = isConsolidatedImpacted(field.key);
+                const macroTarget  = consImpacted ? getMacroTarget(field.key) : null;
+                // When impacted, allow the row to grow to show "meta X" below the value
+                const rowH = consImpacted ? "min-h-[2.5rem] h-auto py-1.5" : "h-10";
 
                 return (
                   <>
@@ -613,7 +621,7 @@ export default function ChannelPlanning() {
                     )}
 
                     {/* Label */}
-                    <div key={`lbl-${field.key}`} className={`relative flex items-center gap-1.5 px-2.5 rounded-lg h-10 ${isMacroFocus ? "bg-[#7598CF]/6" : "bg-white/50"}`}>
+                    <div key={`lbl-${field.key}`} className={`relative flex items-center gap-1.5 px-2.5 rounded-lg ${rowH} ${isMacroFocus ? "bg-[#7598CF]/6" : "bg-white/50"}`}>
                       {field.isDriver
                         ? <span className="w-1.5 h-1.5 rounded-full bg-[#7598CF] flex-shrink-0" />
                         : <span className="w-1.5 h-1.5 rounded-full bg-[#28071C]/20 flex-shrink-0" />
@@ -636,7 +644,7 @@ export default function ChannelPlanning() {
                       const dragging = field.isDriver && isChannelDragging(ch, field.key);
                       return (
                         <div key={`${ch}-${field.key}`}
-                          className={`flex items-center px-2.5 rounded-lg h-10 border transition-colors ${
+                          className={`flex items-center px-2.5 rounded-lg ${rowH} border transition-colors ${
                             dragging
                               ? "bg-red-50 border-red-300 ring-1 ring-red-200"
                               : field.isDriver
@@ -657,13 +665,18 @@ export default function ChannelPlanning() {
                       );
                     })}
 
-                    {/* Consolidated cell */}
+                    {/* Consolidated cell — shows "meta X" below when off-target */}
                     <div key={`cons-${field.key}`}
-                      className={`flex items-center px-2.5 rounded-lg h-10 border ${consImpacted ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"}`}
+                      className={`flex flex-col justify-center px-2.5 rounded-lg ${rowH} border ${consImpacted ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"}`}
                     >
-                      <span className={`text-xs font-semibold font-mono ${consImpacted ? "text-red-700" : "text-[#28071C]"}`}>
+                      <span className={`text-xs font-semibold font-mono leading-tight ${consImpacted ? "text-red-700" : "text-[#28071C]"}`}>
                         {fmt(consolidatedKpi(field.key), field.format)}
                       </span>
+                      {macroTarget != null && (
+                        <span className="text-[9px] text-red-400 font-mono leading-tight mt-0.5">
+                          meta {fmt(macroTarget, field.format)}
+                        </span>
+                      )}
                     </div>
                   </>
                 );
