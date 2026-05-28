@@ -29,18 +29,19 @@ interface HistoricalData {
   year: string; receita: number; margemBruta: number; pmv: number;
   otb: number; estoqueMedioRS: number; estoqueMedioPecas: number;
   giro: number; cobertura: number; markdown: number; producao: number; gmroi: number;
+  ticketMedio: number;
 }
 
 const historicalDatabase: HistoricalData[] = [
   { year: "2023", receita: 2450000, margemBruta: 40.5, pmv: 145, otb: 1050000,
     estoqueMedioRS: 720000, estoqueMedioPecas: 4965, giro: 3.85, cobertura: 78,
-    markdown: 165000, producao: 16890, gmroi: 1.55 },
+    markdown: 165000, producao: 16890, gmroi: 1.55, ticketMedio: 290 },
   { year: "2024", receita: 2700000, margemBruta: 42.0, pmv: 158, otb: 1100000,
     estoqueMedioRS: 695000, estoqueMedioPecas: 4398, giro: 4.05, cobertura: 75,
-    markdown: 148000, producao: 17850, gmroi: 1.70 },
+    markdown: 148000, producao: 17850, gmroi: 1.70, ticketMedio: 315 },
   { year: "2025", receita: 2850000, margemBruta: 42.3, pmv: 155, otb: 1140000,
     estoqueMedioRS: 680000, estoqueMedioPecas: 4387, giro: 4.19, cobertura: 72,
-    markdown: 142500, producao: 18387, gmroi: 1.77 },
+    markdown: 142500, producao: 18387, gmroi: 1.77, ticketMedio: 320 },
 ]
 
 const custoMedioPorAno: Record<string, number> = {
@@ -107,6 +108,11 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: () => "Custo médio por peça — base para OTB e GMROI",
   },
   {
+    key: "ticketMedio", label: "Ticket Médio (R$)", format: "currency",
+    getValue: v => v.ticketMedio, getState: s => s.ticketMedio,
+    getHelp: (y, h) => `Base ${y}: R$ ${h.ticketMedio} — Receita Bruta ÷ nº de clientes`,
+  },
+  {
     key: "mkdRS", label: "MKD (R$)", format: "currency", isCalc: true,
     getValue: v => v.mkdRS, getState: () => "calculated",
     getHelp: (y, h) => `Base ${y}: R$ ${h.markdown.toLocaleString("pt-BR")}`,
@@ -169,6 +175,7 @@ export default function Planning() {
     custoMedio:    custoMedioPorAno[referenceYear] ?? 87,
     totalPecas:    histRef.producao,
     gmroi:         histRef.gmroi,
+    ticketMedio:   histRef.ticketMedio,
   }), [histRef, referenceYear])
 
   const {
@@ -241,6 +248,7 @@ export default function Planning() {
       { key: "giro",          label: "Giro",               plan: v.giro,          ref: histSel.giro            },
       { key: "cobertura",     label: "Cobertura (dias)",   plan: v.cobertura,     ref: histSel.cobertura       },
       { key: "producaoPecas", label: "Produção (peças)",   plan: v.producaoPecas, ref: histSel.producao        },
+      { key: "ticketMedio",   label: "Ticket Médio (R$)",  plan: v.ticketMedio,   ref: histSel.ticketMedio     },
       { key: "estoqueMedio",  label: "Estoque Médio (R$)", plan: v.estoqueMedio,  ref: histSel.estoqueMedioRS  },
       { key: "mkdRS",         label: "Markdown (R$)",      plan: v.mkdRS,         ref: histSel.markdown        },
       { key: "gmroi",         label: "GMROI",              plan: v.gmroi,         ref: histSel.gmroi           },
@@ -254,6 +262,7 @@ export default function Planning() {
       { key: "giro",              label: "Giro",                   value: histSel.giro,              fmt: "multiplier" },
       { key: "cobertura",         label: "Cobertura (dias)",       value: histSel.cobertura,         fmt: "days"       },
       { key: "producaoPecas",     label: "Produção (peças)",       value: histSel.producao,          fmt: "number"     },
+      { key: "ticketMedio",       label: "Ticket Médio (R$)",      value: histSel.ticketMedio,       fmt: "currency"   },
       { key: "estoqueMedio",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
       { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
       { key: "mkdRS",             label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },

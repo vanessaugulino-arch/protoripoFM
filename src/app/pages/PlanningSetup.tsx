@@ -34,6 +34,7 @@ const INDICATOR_TOOLTIPS: Record<string, string> = {
   gmroi:         'Mostra quanto de lucro bruto a empresa gera para cada real investido em produtos. GMROI > 1 significa retorno positivo sobre o estoque.',
   mkdRS:         'Valor absoluto de desconto aplicado em reais. Complementa o percentual de markdown para entender o impacto financeiro real.',
   totalPecas:    'Total de peças considerando produção própria e compras externas. Visão consolidada do volume do período.',
+  ticketMedio:   'Valor médio gasto por cliente em cada venda (Receita Bruta ÷ nº de clientes). Crescer o ticket médio significa vender mais itens por atendimento (PA) ou produtos de maior valor — sem necessariamente aumentar o número de clientes.',
 }
 
 // ─── Componente tooltip inline ─────────────────────────────────────────────────

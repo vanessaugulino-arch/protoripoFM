@@ -50,22 +50,36 @@ export const PLAN_INDICATORS: PlanIndicator[] = [
   { key: 'producaoPecas', label: 'Produção (peças)', description: 'Volume total de peças produzidas' },
   { key: 'mkdPct',        label: 'MKD %',            description: 'Percentual de desconto aplicado' },
   { key: 'custoMedio',    label: 'Custo Médio',      description: 'Custo médio por peça' },
+  { key: 'ticketMedio',   label: 'Ticket Médio (R$)', description: 'Valor médio gasto por cliente em cada venda' },
 ]
 
 // Número de indicadores sugeridos por foco (inclui Receita Bruta)
+// CAIXA:       receita + giro, mkdPct, otbCompra, ticketMedio            = 5
+// MARGEM:      receita + margemBruta, mkdPct, gmroi, pmv                 = 5
+// CRESCIMENTO: receita + producaoPecas, otbCompra, ticketMedio, giro     = 5
+// DEFENSIVO:   receita + cobertura, margemBruta, otbCompra, pmv          = 5
 export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
-  caixa:       5, // receita + giro, cobertura, mkdPct, otbCompra
-  margem:      6, // receita + margemBruta, gmroi, mkdPct, pmv, custoMedio
-  crescimento: 4, // receita + producaoPecas, otbCompra, giro
-  defensivo:   5, // receita + cobertura, margemBruta, otbCompra, custoMedio
+  caixa:       5,
+  margem:      5,
+  crescimento: 5,
+  defensivo:   5,
 }
 
-// Ordem de prioridade por foco — os primeiros N (SUGGESTED_COUNTS[foco]) são os sugeridos
+// Ordem de prioridade por foco — os primeiros N (SUGGESTED_COUNTS[foco]) são os sugeridos.
+// O restante fica disponível para liberação manual pelo usuário (máx. 2 adicionais).
 export const DEFAULT_PRIORITIES: Record<StrategicFocus, string[]> = {
-  caixa:       ['receitaBruta', 'giro', 'cobertura', 'mkdPct', 'otbCompra',   'margemBruta', 'gmroi', 'pmv', 'producaoPecas', 'custoMedio'],
-  margem:      ['receitaBruta', 'margemBruta', 'gmroi', 'mkdPct', 'pmv', 'custoMedio', 'otbCompra', 'giro', 'cobertura', 'producaoPecas'],
-  crescimento: ['receitaBruta', 'producaoPecas', 'otbCompra', 'giro',          'margemBruta', 'gmroi', 'pmv', 'cobertura', 'mkdPct', 'custoMedio'],
-  defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'otbCompra', 'custoMedio', 'giro', 'gmroi', 'pmv', 'producaoPecas', 'mkdPct'],
+  // Foco em Caixa: acelerar conversão de estoque → liquidez
+  caixa:       ['receitaBruta', 'giro', 'mkdPct', 'otbCompra', 'ticketMedio',
+                 'cobertura', 'margemBruta', 'producaoPecas', 'pmv', 'gmroi', 'custoMedio'],
+  // Foco em Margem: maximizar rentabilidade preservando markup
+  margem:      ['receitaBruta', 'margemBruta', 'mkdPct', 'gmroi', 'pmv',
+                 'otbCompra', 'giro', 'cobertura', 'producaoPecas', 'ticketMedio', 'custoMedio'],
+  // Foco em Crescimento: expandir volume e participação de mercado
+  crescimento: ['receitaBruta', 'producaoPecas', 'otbCompra', 'ticketMedio', 'giro',
+                 'margemBruta', 'pmv', 'cobertura', 'mkdPct', 'gmroi', 'custoMedio'],
+  // Ano Defensivo: preservar caixa e reduzir risco
+  defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'otbCompra', 'pmv',
+                 'giro', 'mkdPct', 'producaoPecas', 'gmroi', 'ticketMedio', 'custoMedio'],
 }
 
 export interface IndicatorPriority {

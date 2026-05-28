@@ -23,6 +23,7 @@ export type FieldKey =
   | 'totalPecas'
   | 'gmroi'
   | 'custoMedio'
+  | 'ticketMedio'     // Receita Bruta ÷ Nº de clientes — definido pelo usuário, sem cálculo automático
 
 export type FieldState = 'free' | 'locked' | 'calculated'
 
@@ -69,6 +70,7 @@ export const INITIAL_STATES: Record<FieldKey, FieldState> = {
   totalPecas:      'calculated',
   gmroi:           'calculated',
   custoMedio:      'free',
+  ticketMedio:     'free',
 }
 
 export const INITIAL_VALUES: PlanningValues = {
@@ -79,6 +81,7 @@ export const INITIAL_VALUES: PlanningValues = {
   mkdRS:          null, otbCompra:      null, otbTotal:       null,
   producaoPecas:  null, producaoValor:  null, comprasPecas:   null,
   totalPecas:     null, gmroi:          null, custoMedio:     null,
+  ticketMedio:    null,
 }
 
 // ─── Dados hipotéticos para validação (substitua por importação real) ──────
