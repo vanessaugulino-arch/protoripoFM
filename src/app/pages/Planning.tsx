@@ -231,34 +231,48 @@ export default function Planning() {
     return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
-  // ALL indicators for the consolidated column (Col 2)
-  const allPlanRows = [
-    { label: "Receita (R$)",          plan: v.receitaBruta,  ref: histSel.receita        },
-    { label: "Margem Bruta (%)",      plan: v.margemBruta,   ref: histSel.margemBruta     },
-    { label: "PMV (R$)",              plan: v.pmv,           ref: histSel.pmv             },
-    { label: "OTB (R$)",              plan: v.otbCompra,     ref: histSel.otb             },
-    { label: "Estoque Médio (R$)",    plan: v.estoqueMedio,  ref: histSel.estoqueMedioRS  },
-    { label: "Giro",                  plan: v.giro,          ref: histSel.giro            },
-    { label: "Cobertura (dias)",      plan: v.cobertura,     ref: histSel.cobertura       },
-    { label: "Markdown (R$)",         plan: v.mkdRS,         ref: histSel.markdown        },
-    { label: "Produção (peças)",      plan: v.producaoPecas, ref: histSel.producao        },
-    { label: "GMROI",                 plan: v.gmroi,         ref: histSel.gmroi           },
-  ]
+  // Col 2 + Col 3 rows — order follows activeDefs, then the rest
+  const { allPlanRows, refRows, planSplitAt, refSplitAt } = useMemo(() => {
+    const planBase = [
+      { key: "receitaBruta",  label: "Receita (R$)",       plan: v.receitaBruta,  ref: histSel.receita        },
+      { key: "margemBruta",   label: "Margem Bruta (%)",   plan: v.margemBruta,   ref: histSel.margemBruta     },
+      { key: "pmv",           label: "PMV (R$)",           plan: v.pmv,           ref: histSel.pmv             },
+      { key: "otbCompra",     label: "OTB (R$)",           plan: v.otbCompra,     ref: histSel.otb             },
+      { key: "giro",          label: "Giro",               plan: v.giro,          ref: histSel.giro            },
+      { key: "cobertura",     label: "Cobertura (dias)",   plan: v.cobertura,     ref: histSel.cobertura       },
+      { key: "producaoPecas", label: "Produção (peças)",   plan: v.producaoPecas, ref: histSel.producao        },
+      { key: "estoqueMedio",  label: "Estoque Médio (R$)", plan: v.estoqueMedio,  ref: histSel.estoqueMedioRS  },
+      { key: "mkdRS",         label: "Markdown (R$)",      plan: v.mkdRS,         ref: histSel.markdown        },
+      { key: "gmroi",         label: "GMROI",              plan: v.gmroi,         ref: histSel.gmroi           },
+    ]
 
-  // Reference year rows (Col 3)
-  const refRows = [
-    { label: "Receita (R$)",          value: histSel.receita,           fmt: "currency"   },
-    { label: "Margem Bruta (%)",       value: histSel.margemBruta,       fmt: "percent"    },
-    { label: "PMV (R$)",               value: histSel.pmv,               fmt: "currency"   },
-    { label: "OTB (R$)",               value: histSel.otb,               fmt: "currency"   },
-    { label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
-    { label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
-    { label: "Giro",                   value: histSel.giro,              fmt: "multiplier" },
-    { label: "Cobertura (dias)",       value: histSel.cobertura,         fmt: "days"       },
-    { label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },
-    { label: "Produção (peças)",       value: histSel.producao,          fmt: "number"     },
-    { label: "GMROI",                  value: histSel.gmroi,             fmt: "multiplier" },
-  ]
+    const refBase = [
+      { key: "receitaBruta",      label: "Receita (R$)",          value: histSel.receita,           fmt: "currency"   },
+      { key: "margemBruta",       label: "Margem Bruta (%)",       value: histSel.margemBruta,       fmt: "percent"    },
+      { key: "pmv",               label: "PMV (R$)",               value: histSel.pmv,               fmt: "currency"   },
+      { key: "otbCompra",         label: "OTB (R$)",               value: histSel.otb,               fmt: "currency"   },
+      { key: "giro",              label: "Giro",                   value: histSel.giro,              fmt: "multiplier" },
+      { key: "cobertura",         label: "Cobertura (dias)",       value: histSel.cobertura,         fmt: "days"       },
+      { key: "producaoPecas",     label: "Produção (peças)",       value: histSel.producao,          fmt: "number"     },
+      { key: "estoqueMedio",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
+      { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
+      { key: "mkdRS",             label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },
+      { key: "gmroi",             label: "GMROI",                  value: histSel.gmroi,             fmt: "multiplier" },
+    ]
+
+    const activeKeys = activeDefs.map(d => d.key)
+
+    const sort = <T extends { key: string }>(rows: T[]) => {
+      const selected = activeKeys.flatMap(k => { const r = rows.find(r => r.key === k); return r ? [r] : [] })
+      const others   = rows.filter(r => !activeKeys.includes(r.key))
+      return { sorted: [...selected, ...others], splitAt: selected.length }
+    }
+
+    const { sorted: allPlanRows, splitAt: planSplitAt } = sort(planBase)
+    const { sorted: refRows,     splitAt: refSplitAt   } = sort(refBase)
+
+    return { allPlanRows, refRows, planSplitAt, refSplitAt }
+  }, [v, histSel, activeDefs])
 
   const handleOpenSave = () => {
     setScenarioNameInput("")
@@ -595,17 +609,29 @@ export default function Planning() {
               <div className="space-y-0.5">
                 {allPlanRows.map((row, i) => {
                   const vRef = calcVar(row.plan, row.ref)
+                  const isFirstOther = planSplitAt > 0 && i === planSplitAt
                   return (
-                    <div key={i} className="grid grid-cols-12 gap-2 items-center py-2.5 border-b border-[#28071C]/5 last:border-0 hover:bg-[#7598CF]/4 rounded-lg px-1 transition-colors">
-                      <span className="col-span-5 text-[#28071C]/60 text-sm">{row.label}</span>
-                      <span className="col-span-4 text-[#28071C] text-right text-sm font-semibold">{fmtPlan(row.label, row.plan)}</span>
-                      <div className="col-span-3 flex items-center justify-end gap-0.5">
-                        {row.plan !== null && <>
-                          <span className={`text-[11px] font-medium ${vRef >= 0 ? "text-emerald-600" : "text-red-600"}`}>{fmtVar(vRef)}</span>
-                          {vRef >= 0 ? <ArrowUp className="w-3 h-3 text-emerald-600" /> : <ArrowDown className="w-3 h-3 text-red-600" />}
-                        </>}
+                    <>
+                      {isFirstOther && (
+                        <div key={`sep-${i}`} className="flex items-center gap-2 pt-3 pb-1 px-1">
+                          <div className="flex-1 h-px bg-[#28071C]/8" />
+                          <span className="text-[9px] text-[#28071C]/30 uppercase tracking-widest font-semibold whitespace-nowrap">
+                            Demais indicadores
+                          </span>
+                          <div className="flex-1 h-px bg-[#28071C]/8" />
+                        </div>
+                      )}
+                      <div key={row.key} className="grid grid-cols-12 gap-2 items-center py-2.5 border-b border-[#28071C]/5 last:border-0 hover:bg-[#7598CF]/4 rounded-lg px-1 transition-colors">
+                        <span className={`col-span-5 text-sm ${i < planSplitAt ? "text-[#28071C]/70" : "text-[#28071C]/40"}`}>{row.label}</span>
+                        <span className={`col-span-4 text-right text-sm font-semibold ${i < planSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtPlan(row.label, row.plan)}</span>
+                        <div className="col-span-3 flex items-center justify-end gap-0.5">
+                          {row.plan !== null && <>
+                            <span className={`text-[11px] font-medium ${vRef >= 0 ? "text-emerald-600" : "text-red-600"}`}>{fmtVar(vRef)}</span>
+                            {vRef >= 0 ? <ArrowUp className="w-3 h-3 text-emerald-600" /> : <ArrowDown className="w-3 h-3 text-red-600" />}
+                          </>}
+                        </div>
                       </div>
-                    </div>
+                    </>
                   )
                 })}
               </div>
@@ -669,25 +695,36 @@ export default function Planning() {
             <div className="p-4">
               <div className="space-y-0">
                 {refRows.map((item, i) => {
-                  // Find matching plan row for delta
-                  const planRow = allPlanRows.find(r => r.label === item.label)
+                  const planRow = allPlanRows.find(r => r.key === item.key)
                   const delta = planRow?.plan != null
                     ? ((planRow.plan - item.value) / item.value) * 100
                     : null
+                  const isFirstOther = refSplitAt > 0 && i === refSplitAt
 
                   return (
-                    <div key={i} className="flex justify-between items-center py-2.5 border-b border-[#28071C]/6 last:border-0">
-                      <div>
-                        <span className="text-[#28071C]/60 text-sm">{item.label}</span>
-                        {delta !== null && (
-                          <div className={`flex items-center gap-0.5 text-[10px] font-semibold mt-0.5 ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {delta >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
-                            Plano {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
-                          </div>
-                        )}
+                    <>
+                      {isFirstOther && (
+                        <div key={`sep-${i}`} className="flex items-center gap-2 pt-3 pb-1">
+                          <div className="flex-1 h-px bg-[#28071C]/8" />
+                          <span className="text-[9px] text-[#28071C]/30 uppercase tracking-widest font-semibold whitespace-nowrap">
+                            Demais
+                          </span>
+                          <div className="flex-1 h-px bg-[#28071C]/8" />
+                        </div>
+                      )}
+                      <div key={item.key} className="flex justify-between items-center py-2.5 border-b border-[#28071C]/6 last:border-0">
+                        <div>
+                          <span className={`text-sm ${i < refSplitAt ? "text-[#28071C]/70" : "text-[#28071C]/40"}`}>{item.label}</span>
+                          {delta !== null && (
+                            <div className={`flex items-center gap-0.5 text-[10px] font-semibold mt-0.5 ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {delta >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
+                              Plano {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
+                            </div>
+                          )}
+                        </div>
+                        <span className={`text-sm font-medium font-mono ${i < refSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtRef(item.value, item.fmt)}</span>
                       </div>
-                      <span className="text-[#28071C] text-sm font-medium font-mono">{fmtRef(item.value, item.fmt)}</span>
-                    </div>
+                    </>
                   )
                 })}
               </div>
