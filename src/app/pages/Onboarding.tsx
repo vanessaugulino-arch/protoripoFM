@@ -387,7 +387,7 @@ export default function Onboarding() {
                           >
                             {ERP_PRODUCT_HIERARCHY.map(erpLevel => (
                               <option key={erpLevel.id} value={erpLevel.label}>
-                                {erpLevel.label} — ex: {erpLevel.example}
+                                {erpLevel.label}
                               </option>
                             ))}
                             <option value="Não utilizado">Não utilizado neste negócio</option>
