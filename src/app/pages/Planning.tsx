@@ -173,7 +173,7 @@ export default function Planning() {
 
   const {
     current, isDirty, activeScenario, scenarios,
-    setField, unlock, saveScenario, reset,
+    setField, unlock, saveScenario, loadScenario, reset,
   } = usePlanningEngine(year, baseline)
 
   const v = current.values
@@ -211,9 +211,8 @@ export default function Planning() {
       keys.map(k => editableDefs.find(d => d.key === k)).filter(Boolean) as FieldDef[]
 
     const activeDefs = byKey(activeKeys)
-    const unassigned = editableDefs.filter(d => !activeKeys.includes(d.key))
 
-    return { activeDefs: [...activeDefs, ...unassigned], calcDefs }
+    return { activeDefs, calcDefs }
   }, [fieldPriorities])
 
   // ── Field meta helpers ───────────────────────────────────────────────────
@@ -618,18 +617,29 @@ export default function Planning() {
             <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-[#28071C]/8">
                 <h3 className="text-[#28071C] font-semibold text-base">Cenários Salvos</h3>
+                <p className="text-[#28071C]/40 text-xs mt-0.5">Clique em um cenário para carregá-lo e depois aplicar as metas</p>
               </div>
               <div className="p-5 flex flex-wrap gap-3">
-                {scenarios.map((sc, i) => (
-                  <div key={i} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm border-2 transition-all ${
-                    activeScenario?.name === sc.name
-                      ? "bg-[#7598CF]/10 border-[#7598CF] text-[#28071C] font-semibold"
-                      : "bg-white border-[#28071C]/10 text-[#28071C]/60"
-                  }`}>
-                    {activeScenario?.name === sc.name && <CheckCircle className="w-3.5 h-3.5 text-[#7598CF]" />}
-                    {sc.name}
-                  </div>
-                ))}
+                {scenarios.map((sc, i) => {
+                  const isActive = activeScenario?.name === sc.name
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => loadScenario(sc)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm border-2 transition-all cursor-pointer ${
+                        isActive
+                          ? "bg-[#7598CF]/10 border-[#7598CF] text-[#28071C] font-semibold"
+                          : "bg-white border-[#28071C]/10 text-[#28071C]/60 hover:border-[#7598CF]/40 hover:text-[#28071C] hover:bg-[#7598CF]/5"
+                      }`}
+                    >
+                      {isActive
+                        ? <CheckCircle className="w-3.5 h-3.5 text-[#7598CF]" />
+                        : <Star className="w-3 h-3 opacity-30" />
+                      }
+                      {sc.name}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
