@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { 
-  ArrowLeft, 
-  LogOut, 
+import {
+  ArrowLeft,
+  LogOut,
   User,
   DollarSign,
   TrendingUp,
@@ -15,7 +15,8 @@ import {
   Settings,
   Home,
   Download,
-  X
+  X,
+  Info,
 } from "lucide-react";
 import {
   BarChart,
@@ -35,6 +36,37 @@ interface User {
   name: string;
   email: string;
   profile: string;
+}
+
+interface KpiCardProps {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  subtext: string;
+  subtextColor?: string;
+  tooltip: string;
+}
+
+function KpiCard({ icon, label, value, subtext, subtextColor, tooltip }: KpiCardProps) {
+  return (
+    <div className="bg-white rounded-xl p-6 shadow-sm relative group">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center space-x-2">
+          {icon}
+          <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">{label}</p>
+        </div>
+        <Info className="w-3.5 h-3.5 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors flex-shrink-0" />
+      </div>
+      <p className="text-[#28071C] text-3xl font-bold">{value}</p>
+      <p className={`${subtextColor ?? "text-[#28071C]/60"} text-sm mt-1`}>{subtext}</p>
+
+      {/* Tooltip */}
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 bg-[#28071C] text-white text-xs rounded-xl px-3.5 py-2.5 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed">
+        {tooltip}
+        <div className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-[#28071C]" />
+      </div>
+    </div>
+  );
 }
 
 export default function Tracking() {
@@ -181,41 +213,35 @@ export default function Tracking() {
       <main className="max-w-[1600px] mx-auto px-6 py-8">
         {/* KPI Cards Row 1 */}
         <div className="grid grid-cols-4 gap-6 mb-6">
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <DollarSign className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Vendas Acumuladas</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 1.240.000</p>
-            <p className="text-green-600 text-sm mt-1">Meta: R$ 2.100.000</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <TrendingUp className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Margem Bruta Acumulada</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 548.080</p>
-            <p className="text-[#28071C]/60 text-sm mt-1">44.2% da receita</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <ShoppingBag className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Preço Médio da Coleção</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 179</p>
-            <p className="text-[#28071C]/60 text-sm mt-1">Por peça</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <Calendar className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Ritmo de Vendas</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 28.400</p>
-            <p className="text-[#28071C]/60 text-sm mt-1">/dia</p>
-          </div>
+          <KpiCard
+            icon={<DollarSign className="w-5 h-5 text-[#28071C]/70" />}
+            label="Vendas Acumuladas"
+            value="R$ 1.240.000"
+            subtext="Meta: R$ 2.100.000"
+            subtextColor="text-green-600"
+            tooltip="Faturamento bruto total desde o início da coleção. Compara o realizado com a meta planejada para o período."
+          />
+          <KpiCard
+            icon={<TrendingUp className="w-5 h-5 text-[#28071C]/70" />}
+            label="Margem Bruta Acumulada"
+            value="R$ 548.080"
+            subtext="44.2% da receita"
+            tooltip="Valor que sobra das vendas após deduzir o custo das mercadorias vendidas (CMV). Quanto maior, mais rentável a coleção."
+          />
+          <KpiCard
+            icon={<ShoppingBag className="w-5 h-5 text-[#28071C]/70" />}
+            label="Preço Médio da Coleção"
+            value="R$ 179"
+            subtext="Por peça"
+            tooltip="Valor médio de venda por peça (PMV). Impacta diretamente a margem bruta e a quantidade de peças necessária para atingir o plano de receita."
+          />
+          <KpiCard
+            icon={<Calendar className="w-5 h-5 text-[#28071C]/70" />}
+            label="Ritmo de Vendas"
+            value="R$ 28.400"
+            subtext="/dia"
+            tooltip="Média diária de faturamento no período. Permite projetar se a meta de vendas será atingida até o encerramento da coleção."
+          />
         </div>
 
         {/* Sales Evolution Chart */}
@@ -262,41 +288,36 @@ export default function Tracking() {
 
         {/* KPI Cards Row 2 */}
         <div className="grid grid-cols-4 gap-6 mb-6">
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <Package className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Estoque Acumulado</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">6.820</p>
-            <p className="text-red-600 text-sm mt-1">peças</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <Box className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Pedidos + Produção em Carteira</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">31.000</p>
-            <p className="text-[#28071C]/60 text-sm mt-1">peças</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <Calendar className="w-5 h-5 text-[#28071C]/70" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Cobertura</p>
-            </div>
-            <p className="text-[#28071C] text-3xl font-bold">43</p>
-            <p className="text-[#28071C]/60 text-sm mt-1">dias</p>
-          </div>
-
-          <div className="bg-white rounded-xl p-6 shadow-sm">
-            <div className="flex items-center space-x-2 mb-2">
-              <AlertTriangle className="w-5 h-5 text-green-600" />
-              <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Expectativa Sobra/Falta</p>
-            </div>
-            <p className="text-green-600 text-3xl font-bold">+2.400</p>
-            <p className="text-green-600 text-sm mt-1">sobra de peças</p>
-          </div>
+          <KpiCard
+            icon={<Package className="w-5 h-5 text-[#28071C]/70" />}
+            label="Estoque Acumulado"
+            value="6.820"
+            subtext="peças"
+            subtextColor="text-red-600"
+            tooltip="Total de peças físicas disponíveis em estoque neste momento. Um estoque acima do planejado pode indicar necessidade de ação comercial, como promoções ou markdown."
+          />
+          <KpiCard
+            icon={<Box className="w-5 h-5 text-[#28071C]/70" />}
+            label="Pedidos + Produção em Carteira"
+            value="31.000"
+            subtext="peças"
+            tooltip="Soma das peças já pedidas a fornecedores ou em produção que ainda não chegaram ao estoque. Representa o estoque futuro comprometido e impacta o OTB disponível."
+          />
+          <KpiCard
+            icon={<Calendar className="w-5 h-5 text-[#28071C]/70" />}
+            label="Cobertura"
+            value="43"
+            subtext="dias"
+            tooltip="Quantos dias o estoque atual consegue suprir as vendas no ritmo corrente. O ideal para moda varia entre 30 e 60 dias — abaixo disso, risco de ruptura; acima, excesso de estoque."
+          />
+          <KpiCard
+            icon={<AlertTriangle className="w-5 h-5 text-green-600" />}
+            label="Expectativa Sobra/Falta"
+            value="+2.400"
+            subtext="sobra de peças"
+            subtextColor="text-green-600"
+            tooltip="Projeção de peças que sobrarão (positivo) ou faltarão (negativo) ao final da coleção, considerando o estoque atual, carteira de produção e ritmo de vendas. Orienta decisões de compra e ação comercial."
+          />
         </div>
 
         {/* Product Performance Chart */}
