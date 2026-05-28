@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown, Plus, X, AlertTriangle, Database, Layers } from 'lucide-react'
+import { ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown, Plus, X, AlertTriangle, Database, Layers, BookOpen, Lightbulb } from 'lucide-react'
 import {
   type SegmentId, type RawMaterialId, type OrigemPecas, type SalesChannelId,
   type OnboardingProfile,
@@ -8,6 +8,14 @@ import {
   ERP_PRODUCT_HIERARCHY, SALES_CHANNELS,
   ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
 } from '../types/onboarding'
+
+// ─── Hierarquia fixa do sistema (não alterável pelo usuário) ──────────────────
+const SYSTEM_HIERARCHY_INFO = [
+  { id: 'divisao',      label: 'Divisão',      example: 'Feminino / Masculino',     description: 'Nível mais alto — separa grandes grupos estratégicos de produto' },
+  { id: 'categoria',    label: 'Categoria',    example: 'Vestidos, Calças',          description: 'Tipo de produto dentro de uma divisão' },
+  { id: 'subcategoria', label: 'Subcategoria', example: 'Casual, Festa, Comprimento', description: 'Especificação dentro de uma categoria' },
+  { id: 'linha',        label: 'Linha',        example: 'Justa, Ampla, Básica',      description: 'Nível mais granular de diferenciação do produto' },
+]
 
 // ─── Ordem dos segmentos na UI ────────────────────────────────────────────────
 const ALL_SEGMENTS: SegmentId[] = [
@@ -31,27 +39,31 @@ function originRequiresImportQuestion(o: OrigemPecas | undefined): boolean {
 // ─── Step IDs ─────────────────────────────────────────────────────────────────
 type StepId =
   | 'segments'
-  | 'erp_structure'   // NOVO: validação da hierarquia de produtos do ERP
+  | 'structure_intro' // AJUSTE 1: tela explicativa intermediária
+  | 'erp_structure'   // AJUSTE 2: alinhamento dos níveis (hierarquia fixa)
   | 'materials'
   | 'origem'
   | 'import'          // condicional: apenas para produção própria / híbrido
   | 'export'
-  | 'channels'        // NOVO: canais de venda
+  | 'channels'
 
 const STEP_TITLES: Record<StepId, string> = {
-  segments:      'Segmentos de Produto',
-  erp_structure: 'Estrutura de Produtos',
-  materials:     'Matérias-Primas Relevantes',
-  origem:        'Origem das Peças',
-  import:        'Matéria-Prima Importada',
-  export:        'Exportação',
-  channels:      'Canais de Venda',
+  segments:        'Segmentos de Produto',
+  structure_intro: 'Organizando a inteligência do seu negócio',
+  erp_structure:   'Alinhamento da Estrutura de Produtos',
+  materials:       'Matérias-Primas Relevantes',
+  origem:          'Origem das Peças',
+  import:          'Matéria-Prima Importada',
+  export:          'Exportação',
+  channels:        'Canais de Venda',
 }
 
 function buildStepSequence(segments: SegmentId[], origem: OrigemPecas | undefined): StepId[] {
   const steps: StepId[] = ['segments']
-  // Validação ERP: exibida sempre que houver segmentos selecionados (simulação de divergência)
-  if (segments.length > 0) steps.push('erp_structure')
+  if (segments.length > 0) {
+    steps.push('structure_intro') // tela explicativa antes do alinhamento
+    steps.push('erp_structure')   // alinhamento da hierarquia
+  }
   steps.push('materials', 'origem')
   if (originRequiresImportQuestion(origem)) steps.push('import')
   steps.push('export', 'channels')
@@ -73,9 +85,9 @@ export default function Onboarding() {
   const [hasExport, setHasExport]             = useState<boolean | undefined>(undefined)
 
   // ── Novos dados ──
-  // Hierarquia de produtos: começa com a ordem do ERP, usuário pode reordenar
-  const [hierarchyLevels, setHierarchyLevels] = useState<string[]>(
-    ERP_PRODUCT_HIERARCHY.map(l => l.id)
+  // Mapeamento: para cada nível do sistema (fixo), qual campo do negócio corresponde
+  const [hierarchyMapping, setHierarchyMapping] = useState<string[]>(
+    ERP_PRODUCT_HIERARCHY.map(l => l.label) // sugestão automática do ERP
   )
   const [hierarchyConfirmed, setHierarchyConfirmed] = useState(false)
 
@@ -101,14 +113,15 @@ export default function Onboarding() {
   // ─── Validação por passo ────────────────────────────────────────────────────
   function canAdvance(): boolean {
     switch (currentStepId) {
-      case 'segments':      return segments.length > 0
-      case 'erp_structure': return hierarchyConfirmed
-      case 'materials':     return rankedMaterials.length > 0
-      case 'origem':        return origem !== undefined
-      case 'import':        return hasImport !== undefined
-      case 'export':        return hasExport !== undefined
-      case 'channels':      return selectedChannels.length > 0
-      default:              return true
+      case 'segments':        return segments.length > 0
+      case 'structure_intro': return true  // tela apenas informativa
+      case 'erp_structure':   return hierarchyConfirmed
+      case 'materials':       return rankedMaterials.length > 0
+      case 'origem':          return origem !== undefined
+      case 'import':          return hasImport !== undefined
+      case 'export':          return hasExport !== undefined
+      case 'channels':        return selectedChannels.length > 0
+      default:                return true
     }
   }
 
@@ -120,7 +133,7 @@ export default function Onboarding() {
       origem: origem!,
       hasImportedMaterial: originRequiresImportQuestion(origem) ? (hasImport ?? false) : false,
       exports: hasExport ?? false,
-      productHierarchy: hierarchyLevels,
+      productHierarchy: hierarchyMapping,
       salesChannels: selectedChannels,
       completedAt: new Date().toISOString(),
     }
@@ -167,26 +180,6 @@ export default function Onboarding() {
     })
   }
 
-  // ─── Helpers de hierarquia ────────────────────────────────────────────
-  function moveHierarchyUp(index: number) {
-    if (index === 0) return
-    setHierarchyLevels(prev => {
-      const next = [...prev]
-      ;[next[index - 1], next[index]] = [next[index], next[index - 1]]
-      return next
-    })
-    setHierarchyConfirmed(false)
-  }
-
-  function moveHierarchyDown(index: number) {
-    setHierarchyLevels(prev => {
-      if (index === prev.length - 1) return prev
-      const next = [...prev]
-      ;[next[index], next[index + 1]] = [next[index + 1], next[index]]
-      return next
-    })
-    setHierarchyConfirmed(false)
-  }
 
   // ─── Helpers de canais ────────────────────────────────────────────────
   function toggleChannel(id: SalesChannelId) {
@@ -276,95 +269,167 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── NOVO: Validação ERP – Estrutura de Produtos ───────────────────── */}
-          {currentStepId === 'erp_structure' && (
-            <div>
-              {/* Aviso de divergência ERP */}
-              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl mb-5">
-                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div className="text-xs text-amber-800">
-                  <strong>Divergência detectada:</strong> A estrutura de produtos do ERP possui{' '}
-                  <strong>4 níveis hierárquicos</strong> que precisam ser mapeados para o plano de coleção.
-                  Ajuste a ordem e confirme antes de continuar.
+          {/* ── AJUSTE 1: Tela explicativa intermediária ─────────────────────── */}
+          {currentStepId === 'structure_intro' && (
+            <div className="space-y-4">
+              {/* Conceito principal */}
+              <div className="flex items-start gap-3 p-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl">
+                <div className="w-8 h-8 rounded-lg bg-[#7598CF] flex items-center justify-center flex-shrink-0">
+                  <BookOpen className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <p className="text-[#28071C] text-sm font-semibold mb-1">
+                    Por que precisamos organizar a "árvore" do seu negócio?
+                  </p>
+                  <p className="text-[#28071C]/60 text-sm leading-relaxed">
+                    No nosso sistema, cada grupo de produtos é tratado como uma unidade estratégica.
+                    Essa organização permite planejar compras, produção, margens e evitar estoques parados,
+                    garantindo melhor retorno financeiro.
+                  </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 mb-3">
-                <Database className="w-4 h-4 text-[#7598CF]" />
-                <p className="text-[#28071C]/70 text-sm">
-                  Hierarquia de planejamento — arraste para reordenar os níveis (até 4 níveis)
+              {/* Os 4 níveis */}
+              <div>
+                <p className="text-[#28071C]/60 text-xs uppercase tracking-widest font-semibold mb-2.5">
+                  O sistema utiliza uma estrutura de até 4 níveis — do macro ao micro
+                </p>
+                <div className="space-y-2">
+                  {SYSTEM_HIERARCHY_INFO.map((level, idx) => (
+                    <div key={level.id} className="flex items-center gap-3 px-4 py-3 bg-white rounded-xl border border-[#28071C]/8">
+                      <div className="w-6 h-6 rounded-full bg-[#7598CF] text-white text-xs font-bold flex items-center justify-center flex-shrink-0">
+                        {idx + 1}
+                      </div>
+                      <div>
+                        <span className="text-sm font-semibold text-[#28071C]">{idx + 1}º Nível — {level.label}</span>
+                        <span className="text-sm text-[#28071C]/40 ml-2">ex: {level.example}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mensagem-chave */}
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <p className="text-sm text-emerald-800 leading-relaxed">
+                  <strong>Já analisamos sua base de dados e montamos uma estrutura inicial.</strong><br />
+                  Na próxima tela, você só precisa validar se ela faz sentido para a dinâmica da sua marca.
                 </p>
               </div>
 
-              <div className="space-y-2 mb-4">
-                {hierarchyLevels.map((levelId, idx) => {
-                  const level = ERP_PRODUCT_HIERARCHY.find(l => l.id === levelId)
-                  if (!level) return null
-                  return (
-                    <div
-                      key={levelId}
-                      className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-[#7598CF]/20 rounded-xl"
-                    >
-                      <div className="flex items-center justify-center w-6 h-6 rounded-full bg-[#7598CF] text-white text-xs font-bold flex-shrink-0">
+              {/* Dicas rápidas */}
+              <div className="p-4 bg-[#28071C]/4 rounded-xl">
+                <div className="flex items-center gap-1.5 mb-2.5">
+                  <Lightbulb className="w-3.5 h-3.5 text-[#28071C]/40" />
+                  <span className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Dicas rápidas</span>
+                </div>
+                {[
+                  'Pense em planejamento, não em cadastro',
+                  'Evite divisões excessivas',
+                  'Priorize blocos estratégicos que ajudem no giro e margem',
+                ].map(tip => (
+                  <div key={tip} className="flex items-start gap-2 text-sm text-[#28071C]/65 mb-1.5 last:mb-0">
+                    <span className="text-[#7598CF] font-bold flex-shrink-0 leading-5">•</span>
+                    <span>{tip}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── AJUSTE 2: Alinhamento de estrutura – hierarquia fixa ───────────── */}
+          {currentStepId === 'erp_structure' && (
+            <div>
+              {/* Premissa obrigatória: hierarquia do sistema é fixa */}
+              <div className="flex items-start gap-3 p-3 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl mb-4">
+                <div className="w-5 h-5 rounded-full bg-[#7598CF] flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-white text-[10px] font-bold">i</span>
+                </div>
+                <div className="text-xs text-[#28071C]/70 leading-relaxed">
+                  <strong className="text-[#28071C]">A hierarquia do sistema é fixa:</strong>{' '}
+                  Divisão → Categoria → Subcategoria → Linha. Você não reordena os níveis —
+                  apenas indica qual informação do seu negócio ocupa cada posição.
+                </div>
+              </div>
+
+              <p className="text-[#28071C]/60 text-sm mb-3">
+                Com base na sua base de dados, sugerimos o mapeamento abaixo. Confirme ou ajuste:
+              </p>
+
+              <div className="space-y-2.5 mb-4">
+                {SYSTEM_HIERARCHY_INFO.map((sysLevel, idx) => (
+                  <div key={sysLevel.id} className="bg-white border-2 border-[#7598CF]/20 rounded-xl p-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-full bg-[#7598CF] text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
                         {idx + 1}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-semibold text-[#28071C]">{level.label}</div>
-                        <div className="text-xs text-[#28071C]/50 truncate">Ex: {level.example}</div>
-                      </div>
-                      <div className="flex gap-0.5 flex-shrink-0">
-                        <button
-                          onClick={() => moveHierarchyUp(idx)}
-                          disabled={idx === 0}
-                          className="p-1 text-[#28071C]/40 hover:text-[#28071C] disabled:opacity-20 disabled:cursor-not-allowed rounded"
-                        >
-                          <ArrowUp className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => moveHierarchyDown(idx)}
-                          disabled={idx === hierarchyLevels.length - 1}
-                          className="p-1 text-[#28071C]/40 hover:text-[#28071C] disabled:opacity-20 disabled:cursor-not-allowed rounded"
-                        >
-                          <ArrowDown className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-sm font-bold text-[#28071C]">{sysLevel.label}</span>
+                          <span className="text-[10px] text-[#28071C]/35 bg-[#28071C]/5 px-2 py-0.5 rounded">
+                            nível fixo do sistema
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#28071C]/40 mb-2">{sysLevel.description}</p>
+                        <div>
+                          <label className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold block mb-1">
+                            Campo do seu negócio correspondente
+                          </label>
+                          <select
+                            value={hierarchyMapping[idx] ?? ''}
+                            onChange={e => {
+                              const updated = [...hierarchyMapping]
+                              updated[idx] = e.target.value
+                              setHierarchyMapping(updated)
+                              setHierarchyConfirmed(false)
+                            }}
+                            className="w-full px-3 py-2 bg-[#E7E7E6] border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
+                          >
+                            {ERP_PRODUCT_HIERARCHY.map(erpLevel => (
+                              <option key={erpLevel.id} value={erpLevel.label}>
+                                {erpLevel.label} — ex: {erpLevel.example}
+                              </option>
+                            ))}
+                            <option value="Não utilizado">Não utilizado neste negócio</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
-                  )
-                })}
+                  </div>
+                ))}
               </div>
 
-              {/* Relação pai/filho visual */}
-              <div className="bg-[#28071C]/5 rounded-xl p-3 mb-4">
+              {/* Preview da estrutura confirmada */}
+              <div className="bg-[#28071C]/5 rounded-xl p-3 mb-3">
                 <div className="flex items-center gap-1.5 mb-2">
                   <Layers className="w-3.5 h-3.5 text-[#28071C]/50" />
-                  <span className="text-xs text-[#28071C]/50 font-medium uppercase tracking-wide">Relação pai / filho</span>
+                  <span className="text-xs text-[#28071C]/50 font-medium uppercase tracking-wide">
+                    Estrutura que será utilizada
+                  </span>
                 </div>
                 <div className="flex items-center gap-1 flex-wrap">
-                  {hierarchyLevels.map((levelId, idx) => {
-                    const level = ERP_PRODUCT_HIERARCHY.find(l => l.id === levelId)
-                    return (
-                      <span key={levelId} className="flex items-center gap-1">
-                        <span className="text-xs font-medium text-[#28071C] bg-white px-2 py-0.5 rounded-md border border-[#28071C]/10">
-                          {level?.label}
-                        </span>
-                        {idx < hierarchyLevels.length - 1 && (
-                          <ChevronRight className="w-3 h-3 text-[#28071C]/30" />
-                        )}
+                  {SYSTEM_HIERARCHY_INFO.map((sysLevel, idx) => (
+                    <span key={sysLevel.id} className="flex items-center gap-1">
+                      <span className="text-xs font-medium text-[#28071C] bg-white px-2 py-0.5 rounded-md border border-[#28071C]/10">
+                        {hierarchyMapping[idx] || sysLevel.label}
                       </span>
-                    )
-                  })}
+                      {idx < SYSTEM_HIERARCHY_INFO.length - 1 && (
+                        <ChevronRight className="w-3 h-3 text-[#28071C]/30" />
+                      )}
+                    </span>
+                  ))}
                 </div>
               </div>
 
-              <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800">
-                <strong>Impacto controlado:</strong> Esta estrutura ajustada não altera o ERP.
-                Será usada como hierarquia oficial de planejamento nos Módulos 3 e 5.
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800 mb-3">
+                <strong>Impacto controlado:</strong> Esta estrutura não altera o ERP.
+                Será usada como hierarquia oficial de planejamento nos{' '}
+                <strong>Módulos 3 e 5</strong>.
               </div>
 
-              {/* Botão de confirmação explícita */}
               <button
                 onClick={() => setHierarchyConfirmed(true)}
-                className={`mt-4 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                   hierarchyConfirmed
                     ? 'bg-green-100 border-2 border-green-400 text-green-800'
                     : 'bg-[#7598CF]/10 border-2 border-[#7598CF]/40 text-[#28071C] hover:bg-[#7598CF]/20'

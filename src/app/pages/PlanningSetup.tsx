@@ -20,6 +20,35 @@ const ALL_FOCUSES: StrategicFocus[] = ["caixa", "margem", "crescimento", "defens
 const RECEITA_KEY = 'receitaBruta'
 const MAX_DISMISS  = 2
 
+// ─── AJUSTE 4: Tooltips explicativos dos indicadores (orientados a negócio) ──
+const INDICATOR_TOOLTIPS: Record<string, string> = {
+  receitaBruta:  'Volume total de vendas no período. Ponto de partida obrigatório — define o tamanho do mercado que você quer capturar.',
+  margemBruta:   'Percentual que sobra da receita após deduzir o custo dos produtos. Indica a eficiência do mix e da precificação.',
+  pmv:           'Preço médio pelo qual suas peças são vendidas. Impacta diretamente a margem e o posicionamento da marca.',
+  otbCompra:     'Orçamento disponível para comprar ou produzir mercadoria no período. Controla o nível de investimento em estoque.',
+  giro:          'Quantas vezes o estoque é renovado no período. Giro alto = menos capital parado, mais liquidez.',
+  cobertura:     'Quantos dias de estoque você tem disponível com base na velocidade de vendas atual. Cobertura alta pode indicar risco de estoque parado.',
+  producaoPecas: 'Volume total de peças planejadas para produção ou compra no período. Direciona o plano de coleção e os pedidos de compra.',
+  mkdPct:        'Percentual de desconto aplicado sobre o preço original. Controla o impacto do markdown na margem bruta.',
+  custoMedio:    'Custo médio por peça produzida ou comprada. Base para calcular o OTB e a margem bruta do período.',
+  gmroi:         'Mostra quanto de lucro bruto a empresa gera para cada real investido em produtos. GMROI > 1 significa retorno positivo sobre o estoque.',
+  mkdRS:         'Valor absoluto de desconto aplicado em reais. Complementa o percentual de markdown para entender o impacto financeiro real.',
+  totalPecas:    'Total de peças considerando produção própria e compras externas. Visão consolidada do volume do período.',
+}
+
+// ─── Componente tooltip inline ─────────────────────────────────────────────────
+function IndicatorTooltip({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex items-center ml-1">
+      <Info className="w-3 h-3 text-[#28071C]/20 group-hover:text-[#7598CF] cursor-help transition-colors" />
+      <span className="absolute left-0 bottom-full mb-2 w-60 p-2.5 bg-[#28071C] text-white text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-normal">
+        {text}
+        <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
+      </span>
+    </span>
+  )
+}
+
 interface LocationState { year: number }
 
 // ─── Status visual config ─────────────────────────────────────────────────────
@@ -287,6 +316,15 @@ export default function PlanningSetup() {
           {step === 2 && focus && (
             <div className="space-y-4">
 
+              {/* AJUSTE 5: Contextual guidance banner */}
+              <div className="flex items-start gap-3 p-3.5 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl">
+                <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-[#28071C]/70 leading-relaxed">
+                  <strong className="text-[#28071C]">Defina aqui os indicadores que irão guiar o ano fiscal.</strong>{' '}
+                  Você pode testar configurações diferentes, comparar alternativas e só confirmar quando estiver seguro da decisão.
+                </p>
+              </div>
+
               {/* Focus badge + instructions */}
               <div className="flex items-start justify-between gap-4 mb-2">
                 <div>
@@ -360,6 +398,7 @@ export default function PlanningSetup() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold text-[#28071C]">{ind.label}</span>
+                          {INDICATOR_TOOLTIPS[key] && <IndicatorTooltip text={INDICATOR_TOOLTIPS[key]} />}
                           {isReceita ? (
                             <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-[#28071C]/10 text-[#28071C]/70 border border-[#28071C]/20 flex items-center gap-0.5">
                               <Lock className="w-2.5 h-2.5" /> Obrigatório
@@ -502,6 +541,7 @@ export default function PlanningSetup() {
                             <p className={`text-sm font-medium ${isDismissed ? "text-[#28071C]/60" : "text-[#28071C]/50"}`}>
                               {ind.label}
                             </p>
+                            {INDICATOR_TOOLTIPS[key] && <IndicatorTooltip text={INDICATOR_TOOLTIPS[key]} />}
                             {isDismissed && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-50 text-red-500 border border-red-200">
                                 Removido conscientemente
