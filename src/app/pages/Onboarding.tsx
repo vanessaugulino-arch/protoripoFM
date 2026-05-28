@@ -74,6 +74,14 @@ function buildStepSequence(segments: SegmentId[], origem: OrigemPecas | undefine
 export default function Onboarding() {
   const navigate = useNavigate()
 
+  // ── Dev: reset onboarding on every mount so the form always shows ──
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      localStorage.removeItem(ONBOARDING_DONE_KEY)
+      localStorage.removeItem(ONBOARDING_PROFILE_KEY)
+    }
+  }, [])
+
   // ── Estado de navegação ──
   const [stepIndex, setStepIndex] = useState(0)
 

@@ -42,7 +42,7 @@ export default function Login() {
         navigate("/admin");
       } else {
         const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
-        if (onboardingDone === "true") {
+        if (!import.meta.env.DEV && onboardingDone === "true") {
           navigate("/dashboard");
         } else {
           navigate("/onboarding");
