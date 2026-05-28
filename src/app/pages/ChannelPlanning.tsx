@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
-  Check, X, AlertTriangle, CheckCircle2, Info, TrendingDown, Clock,
+  Check, X, AlertTriangle, CheckCircle2, Info, Clock,
 } from "lucide-react";
 import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
@@ -18,33 +18,27 @@ import type { ChannelScenario } from "../../services/channelScenarioService";
 interface UserData { name: string; email: string; profile: string }
 
 interface ChannelData {
-  // Revenue
   receita: number;           // computed: macroReceita × pct/100
   margemBrutaRS: number;     // computed: receita × margemBruta/100
   margemBruta: number;       // % — driver
-  // Pricing / volume
   pmv: number;               // R$ — driver
   ticketMedio: number;       // R$ — driver
   custoMedio: number;        // R$ — driver
-  // Stock
   giro: number;              // — driver
   cobertura: number;         // days — driver
   otb: number;               // computed: producao × custoMedio
-  estoqueMedioRS: number;    // computed: receita / giro (kept for internal calc)
-  estoqueMedioPecas: number; // computed (kept for internal calc)
-  // Markdown
+  estoqueMedioRS: number;    // computed: receita / giro
+  estoqueMedioPecas: number; // computed
   mkdPct: number;            // % — driver
   markdown: number;          // computed: receita × mkdPct/100
-  // Production
   producao: number;          // computed: receita / pmv
-  totalPecas: number;        // computed: same as producao in channel context
-  // Performance
+  totalPecas: number;        // computed: = producao
   gmroi: number;             // — driver
 }
 
 type ChannelId = "atacado" | "varejo" | "ecommerce";
 
-// ─── Mappings ─────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const CHANNEL_SALES_IDS: Record<ChannelId, SalesChannelId[]> = {
   atacado:   ["atacado"],
@@ -53,9 +47,7 @@ const CHANNEL_SALES_IDS: Record<ChannelId, SalesChannelId[]> = {
 };
 
 const CHANNEL_LABELS: Record<ChannelId, string> = {
-  atacado:   "Atacado",
-  varejo:    "Varejo",
-  ecommerce: "E-commerce",
+  atacado: "Atacado", varejo: "Varejo", ecommerce: "E-commerce",
 };
 
 const MACRO_FIELD_LABELS: Record<string, string> = {
@@ -72,18 +64,51 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
   custoMedio:    "Custo Médio (R$)",
 };
 
-// Rate-based macro fields: tolerance in percentage points, not %
 const RATE_MACRO_FIELDS = new Set(["margemBruta", "mkdPct", "giro", "cobertura", "gmroi"]);
 
-// Driver fields: constant when revenue scales; trigger applyRevenue on edit
 const DRIVER_FIELDS = new Set<keyof ChannelData>([
   "margemBruta", "pmv", "ticketMedio", "custoMedio", "giro", "cobertura", "mkdPct", "gmroi",
 ]);
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// AJUSTE 4: macro key → corresponding channel ChannelData key (for ordering + impact)
+const MACRO_TO_CHANNEL: Partial<Record<string, keyof ChannelData>> = {
+  receitaBruta:  "receita",
+  margemBruta:   "margemBruta",
+  pmv:           "pmv",
+  ticketMedio:   "ticketMedio",
+  producaoPecas: "producao",
+  otbCompra:     "otb",
+  mkdPct:        "mkdPct",
+  giro:          "giro",
+  cobertura:     "cobertura",
+  gmroi:         "gmroi",
+  custoMedio:    "custoMedio",
+};
+
+// AJUSTE 2: for driver fields, is a HIGHER value better for the macro goal?
+const HIGHER_IS_BETTER: Partial<Record<keyof ChannelData, boolean>> = {
+  margemBruta: true, giro: true, gmroi: true, ticketMedio: true, pmv: true,
+  cobertura:   false, // lower is safer (less stock risk)
+  mkdPct:      false, // lower is better (less discount)
+  custoMedio:  false, // lower is better
+};
+
+// AJUSTE 5: tooltip for computed (non-driver) fields explaining the relationship
+const COMPUTED_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
+  margemBrutaRS:     "Calculado: Receita × Margem Bruta %. Para alterar, edite a Margem Bruta (%).",
+  otb:               "Calculado: Peças × Custo Médio. Para alterar, edite o Custo Médio.",
+  estoqueMedioRS:    "Calculado: Receita ÷ Giro. Para alterar, edite o Giro.",
+  estoqueMedioPecas: "Calculado: Estoque Médio (R$) ÷ PMV.",
+  producao:          "Calculado: Receita ÷ PMV. Para alterar o volume, ajuste o PMV ou a participação.",
+  totalPecas:        "Total de peças = Produção do canal (Receita ÷ PMV).",
+  markdown:          "Calculado: Receita × MKD%. Para alterar o valor em R$, edite o MKD%.",
+  receita:           "Controlado pela participação (%) × Receita Total do plano macro.",
+};
+
+// ─── Pure functions ────────────────────────────────────────────────────────────
 
 function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
-  const otbRate        = data.receita > 0 ? data.otb / data.receita : data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365;
+  const otbRate        = data.receita > 0 ? data.otb / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365);
   const estoqueMedioRS = data.giro > 0 ? Math.round(newReceita / data.giro) : 0;
   const producao       = data.pmv > 0 ? Math.round(newReceita / data.pmv) : 0;
   return {
@@ -143,15 +168,12 @@ export default function ChannelPlanning() {
     } else navigate("/");
   }, [navigate]);
 
-  const profile = getStoredProfile();
-
-  // ── Year / cycle ─────────────────────────────────────────────────────────────
+  const profile      = getStoredProfile();
   const plannedYears = getPlannedYears();
   const defaultYear  = plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1;
-  const [selectedYear, setSelectedYear] = useState<number>(defaultYear);
+  const [selectedYear, setSelectedYear]   = useState<number>(defaultYear);
   const [reviewedYears, setReviewedYears] = useState<number[]>(() => getChannelReviewedYears());
 
-  // ── Macro plan ────────────────────────────────────────────────────────────────
   const planCycle    = getPlanCycle(selectedYear);
   const macroValues: Record<string, unknown> | null = planCycle?.versions?.[0]?.values ?? null;
   const macroReceita: number = (macroValues?.receitaBruta as number | null) ?? 3_120_000;
@@ -163,37 +185,34 @@ export default function ChannelPlanning() {
       .map(fp => fp.key);
   }, [planCycle]);
 
-  // ── Visible channels ──────────────────────────────────────────────────────────
   const visibleChannels = useMemo((): ChannelId[] => {
     const all: ChannelId[] = ["atacado", "varejo", "ecommerce"];
     if (!profile?.salesChannels?.length) return all;
     return all.filter(ch => CHANNEL_SALES_IDS[ch].some(id => profile!.salesChannels.includes(id)));
   }, [profile]);
 
-  // ── Channel state ─────────────────────────────────────────────────────────────
   const [percents, setPercents]       = useState<Record<ChannelId, number>>(INIT_PERCENTS);
   const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(() => initChannelData(macroReceita));
 
   useEffect(() => {
-    const plan     = getPlanCycle(selectedYear);
+    const plan      = getPlanCycle(selectedYear);
     const newMacroR = (plan?.versions?.[0]?.values?.receitaBruta as number | null) ?? 3_120_000;
     setChannelData(initChannelData(newMacroR));
     setPercents(INIT_PERCENTS);
     setSavedScenarios(listChannelScenarios(selectedYear));
   }, [selectedYear]);
 
-  // ── Scenario state ────────────────────────────────────────────────────────────
-  const [savedScenarios, setSavedScenarios]       = useState<ChannelScenario[]>(() => listChannelScenarios(selectedYear));
-  const [showSaveDialog, setShowSaveDialog]       = useState(false);
-  const [saveNameInput, setSaveNameInput]         = useState("");
-  const [toast, setToast]                         = useState<string | null>(null);
-  const [showCompareModal, setShowCompareModal]   = useState(false);
+  // Scenarios
+  const [savedScenarios, setSavedScenarios]         = useState<ChannelScenario[]>(() => listChannelScenarios(selectedYear));
+  const [showSaveDialog, setShowSaveDialog]         = useState(false);
+  const [saveNameInput, setSaveNameInput]           = useState("");
+  const [toast, setToast]                           = useState<string | null>(null);
+  const [showCompareModal, setShowCompareModal]     = useState(false);
   const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
-  // ── Handlers ──────────────────────────────────────────────────────────────────
-
+  // Handlers
   const handlePercentChange = (ch: ChannelId, newPct: number) => {
     setPercents(prev => ({ ...prev, [ch]: newPct }));
     setChannelData(prev => ({ ...prev, [ch]: applyRevenue(prev[ch], Math.round(macroReceita * newPct / 100)) }));
@@ -209,18 +228,15 @@ export default function ChannelPlanning() {
   };
 
   const handleConfirmSave = () => {
-    const sc = saveChannelScenario(
-      selectedYear, saveNameInput,
-      { percents, channelData: channelData as unknown as Record<string, Record<string, number>> }
-    );
+    const sc = saveChannelScenario(selectedYear, saveNameInput,
+      { percents, channelData: channelData as unknown as Record<string, Record<string, number>> });
     setSavedScenarios(listChannelScenarios(selectedYear));
-    setShowSaveDialog(false);
-    setSaveNameInput("");
+    setShowSaveDialog(false); setSaveNameInput("");
     showToast(`Cenário "${sc.name}" salvo.`);
   };
 
   const handleExport = () => {
-    if (savedScenarios.length === 0) { showToast("Salve ao menos um cenário antes de exportar."); return; }
+    if (!savedScenarios.length) { showToast("Salve ao menos um cenário antes de exportar."); return; }
     exportChannelScenarios(selectedYear, savedScenarios);
     showToast("Exportação iniciada.");
   };
@@ -234,93 +250,79 @@ export default function ChannelPlanning() {
   const handleCompare = () => {
     const sel = savedScenarios.filter(sc => selectedForCompare.includes(sc.id));
     const summary = sel.map(sc => {
-      const totalR = visibleChannels.reduce((s, ch) => {
-        const d = sc.data.channelData[ch] as { receita?: number } | undefined;
-        return s + (d?.receita ?? 0);
-      }, 0);
-      const wMargem = visibleChannels.reduce((s, ch) => {
-        const d = sc.data.channelData[ch] as { receita?: number; margemBruta?: number } | undefined;
-        return s + (d?.receita ?? 0) * (d?.margemBruta ?? 0);
-      }, 0);
-      return { name: sc.name, receita: totalR, margemBruta: totalR > 0 ? wMargem / totalR : 0 };
+      const totalR = visibleChannels.reduce((s, ch) => s + ((sc.data.channelData[ch] as { receita?: number })?.receita ?? 0), 0);
+      const wM = visibleChannels.reduce((s, ch) => s + ((sc.data.channelData[ch] as { receita?: number; margemBruta?: number })?.receita ?? 0) * ((sc.data.channelData[ch] as { margemBruta?: number })?.margemBruta ?? 0), 0);
+      return { name: sc.name, receita: totalR, margem: totalR > 0 ? wM / totalR : 0 };
     });
-    alert(`Comparação:\n\n${summary.map(s => `${s.name}\nReceita: R$ ${Math.round(s.receita).toLocaleString("pt-BR")} | Margem: ${s.margemBruta.toFixed(1)}%`).join("\n\n")}`);
-    setShowCompareModal(false);
-    setSelectedForCompare([]);
+    alert(`Comparação:\n\n${summary.map(s => `${s.name}\nReceita: R$ ${Math.round(s.receita).toLocaleString("pt-BR")} | Margem: ${s.margem.toFixed(1)}%`).join("\n\n")}`);
+    setShowCompareModal(false); setSelectedForCompare([]);
   };
 
   // ── Consolidated ──────────────────────────────────────────────────────────────
   const consolidated = useMemo(() => {
-    const channels    = visibleChannels.map(ch => channelData[ch]);
-    const totalReceita = channels.reduce((s, c) => s + c.receita, 0);
-    const w = (fn: (c: ChannelData) => number) =>
-      totalReceita > 0 ? channels.reduce((s, c) => s + c.receita * fn(c), 0) / totalReceita : 0;
-    const totalMarkdown  = channels.reduce((s, c) => s + c.markdown, 0);
-    const totalProducao  = channels.reduce((s, c) => s + c.producao, 0);
+    const chs = visibleChannels.map(ch => channelData[ch]);
+    const totalR = chs.reduce((s, c) => s + c.receita, 0);
+    const w = (fn: (c: ChannelData) => number) => totalR > 0 ? chs.reduce((s, c) => s + c.receita * fn(c), 0) / totalR : 0;
+    const totalMkd = chs.reduce((s, c) => s + c.markdown, 0);
+    const totalProd = chs.reduce((s, c) => s + c.producao, 0);
     return {
-      receita:           totalReceita,
-      margemBrutaRS:     Math.round(totalReceita * w(c => c.margemBruta) / 100),
+      receita:           totalR,
+      margemBrutaRS:     Math.round(totalR * w(c => c.margemBruta) / 100),
       margemBruta:       +w(c => c.margemBruta).toFixed(1),
       pmv:               +w(c => c.pmv).toFixed(0),
       ticketMedio:       +w(c => c.ticketMedio).toFixed(0),
       custoMedio:        +w(c => c.custoMedio).toFixed(0),
       giro:              +w(c => c.giro).toFixed(2),
       cobertura:         +w(c => c.cobertura).toFixed(0),
-      otb:               channels.reduce((s, c) => s + c.otb, 0),
-      estoqueMedioRS:    channels.reduce((s, c) => s + c.estoqueMedioRS, 0),
-      estoqueMedioPecas: channels.reduce((s, c) => s + c.estoqueMedioPecas, 0),
-      mkdPct:            +(totalReceita > 0 ? (totalMarkdown / totalReceita) * 100 : 0).toFixed(1),
-      markdown:          totalMarkdown,
-      producao:          totalProducao,
-      totalPecas:        totalProducao,
+      otb:               chs.reduce((s, c) => s + c.otb, 0),
+      estoqueMedioRS:    chs.reduce((s, c) => s + c.estoqueMedioRS, 0),
+      estoqueMedioPecas: chs.reduce((s, c) => s + c.estoqueMedioPecas, 0),
+      mkdPct:            +(totalR > 0 ? (totalMkd / totalR) * 100 : 0).toFixed(1),
+      markdown:          totalMkd,
+      producao:          totalProd,
+      totalPecas:        totalProd,
       gmroi:             +w(c => c.gmroi).toFixed(2),
     };
   }, [channelData, visibleChannels]);
 
-  // ── Macro impact ──────────────────────────────────────────────────────────────
+  // ── Macro impact (AJUSTE 1/2/6) ───────────────────────────────────────────────
   const visibleTotalPct = visibleChannels.reduce((s, ch) => s + percents[ch], 0);
 
   const impactedMacro = useMemo(() => {
-    if (!macroValues || visibleTotalPct !== 100 || activeMacroKeys.length === 0) return [];
+    if (!macroValues || visibleTotalPct !== 100 || !activeMacroKeys.length) return [];
     const projected: Record<string, number> = {
-      receitaBruta:  consolidated.receita,
-      margemBruta:   consolidated.margemBruta,
-      pmv:           consolidated.pmv,
-      ticketMedio:   consolidated.ticketMedio,
-      producaoPecas: consolidated.producao,
-      otbCompra:     consolidated.otb,
-      mkdPct:        consolidated.mkdPct,
-      giro:          consolidated.giro,
-      cobertura:     consolidated.cobertura,
-      gmroi:         consolidated.gmroi,
-      custoMedio:    consolidated.custoMedio,
+      receitaBruta: consolidated.receita, margemBruta: consolidated.margemBruta,
+      pmv: consolidated.pmv, ticketMedio: consolidated.ticketMedio,
+      producaoPecas: consolidated.producao, otbCompra: consolidated.otb,
+      mkdPct: consolidated.mkdPct, giro: consolidated.giro,
+      cobertura: consolidated.cobertura, gmroi: consolidated.gmroi,
+      custoMedio: consolidated.custoMedio,
     };
-    return activeMacroKeys
-      .filter(key => {
-        const planned = macroValues[key] as number | null;
-        const proj    = projected[key];
-        if (planned == null || proj == null) return false;
-        const gapPct = Math.abs((proj - planned) / Math.abs(planned)) * 100;
-        return gapPct > (RATE_MACRO_FIELDS.has(key) ? 0.5 : 2.0);
-      })
-      .map(key => ({
-        key,
-        label:     MACRO_FIELD_LABELS[key] ?? key,
-        planned:   macroValues[key] as number,
-        projected: projected[key],
-        gap:       projected[key] - (macroValues[key] as number),
-        isRate:    RATE_MACRO_FIELDS.has(key),
-      }));
+    return activeMacroKeys.filter(key => {
+      const planned = macroValues[key] as number | null;
+      const proj    = projected[key];
+      if (planned == null || proj == null) return false;
+      return Math.abs((proj - planned) / Math.abs(planned)) * 100 > (RATE_MACRO_FIELDS.has(key) ? 0.5 : 2.0);
+    }).map(key => ({
+      key, label: MACRO_FIELD_LABELS[key] ?? key,
+      planned: macroValues[key] as number,
+      projected: projected[key],
+      gap: projected[key] - (macroValues[key] as number),
+      isRate: RATE_MACRO_FIELDS.has(key),
+    }));
   }, [activeMacroKeys, macroValues, consolidated, visibleTotalPct]);
 
-  const mainImpactChannel = useMemo(() => {
-    if (!impactedMacro.some(i => i.key === "margemBruta" && i.gap < 0)) return null;
-    const worst = visibleChannels.reduce<{ ch: ChannelId; score: number } | null>((acc, ch) => {
-      const score = channelData[ch].receita * (consolidated.margemBruta - channelData[ch].margemBruta);
-      return !acc || score < acc.score ? { ch, score } : acc;
-    }, null);
-    return worst && worst.score < 0 ? CHANNEL_LABELS[worst.ch] : null;
-  }, [impactedMacro, visibleChannels, channelData, consolidated.margemBruta]);
+  // AJUSTE 2: per-channel impact — is this channel's value for this field pulling the avg the wrong way?
+  const isChannelDragging = (ch: ChannelId, fieldKey: keyof ChannelData): boolean => {
+    const macroKey = Object.entries(MACRO_TO_CHANNEL).find(([, ck]) => ck === fieldKey)?.[0];
+    if (!macroKey) return false;
+    const item = impactedMacro.find(i => i.key === macroKey);
+    if (!item) return false;
+    const chVal = channelData[ch][fieldKey] as number;
+    const higherBetter = HIGHER_IS_BETTER[fieldKey];
+    if (higherBetter === undefined) return false;
+    return higherBetter ? chVal < item.planned : chVal > item.planned;
+  };
 
   if (!user) return null;
 
@@ -329,23 +331,40 @@ export default function ChannelPlanning() {
   const hasMacroCheck = activeMacroKeys.length > 0 && macroValues != null;
   const isPending     = plannedYears.includes(selectedYear) && !reviewedYears.includes(selectedYear);
 
-  // ── KPI fields — exact list per spec ─────────────────────────────────────────
-  const kpiFields: Array<{ label: string; key: keyof ChannelData; format: string; isDriver: boolean }> = [
-    { label: "Receita Bruta (R$)",   key: "receita",       format: "currency",   isDriver: false },
-    { label: "Margem Bruta (R$)",    key: "margemBrutaRS", format: "currency",   isDriver: false },
-    { label: "Margem Bruta (%)",     key: "margemBruta",   format: "percent",    isDriver: true  },
-    { label: "PMV (R$)",             key: "pmv",           format: "currency",   isDriver: true  },
-    { label: "Ticket Médio (R$)",    key: "ticketMedio",   format: "currency",   isDriver: true  },
-    { label: "Giro",                 key: "giro",          format: "multiplier", isDriver: true  },
-    { label: "Cobertura (dias)",     key: "cobertura",     format: "days",       isDriver: true  },
-    { label: "OTB (custo) (R$)",     key: "otb",           format: "currency",   isDriver: false },
-    { label: "Produção (peças)",     key: "producao",      format: "number",     isDriver: false },
-    { label: "MKD (%)",              key: "mkdPct",        format: "percent",    isDriver: true  },
-    { label: "MKD (R$)",             key: "markdown",      format: "currency",   isDriver: false },
-    { label: "Total Peças",          key: "totalPecas",    format: "number",     isDriver: false },
-    { label: "GMROI",                key: "gmroi",         format: "multiplier", isDriver: true  },
-    { label: "Custo Médio (R$)",     key: "custoMedio",    format: "currency",   isDriver: true  },
+  // ── KPI field definitions ─────────────────────────────────────────────────────
+  const kpiFieldsBase: Array<{
+    label: string; key: keyof ChannelData; format: string;
+    isDriver: boolean; macroKey?: string;
+  }> = [
+    { label: "Receita Bruta (R$)",   key: "receita",       format: "currency",   isDriver: false, macroKey: "receitaBruta"  },
+    { label: "Margem Bruta (R$)",    key: "margemBrutaRS", format: "currency",   isDriver: false, macroKey: "margemBruta"   },
+    { label: "Margem Bruta (%)",     key: "margemBruta",   format: "percent",    isDriver: true,  macroKey: "margemBruta"   },
+    { label: "PMV (R$)",             key: "pmv",           format: "currency",   isDriver: true,  macroKey: "pmv"           },
+    { label: "Ticket Médio (R$)",    key: "ticketMedio",   format: "currency",   isDriver: true,  macroKey: "ticketMedio"   },
+    { label: "Giro",                 key: "giro",          format: "multiplier", isDriver: true,  macroKey: "giro"          },
+    { label: "Cobertura (dias)",     key: "cobertura",     format: "days",       isDriver: true,  macroKey: "cobertura"     },
+    { label: "OTB (custo) (R$)",     key: "otb",           format: "currency",   isDriver: false, macroKey: "otbCompra"     },
+    { label: "Produção (peças)",     key: "producao",      format: "number",     isDriver: false, macroKey: "producaoPecas" },
+    { label: "MKD (%)",              key: "mkdPct",        format: "percent",    isDriver: true,  macroKey: "mkdPct"        },
+    { label: "MKD (R$)",             key: "markdown",      format: "currency",   isDriver: false                           },
+    { label: "Total Peças",          key: "totalPecas",    format: "number",     isDriver: false                           },
+    { label: "GMROI",                key: "gmroi",         format: "multiplier", isDriver: true,  macroKey: "gmroi"         },
+    { label: "Custo Médio (R$)",     key: "custoMedio",    format: "currency",   isDriver: true,  macroKey: "custoMedio"    },
   ];
+
+  // AJUSTE 4: Sort — macro focus indicators first (in activeMacroKeys order), then secondary
+  const macroKeyOrder = new Map<string, number>(activeMacroKeys.map((k, i) => [k, i]));
+
+  const kpiFields = useMemo(() => {
+    return [...kpiFieldsBase].sort((a, b) => {
+      const ra = a.macroKey != null && macroKeyOrder.has(a.macroKey) ? macroKeyOrder.get(a.macroKey)! * 2 : 999;
+      const rb = b.macroKey != null && macroKeyOrder.has(b.macroKey) ? macroKeyOrder.get(b.macroKey)! * 2 : 999;
+      // margemBrutaRS stays adjacent to margemBruta
+      const ra2 = a.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : ra;
+      const rb2 = b.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : rb;
+      return ra2 - rb2;
+    });
+  }, [activeMacroKeys]);
 
   const fmt = (value: number, format: string) => {
     switch (format) {
@@ -357,44 +376,33 @@ export default function ChannelPlanning() {
     }
   };
 
-  const fmtMacroGap = (item: typeof impactedMacro[0]) => {
-    if (item.isRate) return `${item.gap > 0 ? "+" : ""}${item.gap.toFixed(1)} p.p.`;
-    return `${((item.gap / Math.abs(item.planned)) * 100) > 0 ? "+" : ""}${((item.gap / Math.abs(item.planned)) * 100).toFixed(1)}%`;
-  };
+  const consolidatedKpi = (key: keyof ChannelData): number =>
+    ({ receita: consolidated.receita, margemBrutaRS: consolidated.margemBrutaRS,
+       margemBruta: consolidated.margemBruta, pmv: consolidated.pmv,
+       ticketMedio: consolidated.ticketMedio, custoMedio: consolidated.custoMedio,
+       giro: consolidated.giro, cobertura: consolidated.cobertura,
+       otb: consolidated.otb, estoqueMedioRS: consolidated.estoqueMedioRS,
+       estoqueMedioPecas: consolidated.estoqueMedioPecas, mkdPct: consolidated.mkdPct,
+       markdown: consolidated.markdown, producao: consolidated.producao,
+       totalPecas: consolidated.totalPecas, gmroi: consolidated.gmroi,
+    } as Record<keyof ChannelData, number>)[key] ?? 0;
 
-  const fmtMacroVal = (val: number, key: string) => {
-    if (["margemBruta", "mkdPct"].includes(key)) return `${val.toFixed(1)}%`;
-    if (["giro", "gmroi"].includes(key))         return val.toFixed(2);
-    if (key === "cobertura")                     return `${Math.round(val)} dias`;
-    if (key === "producaoPecas")                 return `${Math.round(val).toLocaleString("pt-BR")} pç`;
-    return `R$ ${Math.round(val).toLocaleString("pt-BR")}`;
-  };
-
-  const consolidatedKpi = (key: keyof ChannelData): number => ({
-    receita: consolidated.receita,           margemBrutaRS: consolidated.margemBrutaRS,
-    margemBruta: consolidated.margemBruta,   pmv: consolidated.pmv,
-    ticketMedio: consolidated.ticketMedio,   custoMedio: consolidated.custoMedio,
-    giro: consolidated.giro,                 cobertura: consolidated.cobertura,
-    otb: consolidated.otb,                   estoqueMedioRS: consolidated.estoqueMedioRS,
-    estoqueMedioPecas: consolidated.estoqueMedioPecas,
-    mkdPct: consolidated.mkdPct,             markdown: consolidated.markdown,
-    producao: consolidated.producao,         totalPecas: consolidated.totalPecas,
-    gmroi: consolidated.gmroi,
-  } as Record<keyof ChannelData, number>)[key] ?? 0;
-
-  // Maps channel KPI key → macro plan key for impact highlighting
+  // Is this consolidated field off-target?
   const CHANNEL_TO_MACRO: Partial<Record<keyof ChannelData, string>> = {
-    otb:          "otbCompra",
-    producao:     "producaoPecas",
-    totalPecas:   "producaoPecas",
-    margemBrutaRS:"margemBruta",
+    otb: "otbCompra", producao: "producaoPecas", totalPecas: "producaoPecas", margemBrutaRS: "margemBruta",
   };
-  const isKpiImpacted = (key: keyof ChannelData) => {
+  const isConsolidatedImpacted = (key: keyof ChannelData) => {
     const mk = CHANNEL_TO_MACRO[key] ?? (key as string);
     return impactedMacro.some(i => i.key === mk);
   };
 
-  const gridStyle = { gridTemplateColumns: `160px repeat(${visibleChannels.length + 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `155px repeat(${visibleChannels.length + 1}, 1fr)` };
+
+  // AJUSTE 5: conflict tooltip for non-driver fields
+  const getFieldTooltip = (key: keyof ChannelData, isDriver: boolean): string | undefined => {
+    if (!isDriver) return COMPUTED_TOOLTIP[key];
+    return undefined;
+  };
 
   return (
     <div className="min-h-screen w-full bg-[#E7E7E6]">
@@ -406,8 +414,8 @@ export default function ChannelPlanning() {
         </div>
       )}
 
-      {/* ── HEADER ────────────────────────────────────────────────────────────── */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      {/* ── HEADER (sticky) ──────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
@@ -433,10 +441,10 @@ export default function ChannelPlanning() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-8 space-y-5">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
 
-        {/* ── Orientation message + year selector (PARTE A + B) ────────────── */}
-        <div className="bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-5 py-4">
+        {/* ── Orientation + year selector ───────────────────────────────────── */}
+        <div className="bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-5 py-4 mb-4">
           <div className="flex items-start gap-3 mb-3">
             <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
             <p className="text-sm text-[#28071C]/70 leading-relaxed">
@@ -444,28 +452,17 @@ export default function ChannelPlanning() {
               {" "}Ajuste participação e drivers por canal, salve versões alternativas e aplique as metas quando estiver seguro.
             </p>
           </div>
-
-          {/* Year / cycle selector — immediately below the orientation text */}
-          <div className="flex items-center gap-3 pl-7">
-            <label className="text-xs text-[#28071C]/50 font-semibold uppercase tracking-widest whitespace-nowrap">
-              Ciclo de Planejamento:
-            </label>
+          <div className="flex items-center gap-3 pl-7 flex-wrap">
+            <label className="text-xs text-[#28071C]/50 font-semibold uppercase tracking-widest whitespace-nowrap">Ciclo:</label>
             {plannedYears.length > 0 ? (
-              <select
-                value={selectedYear}
-                onChange={e => setSelectedYear(Number(e.target.value))}
-                className="bg-white border-2 border-[#7598CF]/30 text-[#28071C] font-semibold text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#7598CF] cursor-pointer"
-              >
+              <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}
+                className="bg-white border-2 border-[#7598CF]/30 text-[#28071C] font-semibold text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#7598CF] cursor-pointer">
                 {plannedYears.map(y => (
-                  <option key={y} value={y}>
-                    {y}{!reviewedYears.includes(y) ? " — revisão pendente" : " ✓"}
-                  </option>
+                  <option key={y} value={y}>{y}{!reviewedYears.includes(y) ? " — revisão pendente" : " ✓"}</option>
                 ))}
               </select>
             ) : (
-              <span className="text-sm font-semibold text-[#28071C]/60">
-                {selectedYear} — nenhum plano macro encontrado
-              </span>
+              <span className="text-sm font-semibold text-[#28071C]/60">{selectedYear} — nenhum plano macro encontrado</span>
             )}
             {macroValues && (
               <span className="text-xs text-[#7598CF] bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-full px-3 py-1 font-medium">
@@ -475,9 +472,78 @@ export default function ChannelPlanning() {
           </div>
         </div>
 
-        {/* ── Aviso: sem plano macro ──────────────────────────────────────────── */}
+        {/* ── STICKY: Participation + Banner (AJUSTE 3) ─────────────────────── */}
+        <div className="sticky top-[72px] z-30 space-y-3 mb-5">
+
+          {/* Participation cards */}
+          <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-md border-t-4 border-[#7598CF] overflow-hidden">
+            <div className="px-5 py-2.5 border-b border-[#28071C]/8 flex items-center justify-between">
+              <div>
+                <span className="text-[#28071C] font-bold text-xs uppercase tracking-wide">Distribuição por Canal</span>
+                <span className="text-[#28071C]/40 text-xs ml-3">Receita Total: R$ {macroReceita.toLocaleString("pt-BR")}</span>
+              </div>
+              {totalPercent === 100
+                ? <span className="flex items-center gap-1 text-emerald-700 text-xs font-semibold"><CheckCircle2 className="w-3.5 h-3.5" />100% ✓</span>
+                : <span className="flex items-center gap-1 text-red-600 text-xs"><X className="w-3.5 h-3.5" />{totalPercent}% — deve somar 100%</span>
+              }
+            </div>
+            <div className="px-5 py-3">
+              <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${visibleChannels.length}, 1fr)` }}>
+                {visibleChannels.map(ch => (
+                  <div key={ch} className="bg-[#7598CF]/5 border border-[#7598CF]/20 rounded-xl px-3 py-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[#28071C]/55 text-xs font-semibold uppercase tracking-widest">{CHANNEL_LABELS[ch]}</span>
+                      <span className="text-[10px] text-[#28071C]/35 font-mono">R$ {Math.round(macroReceita * percents[ch] / 100).toLocaleString("pt-BR")}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input type="number" min={0} max={100} value={percents[ch]}
+                        onChange={e => handlePercentChange(ch, Number(e.target.value))}
+                        className="flex-1 text-center text-[#28071C] text-lg font-bold focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 rounded-lg px-2 py-1 border-2 border-[#7598CF]/15 bg-white"
+                      />
+                      <span className="text-[#28071C]/40 font-bold">%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* AJUSTE 1: Compact impact banner — names only, no values */}
+          {hasMacroCheck && totalPercent === 100 && (
+            <div className={`rounded-xl px-4 py-3 border flex items-start gap-3 ${macroOk ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-300"}`}>
+              {macroOk ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  <p className="text-emerald-800 text-sm font-medium">
+                    Todos os indicadores macro do plano estão sendo atingidos com a distribuição atual.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-red-800 text-sm font-medium">
+                      A distribuição por canal impacta indicadores macro do plano.
+                      Ajuste os indicadores destacados abaixo para recuperar a meta.
+                    </p>
+                    {/* AJUSTE 1: just names, no values */}
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {impactedMacro.map(item => (
+                        <span key={item.key} className="text-[11px] bg-red-100 text-red-700 border border-red-200 rounded-full px-2 py-0.5 font-semibold">
+                          {item.label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Aviso: sem plano macro ────────────────────────────────────────── */}
         {!macroValues && (
-          <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 mb-5">
             <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-amber-800">
               Nenhum cenário salvo no Módulo 1 para <strong>{selectedYear}</strong>.
@@ -486,174 +552,135 @@ export default function ChannelPlanning() {
           </div>
         )}
 
-        {/* ── SEÇÃO 1: Distribuição por Canal ──────────────────────────────── */}
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4 border-[#7598CF]">
-          <div className="px-5 py-3 border-b border-[#28071C]/8">
-            <h2 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">Distribuição por Canal</h2>
-            <p className="text-[#28071C]/40 text-xs mt-0.5">
-              Participação na Receita Total de R$ {macroReceita.toLocaleString("pt-BR")} · ajuste recalcula tudo automaticamente
-            </p>
-          </div>
-
-          <div className="px-5 py-4">
-            {/* Compact participation cards */}
-            <div className="grid gap-4 mb-3" style={{ gridTemplateColumns: `repeat(${visibleChannels.length}, 1fr)` }}>
-              {visibleChannels.map(ch => (
-                <div key={ch} className="bg-white rounded-xl px-4 py-3 shadow-sm border border-[#7598CF]/20">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[#28071C]/55 text-xs font-semibold uppercase tracking-widest">{CHANNEL_LABELS[ch]}</span>
-                    <span className="text-[10px] text-[#28071C]/35 font-mono">
-                      R$ {Math.round(macroReceita * percents[ch] / 100).toLocaleString("pt-BR")}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number" min={0} max={100} value={percents[ch]}
-                      onChange={e => handlePercentChange(ch, Number(e.target.value))}
-                      className="flex-1 text-center text-[#28071C] text-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 rounded-lg px-2 py-1.5 border-2 border-[#7598CF]/15 bg-[#7598CF]/4"
-                    />
-                    <span className="text-[#28071C]/50 font-bold text-lg">%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center justify-center gap-2">
-              {totalPercent === 100
-                ? <><CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /><span className="text-emerald-700 text-xs font-semibold">Total: 100% ✓</span></>
-                : <><X className="w-3.5 h-3.5 text-red-500" /><span className="text-red-600 text-xs">Total: {totalPercent}% — deve somar 100%</span></>
-              }
-            </div>
-          </div>
-        </div>
-
-        {/* ── SEÇÃO 2: Impact banner (PARTE D) ─────────────────────────────── */}
-        {hasMacroCheck && totalPercent === 100 && (
-          <div className={`rounded-2xl p-5 border-2 ${macroOk ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-300"}`}>
-            {macroOk ? (
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
-                <div>
-                  <p className="text-emerald-800 font-semibold text-sm">Plano macro em dia</p>
-                  <p className="text-emerald-700/70 text-xs mt-0.5">Todos os indicadores selecionados estão dentro da meta com a distribuição atual.</p>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="flex items-start gap-3 mb-4">
-                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-red-800 font-semibold text-sm">A distribuição por canal impactou a entrega do plano macro.</p>
-                    <p className="text-red-700/70 text-xs mt-0.5">
-                      Ajuste os drivers por canal (MKD%, margem, ticket médio, PMV) para recuperar as metas.
-                      {mainImpactChannel && <span className="ml-1 font-medium">Impacto principal vindo do canal {mainImpactChannel}.</span>}
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {impactedMacro.map(item => (
-                    <div key={item.key} className="bg-white/70 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <TrendingDown className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
-                        <span className="text-[#28071C] text-sm font-medium truncate">{item.label}</span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs flex-shrink-0 font-mono">
-                        <span className="text-[#28071C]/60">Projetado: <strong className="text-[#28071C]">{fmtMacroVal(item.projected, item.key)}</strong></span>
-                        <span className="text-[#28071C]/40">vs meta</span>
-                        <span className="text-[#28071C]/80 font-semibold">{fmtMacroVal(item.planned, item.key)}</span>
-                        <span className={`font-bold px-1.5 py-0.5 rounded text-xs ${item.gap < 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
-                          {fmtMacroGap(item)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ── SEÇÃO 3: Simulador de Canais ─────────────────────────────────── */}
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4 border-[#F6F3AA]">
-          <div className="px-5 py-3 border-b border-[#28071C]/8 flex items-start justify-between">
+        {/* ── Simulator grid (AJUSTE 2: per-row highlighting) ──────────────── */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4 border-[#F6F3AA] mb-5">
+          <div className="px-5 py-3 border-b border-[#28071C]/8 flex items-center justify-between">
             <div>
               <h2 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">Indicadores por Canal</h2>
               <p className="text-[#28071C]/40 text-xs mt-0.5">
-                <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[#7598CF]/60 inline-block" />borda azul</span>
-                {" "}= driver editável — altera o valor e recalcula os demais automaticamente.
-                {" "}Campos calculados são atualizados em tempo real.
+                <span className="inline-flex items-center gap-1 mr-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#7598CF] inline-block" />driver editável
+                </span>
+                <span className="inline-flex items-center gap-1 mr-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#28071C]/20 inline-block" />calculado
+                </span>
+                {!macroOk && <span className="inline-flex items-center gap-1 text-red-600">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />canal contribuindo negativamente
+                </span>}
               </p>
             </div>
+            {activeMacroKeys.length > 0 && (
+              <span className="text-[10px] bg-[#7598CF]/10 text-[#7598CF] border border-[#7598CF]/20 rounded-full px-2 py-0.5 font-semibold">
+                Indicadores foco no topo
+              </span>
+            )}
           </div>
 
-          <div className="p-5 overflow-x-auto">
-            <div className="grid gap-2 min-w-[560px]" style={gridStyle}>
+          <div className="p-4 overflow-x-auto">
+            <div className="grid gap-1.5 min-w-[520px]" style={gridStyle}>
 
-              {/* Header row */}
-              <div className="flex items-center px-3 bg-[#28071C]/5 rounded-lg h-10">
+              {/* Header */}
+              <div className="flex items-center px-2.5 bg-[#28071C]/5 rounded-lg h-9">
                 <span className="text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold">Indicador</span>
               </div>
               {visibleChannels.map(ch => (
-                <div key={ch} className="flex items-center justify-center bg-[#7598CF] rounded-lg h-10">
+                <div key={ch} className="flex items-center justify-center bg-[#7598CF] rounded-lg h-9">
                   <span className="text-white text-xs font-semibold uppercase tracking-wide">{CHANNEL_LABELS[ch]}</span>
                 </div>
               ))}
-              <div className="flex items-center justify-center bg-[#28071C] rounded-lg h-10">
+              <div className="flex items-center justify-center bg-[#28071C] rounded-lg h-9">
                 <span className="text-white text-[10px] font-semibold uppercase tracking-widest">Consolidado</span>
               </div>
 
-              {/* KPI rows */}
-              {kpiFields.map(field => (
-                <>
-                  {/* Label */}
-                  <div key={`lbl-${field.key}`} className="flex items-center gap-1.5 px-3 bg-white/50 rounded-lg h-11">
-                    {field.isDriver && <span className="w-1.5 h-1.5 rounded-full bg-[#7598CF]/60 flex-shrink-0" />}
-                    <span className="text-[#28071C]/60 text-xs leading-tight">{field.label}</span>
-                  </div>
+              {/* KPI rows — AJUSTE 4: sorted by macro priority, AJUSTE 2: highlighted */}
+              {kpiFields.map((field, idx) => {
+                const isMacroFocus = field.macroKey != null && macroKeyOrder.has(field.macroKey);
+                const isLastFocus  = isMacroFocus && (idx === kpiFields.length - 1 || !macroKeyOrder.has(kpiFields[idx + 1]?.macroKey ?? ""));
+                const fieldTooltip = getFieldTooltip(field.key, field.isDriver);
+                const consImpacted = isConsolidatedImpacted(field.key);
 
-                  {/* Channel cells */}
-                  {visibleChannels.map(ch => (
-                    <div key={`${ch}-${field.key}`}
-                      className={`flex items-center px-2.5 rounded-lg h-11 border ${
-                        field.isDriver
-                          ? "bg-white border-[#7598CF]/40 ring-1 ring-[#7598CF]/10"
-                          : "bg-[#28071C]/3 border-[#28071C]/8"
-                      } ${isKpiImpacted(field.key) && !field.isDriver ? "border-red-200 bg-red-50/40" : ""}`}
-                    >
-                      {field.isDriver ? (
-                        <input type="text"
-                          value={fmt(channelData[ch][field.key], field.format)}
-                          onChange={e => handleDriverChange(ch, field.key, e.target.value)}
-                          className="w-full bg-transparent text-[#28071C] text-xs font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40 rounded px-0.5"
-                        />
-                      ) : (
-                        <span className="text-[#28071C]/55 text-xs font-mono">{fmt(channelData[ch][field.key], field.format)}</span>
+                return (
+                  <>
+                    {/* Divider after last macro-focus row */}
+                    {isLastFocus && (
+                      <div key={`div-${field.key}`} className="col-span-full my-0.5">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-px bg-[#28071C]/10" />
+                          <span className="text-[9px] text-[#28071C]/30 uppercase tracking-widest font-semibold whitespace-nowrap">Indicadores secundários</span>
+                          <div className="flex-1 h-px bg-[#28071C]/10" />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Label */}
+                    <div key={`lbl-${field.key}`} className={`relative flex items-center gap-1.5 px-2.5 rounded-lg h-10 ${isMacroFocus ? "bg-[#7598CF]/6" : "bg-white/50"}`}>
+                      {field.isDriver
+                        ? <span className="w-1.5 h-1.5 rounded-full bg-[#7598CF] flex-shrink-0" />
+                        : <span className="w-1.5 h-1.5 rounded-full bg-[#28071C]/20 flex-shrink-0" />
+                      }
+                      <span className="text-[#28071C]/65 text-xs leading-tight">{field.label}</span>
+                      {/* AJUSTE 5: tooltip for non-driver fields */}
+                      {fieldTooltip && (
+                        <span className="relative group ml-auto flex-shrink-0">
+                          <Info className="w-3 h-3 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors cursor-help" />
+                          <span className="absolute left-0 bottom-full mb-2 w-52 px-3 py-2 bg-[#28071C] text-white text-[10px] rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-normal">
+                            {fieldTooltip}
+                            <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
+                          </span>
+                        </span>
                       )}
                     </div>
-                  ))}
 
-                  {/* Consolidated cell */}
-                  <div key={`cons-${field.key}`}
-                    className={`flex items-center px-2.5 rounded-lg h-11 border ${
-                      hasMacroCheck && isKpiImpacted(field.key) ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"
-                    }`}
-                  >
-                    <span className="text-[#28071C] text-xs font-semibold font-mono">{fmt(consolidatedKpi(field.key), field.format)}</span>
-                  </div>
-                </>
-              ))}
+                    {/* Channel cells */}
+                    {visibleChannels.map(ch => {
+                      const dragging = field.isDriver && isChannelDragging(ch, field.key);
+                      return (
+                        <div key={`${ch}-${field.key}`}
+                          className={`flex items-center px-2.5 rounded-lg h-10 border transition-colors ${
+                            dragging
+                              ? "bg-red-50 border-red-300 ring-1 ring-red-200"
+                              : field.isDriver
+                                ? "bg-white border-[#7598CF]/35 ring-1 ring-[#7598CF]/10"
+                                : "bg-[#28071C]/3 border-[#28071C]/8"
+                          }`}
+                        >
+                          {field.isDriver ? (
+                            <input type="text"
+                              value={fmt(channelData[ch][field.key], field.format)}
+                              onChange={e => handleDriverChange(ch, field.key, e.target.value)}
+                              className={`w-full bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
+                            />
+                          ) : (
+                            <span className="text-[#28071C]/55 text-xs font-mono">{fmt(channelData[ch][field.key], field.format)}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Consolidated cell */}
+                    <div key={`cons-${field.key}`}
+                      className={`flex items-center px-2.5 rounded-lg h-10 border ${consImpacted ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"}`}
+                    >
+                      <span className={`text-xs font-semibold font-mono ${consImpacted ? "text-red-700" : "text-[#28071C]"}`}>
+                        {fmt(consolidatedKpi(field.key), field.format)}
+                      </span>
+                    </div>
+                  </>
+                );
+              })}
             </div>
           </div>
         </div>
 
-        {/* ── SEÇÃO 4: Cenários salvos ──────────────────────────────────────── */}
+        {/* ── Cenários salvos ───────────────────────────────────────────────── */}
         {savedScenarios.length > 0 && (
-          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden mb-5">
             <div className="px-5 py-3 border-b border-[#28071C]/8">
               <h3 className="text-[#28071C] font-semibold text-sm">Cenários Salvos — {selectedYear}</h3>
             </div>
-            <div className="px-5 py-4 flex flex-wrap gap-2">
+            <div className="px-5 py-3 flex flex-wrap gap-2">
               {savedScenarios.map(sc => (
-                <div key={sc.id} className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border-2 bg-white border-[#28071C]/10 text-[#28071C]/65">
+                <div key={sc.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 bg-white border-[#28071C]/10 text-[#28071C]/65">
                   <Check className="w-3 h-3 text-[#7598CF]" />
                   <span className="font-medium">{sc.name}</span>
                   <span className="text-[10px] text-[#28071C]/30">{new Date(sc.savedAt).toLocaleDateString("pt-BR")}</span>
@@ -663,42 +690,41 @@ export default function ChannelPlanning() {
           </div>
         )}
 
-        {/* ── SEÇÃO 5: Barra de ações ────────────────────────────────────────── */}
+        {/* ── Barra de ações ────────────────────────────────────────────────── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm px-5 py-4">
           <div className="flex items-center justify-between">
             <div className="flex gap-3">
               <button onClick={() => { setSaveNameInput(""); setShowSaveDialog(true); }}
-                className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl font-semibold text-sm hover:opacity-90 transition-all shadow-sm">
+                className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl font-semibold text-sm hover:opacity-90 shadow-sm">
                 <Save className="w-4 h-4" />Salvar cenário
               </button>
               <button onClick={() => { setSelectedForCompare([]); setShowCompareModal(true); }}
                 disabled={savedScenarios.length < 2}
-                title={savedScenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : ""}
-                className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl font-semibold text-sm hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all">
+                className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl font-semibold text-sm hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed">
                 <GitCompare className="w-4 h-4" />Comparar
                 {savedScenarios.length >= 2 && <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{savedScenarios.length}</span>}
               </button>
-              <button onClick={handleExport} disabled={savedScenarios.length === 0}
-                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-all">
+              <button onClick={handleExport} disabled={!savedScenarios.length}
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
                 <Download className="w-4 h-4" />Exportar
               </button>
             </div>
             <button onClick={handleApplyMetas}
               disabled={totalPercent !== 100 || !macroOk}
               title={totalPercent !== 100 ? "Participação deve somar 100%" : !macroOk ? "Indicadores macro fora da meta" : "Aplicar metas e concluir revisão"}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-sm ${
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
                 totalPercent === 100 && macroOk ? "bg-emerald-600 text-white hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
               }`}>
               <Lock className="w-4 h-4" />Aplicar Metas
             </button>
           </div>
           <p className="text-[9px] text-[#28071C]/25 mt-2">
-            Cenários não alteram dados oficiais até "Aplicar Metas" ser acionado. Metas aplicadas marcam o ciclo como revisado por canal.
+            Cenários não alteram dados oficiais até "Aplicar Metas" ser acionado.
           </p>
         </div>
       </main>
 
-      {/* ── SAVE DIALOG ────────────────────────────────────────────────────── */}
+      {/* ── SAVE DIALOG ──────────────────────────────────────────────────────── */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl px-8 py-6 w-[420px] mx-4">
@@ -722,7 +748,7 @@ export default function ChannelPlanning() {
         </div>
       )}
 
-      {/* ── COMPARE MODAL ──────────────────────────────────────────────────── */}
+      {/* ── COMPARE MODAL ────────────────────────────────────────────────────── */}
       {showCompareModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full mx-4">
@@ -734,8 +760,7 @@ export default function ChannelPlanning() {
                 return (
                   <label key={sc.id} className={`flex items-center gap-3 cursor-pointer p-3 rounded-xl border-2 transition-colors ${isSel ? "border-[#7598CF] bg-[#7598CF]/6" : "border-transparent hover:bg-gray-50"}`}>
                     <input type="checkbox" className="w-4 h-4 accent-[#7598CF]" checked={isSel}
-                      onChange={e => setSelectedForCompare(prev => e.target.checked ? [...prev, sc.id] : prev.filter(id => id !== sc.id))}
-                    />
+                      onChange={e => setSelectedForCompare(prev => e.target.checked ? [...prev, sc.id] : prev.filter(id => id !== sc.id))} />
                     <div className="flex-1">
                       <p className="text-[#28071C] text-sm font-semibold">{sc.name}</p>
                       <p className="text-[#28071C]/40 text-xs">{new Date(sc.savedAt).toLocaleString("pt-BR")}</p>
