@@ -302,6 +302,30 @@ export default function Planning() {
     setScenarioNameInput("")
   }
 
+  const handleExportScenarios = () => {
+    if (scenarios.length === 0) {
+      alert("Nenhum cenário salvo para exportar. Salve ao menos um cenário primeiro.")
+      return
+    }
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      year,
+      focus,
+      scenarios: scenarios.map(sc => ({
+        name:    sc.name,
+        savedAt: sc.savedAt,
+        values:  sc.state.values,
+      })),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement("a")
+    a.href     = url
+    a.download = `cenarios_${year}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const handleApplyMetas = () => {
     if (!activeScenario) {
       alert("Salve um cenário antes de aplicar as metas.")
@@ -862,7 +886,10 @@ export default function Planning() {
 
               {/* Exportar */}
               <button
-                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 transition-colors"
+                onClick={handleExportScenarios}
+                disabled={scenarios.length === 0}
+                title={scenarios.length === 0 ? "Salve ao menos um cenário para exportar" : "Exportar cenários como JSON"}
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
               >
                 <Download className="w-4 h-4" />
                 Exportar cenários
