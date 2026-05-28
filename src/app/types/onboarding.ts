@@ -86,10 +86,10 @@ export interface ProductHierarchyLevel {
 }
 
 export const ERP_PRODUCT_HIERARCHY: ProductHierarchyLevel[] = [
-  { id: 'grupo',     label: 'Grupo',     example: 'Feminino, Masculino, Infantil' },
-  { id: 'categoria', label: 'Categoria', example: 'Vestuário, Calçados, Acessórios' },
-  { id: 'linha',     label: 'Linha',     example: 'Básico, Casual, Premium' },
-  { id: 'produto',   label: 'Produto',   example: 'Referência / SKU' },
+  { id: 'grupo',     label: 'Grupo',     example: 'Feminino Adulto, Infantil' },
+  { id: 'categoria', label: 'Categoria', example: 'Vestido, Saia, Blusa, Calça' },
+  { id: 'linha',     label: 'Linha',     example: 'Festa, Casual, Trabalho' },
+  { id: 'produto',   label: 'Produto',   example: 'Curto, Longo, Justo, Amplo' },
 ]
 
 // ─── Canais de venda ──────────────────────────────────────────────────────────
