@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import { ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown, Plus, X, AlertTriangle, Database, Layers, BookOpen, Lightbulb } from 'lucide-react'
 import {
