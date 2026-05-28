@@ -8,7 +8,7 @@ import { isOnboardingComplete } from "../types/onboarding"
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_DESC, STRATEGIC_FOCUS_ICONS,
   STRATEGIC_FOCUS_COLORS, PLAN_INDICATORS, DEFAULT_PRIORITIES,
-  SUGGESTED_COUNT, MAX_UNLOCK, savePlanCycle,
+  SUGGESTED_COUNTS, MAX_UNLOCK, savePlanCycle,
 } from "../types/planCycle"
 import type {
   StrategicFocus, PlanFieldPriority, AnnualPlanCycle, FieldStatus,
@@ -87,10 +87,11 @@ export default function PlanningSetup() {
     setFocus(f)
     const allKeys = PLAN_INDICATORS.map(i => i.key)
     const ordered = DEFAULT_PRIORITIES[f]
-    let suggested = ordered.slice(0, SUGGESTED_COUNT)
+    const count = SUGGESTED_COUNTS[f]
+    let suggested = ordered.slice(0, count)
     // Receita é sempre obrigatória — garante presença na lista ativa
     if (!suggested.includes(RECEITA_KEY)) {
-      suggested = [RECEITA_KEY, ...suggested.slice(0, SUGGESTED_COUNT - 1)]
+      suggested = [RECEITA_KEY, ...suggested.slice(0, count - 1)]
     }
     const initStatuses: Record<string, FieldStatus> = {}
     for (const k of allKeys) {
@@ -118,7 +119,7 @@ export default function PlanningSetup() {
     [statuses],
   )
 
-  const systemSuggested = focus ? DEFAULT_PRIORITIES[focus].slice(0, SUGGESTED_COUNT) : []
+  const systemSuggested = focus ? DEFAULT_PRIORITIES[focus].slice(0, SUGGESTED_COUNTS[focus]) : []
   const isDiverged = useMemo(() => {
     if (activeOrder.length !== systemSuggested.length) return true
     return activeOrder.some((k, i) => k !== systemSuggested[i])
@@ -332,7 +333,7 @@ export default function PlanningSetup() {
                     {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
                   </div>
                   <p className="text-[#28071C]/55 text-sm leading-relaxed">
-                    O sistema selecionou <strong className="text-[#28071C]">{SUGGESTED_COUNT} indicadores</strong> com base no foco escolhido.
+                    O sistema selecionou <strong className="text-[#28071C]">{focus ? SUGGESTED_COUNTS[focus] : 0} indicadores</strong> com base no foco escolhido.
                     Você pode <strong className="text-violet-700">liberar até {MAX_UNLOCK} adicionais</strong>,{" "}
                     <strong className="text-red-600">remover até {MAX_DISMISS} sugeridos</strong> que não deseja planejar neste ciclo
                     (exceto receita) e marcar qualquer indicador ativo como <strong className="text-amber-600">⭐ Referência</strong>.

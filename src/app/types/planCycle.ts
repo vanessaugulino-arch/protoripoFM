@@ -40,23 +40,32 @@ export interface PlanIndicator {
 }
 
 export const PLAN_INDICATORS: PlanIndicator[] = [
-  { key: 'receitaBruta',  label: 'Receita Bruta',         description: 'Volume total de vendas' },
-  { key: 'margemBruta',   label: 'Margem Bruta',           description: 'Resultado após custo de produtos' },
-  { key: 'pmv',           label: 'PMV',                    description: 'Preço médio de venda' },
-  { key: 'otbCompra',     label: 'OTB de Compra',          description: 'Orçamento disponível para compras' },
-  { key: 'giro',          label: 'Giro de Estoque',        description: 'Velocidade de renovação do estoque' },
-  { key: 'cobertura',     label: 'Cobertura (dias)',        description: 'Dias de estoque disponível' },
-  { key: 'producaoPecas', label: 'Produção (peças)',        description: 'Volume total de peças produzidas' },
-  { key: 'mkdPct',        label: 'Markdown (%)',            description: 'Percentual de desconto aplicado' },
-  { key: 'custoMedio',    label: 'Custo Médio',            description: 'Custo médio por peça' },
+  { key: 'receitaBruta',  label: 'Receita Bruta',    description: 'Volume total de vendas' },
+  { key: 'margemBruta',   label: 'Margem Bruta (%)', description: 'Resultado após custo de produtos' },
+  { key: 'gmroi',         label: 'GMROI',            description: 'Retorno bruto sobre investimento em estoque' },
+  { key: 'pmv',           label: 'PMV (R$)',          description: 'Preço médio de venda' },
+  { key: 'otbCompra',     label: 'OTB (custo)',       description: 'Orçamento disponível para compras' },
+  { key: 'giro',          label: 'Giro de Estoque',  description: 'Velocidade de renovação do estoque' },
+  { key: 'cobertura',     label: 'Cobertura (dias)', description: 'Dias de estoque disponível' },
+  { key: 'producaoPecas', label: 'Produção (peças)', description: 'Volume total de peças produzidas' },
+  { key: 'mkdPct',        label: 'MKD %',            description: 'Percentual de desconto aplicado' },
+  { key: 'custoMedio',    label: 'Custo Médio',      description: 'Custo médio por peça' },
 ]
 
-// Default priority order per focus (keys from PLAN_INDICATORS)
+// Número de indicadores sugeridos por foco (inclui Receita Bruta)
+export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
+  caixa:       5, // receita + giro, cobertura, mkdPct, otbCompra
+  margem:      6, // receita + margemBruta, gmroi, mkdPct, pmv, custoMedio
+  crescimento: 4, // receita + producaoPecas, otbCompra, giro
+  defensivo:   5, // receita + cobertura, margemBruta, otbCompra, custoMedio
+}
+
+// Ordem de prioridade por foco — os primeiros N (SUGGESTED_COUNTS[foco]) são os sugeridos
 export const DEFAULT_PRIORITIES: Record<StrategicFocus, string[]> = {
-  caixa:       ['otbCompra', 'giro', 'cobertura', 'mkdPct', 'receitaBruta', 'margemBruta', 'pmv', 'producaoPecas', 'custoMedio'],
-  margem:      ['margemBruta', 'mkdPct', 'pmv', 'custoMedio', 'receitaBruta', 'otbCompra', 'giro', 'cobertura', 'producaoPecas'],
-  crescimento: ['receitaBruta', 'producaoPecas', 'pmv', 'otbCompra', 'margemBruta', 'giro', 'cobertura', 'mkdPct', 'custoMedio'],
-  defensivo:   ['margemBruta', 'otbCompra', 'cobertura', 'mkdPct', 'receitaBruta', 'giro', 'pmv', 'producaoPecas', 'custoMedio'],
+  caixa:       ['receitaBruta', 'giro', 'cobertura', 'mkdPct', 'otbCompra',   'margemBruta', 'gmroi', 'pmv', 'producaoPecas', 'custoMedio'],
+  margem:      ['receitaBruta', 'margemBruta', 'gmroi', 'mkdPct', 'pmv', 'custoMedio', 'otbCompra', 'giro', 'cobertura', 'producaoPecas'],
+  crescimento: ['receitaBruta', 'producaoPecas', 'otbCompra', 'giro',          'margemBruta', 'gmroi', 'pmv', 'cobertura', 'mkdPct', 'custoMedio'],
+  defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'otbCompra', 'custoMedio', 'giro', 'gmroi', 'pmv', 'producaoPecas', 'mkdPct'],
 }
 
 export interface IndicatorPriority {
@@ -65,8 +74,7 @@ export interface IndicatorPriority {
   isPriority: boolean
 }
 
-export const SUGGESTED_COUNT = 4   // top N from DEFAULT_PRIORITIES auto-selected
-export const MAX_UNLOCK      = 2   // user can unlock this many additional indicators
+export const MAX_UNLOCK = 2   // user can unlock this many additional indicators
 
 // 'dismissed' = sugerido pelo sistema mas conscientemente removido pelo usuário
 export type FieldStatus = 'suggested' | 'unlocked' | 'inactive' | 'dismissed'
