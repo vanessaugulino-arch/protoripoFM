@@ -17,6 +17,12 @@ dist
 replit.nix
 .local
 
+# Replit attached assets (não fazem parte do app)
+attached_assets/
+
+# Screenshots não usados no código
+src/imports/Captura_de_Tela*
+
 # IDEs
 .vscode
 .DS_Store

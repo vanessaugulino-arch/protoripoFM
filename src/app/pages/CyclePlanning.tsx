@@ -13,7 +13,6 @@ import {
   CheckCircle,
   Download,
 } from "lucide-react";
-import logoTFO from "figma:asset/518a2b0fbf767e7d53e8db6869b3fce6e2473ef2.png";
 
 interface User {
   name: string;
