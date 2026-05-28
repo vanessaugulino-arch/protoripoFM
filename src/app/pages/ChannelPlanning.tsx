@@ -16,6 +16,7 @@ interface ChannelData {
   receita: number;
   margemBruta: number;   // % — driver (stays constant when revenue scales)
   pmv: number;            // R$ — driver
+  ticketMedio: number;    // R$ — driver (receita / nClientes; stays constant when revenue scales)
   otb: number;            // computed: receita × otbRate
   estoqueMedioRS: number; // computed: receita / giro
   estoqueMedioPecas: number;
@@ -46,6 +47,7 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
   receitaBruta:  "Receita Bruta (R$)",
   margemBruta:   "Margem Bruta (%)",
   pmv:           "PMV (R$)",
+  ticketMedio:   "Ticket Médio (R$)",
   producaoPecas: "Produção / Peças",
   otbCompra:     "OTB de Compra (R$)",
   mkdPct:        "Markdown (%)",
@@ -58,7 +60,7 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
 const RATE_MACRO_FIELDS = new Set(["margemBruta", "mkdPct", "giro", "cobertura", "gmroi"]);
 
 // Rate-based channel driver fields (constant when revenue scales)
-const DRIVER_FIELDS = new Set<keyof ChannelData>(["margemBruta", "pmv", "giro", "cobertura", "gmroi"]);
+const DRIVER_FIELDS = new Set<keyof ChannelData>(["margemBruta", "pmv", "ticketMedio", "giro", "cobertura", "gmroi"]);
 
 // ─── Recompute derived channel fields when revenue changes ────────────────────
 function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
@@ -77,7 +79,7 @@ function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
 }
 
 // Build initial channel data from macro revenue + baseline rates
-function buildChannel(receita: number, rates: Pick<ChannelData, "margemBruta" | "pmv" | "giro" | "cobertura" | "gmroi">): ChannelData {
+function buildChannel(receita: number, rates: Pick<ChannelData, "margemBruta" | "pmv" | "ticketMedio" | "giro" | "cobertura" | "gmroi">): ChannelData {
   const otbRate = 0.365;
   const mkdRate = 0.04;
   const estoqueMedioRS = rates.giro > 0 ? Math.round(receita / rates.giro) : 0;
@@ -134,9 +136,9 @@ export default function ChannelPlanning() {
 
   // ── Channel KPI data (drivers + derived) ─────────────────────────────────
   const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(() => ({
-    atacado:   buildChannel(Math.round(macroReceita * 0.40), { margemBruta: 38.5, pmv: 165, giro: 4.5, cobertura: 80, gmroi: 1.85 }),
-    varejo:    buildChannel(Math.round(macroReceita * 0.35), { margemBruta: 48.0, pmv: 185, giro: 4.6, cobertura: 75, gmroi: 2.35 }),
-    ecommerce: buildChannel(Math.round(macroReceita * 0.25), { margemBruta: 52.0, pmv: 195, giro: 4.8, cobertura: 70, gmroi: 2.65 }),
+    atacado:   buildChannel(Math.round(macroReceita * 0.40), { margemBruta: 38.5, pmv: 165, ticketMedio: 320, giro: 4.5, cobertura: 80, gmroi: 1.85 }),
+    varejo:    buildChannel(Math.round(macroReceita * 0.35), { margemBruta: 48.0, pmv: 185, ticketMedio: 290, giro: 4.6, cobertura: 75, gmroi: 2.35 }),
+    ecommerce: buildChannel(Math.round(macroReceita * 0.25), { margemBruta: 52.0, pmv: 195, ticketMedio: 340, giro: 4.8, cobertura: 70, gmroi: 2.65 }),
   }));
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -185,6 +187,7 @@ export default function ChannelPlanning() {
       producao:          channels.reduce((s, c) => s + c.producao, 0),
       mkdPct:            +mkdPct.toFixed(1),
       gmroi:             +w(c => c.gmroi).toFixed(2),
+      ticketMedio:       +w(c => c.ticketMedio).toFixed(0),
     };
   }, [channelData, visibleChannels]);
 
@@ -198,6 +201,7 @@ export default function ChannelPlanning() {
       receitaBruta:  consolidated.receita,
       margemBruta:   consolidated.margemBruta,
       pmv:           consolidated.pmv,
+      ticketMedio:   consolidated.ticketMedio,
       producaoPecas: consolidated.producao,
       otbCompra:     consolidated.otb,
       mkdPct:        consolidated.mkdPct,
@@ -262,6 +266,7 @@ export default function ChannelPlanning() {
   const kpiFields: Array<{ label: string; key: keyof ChannelData; format: string; isDriver: boolean }> = [
     { label: "Receita (R$)",         key: "receita",           format: "currency",   isDriver: false },
     { label: "Margem Bruta (%)",      key: "margemBruta",       format: "percent",    isDriver: true  },
+    { label: "Ticket Médio (R$)",     key: "ticketMedio",       format: "currency",   isDriver: true  },
     { label: "PMV (R$)",              key: "pmv",               format: "currency",   isDriver: true  },
     { label: "OTB (R$)",              key: "otb",               format: "currency",   isDriver: false },
     { label: "Estoque Médio (R$)",    key: "estoqueMedioRS",    format: "currency",   isDriver: false },
@@ -293,6 +298,7 @@ export default function ChannelPlanning() {
     if (["margemBruta", "mkdPct"].includes(key)) return `${val.toFixed(1)}%`;
     if (["giro", "gmroi"].includes(key)) return val.toFixed(2);
     if (["cobertura"].includes(key)) return `${Math.round(val)} dias`;
+    if (["producaoPecas"].includes(key)) return Math.round(val).toLocaleString("pt-BR") + " pç";
     return `R$ ${Math.round(val).toLocaleString("pt-BR")}`;
   };
 
@@ -302,17 +308,18 @@ export default function ChannelPlanning() {
 
   const consolidatedKpi = (key: keyof ChannelData): number => {
     const map: Partial<Record<keyof ChannelData, number>> = {
-      receita: consolidated.receita,
-      margemBruta: consolidated.margemBruta,
-      pmv: consolidated.pmv,
-      otb: consolidated.otb,
-      estoqueMedioRS: consolidated.estoqueMedioRS,
+      receita:           consolidated.receita,
+      margemBruta:       consolidated.margemBruta,
+      pmv:               consolidated.pmv,
+      ticketMedio:       consolidated.ticketMedio,
+      otb:               consolidated.otb,
+      estoqueMedioRS:    consolidated.estoqueMedioRS,
       estoqueMedioPecas: consolidated.estoqueMedioPecas,
-      giro: consolidated.giro,
-      cobertura: consolidated.cobertura,
-      markdown: consolidated.markdown,
-      producao: consolidated.producao,
-      gmroi: consolidated.gmroi,
+      giro:              consolidated.giro,
+      cobertura:         consolidated.cobertura,
+      markdown:          consolidated.markdown,
+      producao:          consolidated.producao,
+      gmroi:             consolidated.gmroi,
     };
     return map[key] ?? 0;
   };
