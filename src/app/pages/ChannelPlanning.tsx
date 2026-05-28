@@ -324,14 +324,7 @@ export default function ChannelPlanning() {
     return higherBetter ? chVal < item.planned : chVal > item.planned;
   };
 
-  if (!user) return null;
-
-  const totalPercent  = visibleChannels.reduce((s, ch) => s + percents[ch], 0);
-  const macroOk       = impactedMacro.length === 0 && visibleTotalPct === 100;
-  const hasMacroCheck = activeMacroKeys.length > 0 && macroValues != null;
-  const isPending     = plannedYears.includes(selectedYear) && !reviewedYears.includes(selectedYear);
-
-  // ── KPI field definitions ─────────────────────────────────────────────────────
+  // ── KPI field definitions — must be before early return (hooks rule) ──────────
   const kpiFieldsBase: Array<{
     label: string; key: keyof ChannelData; format: string;
     isDriver: boolean; macroKey?: string;
@@ -355,16 +348,23 @@ export default function ChannelPlanning() {
   // AJUSTE 4: Sort — macro focus indicators first (in activeMacroKeys order), then secondary
   const macroKeyOrder = new Map<string, number>(activeMacroKeys.map((k, i) => [k, i]));
 
+  // useMemo MUST be before `if (!user) return null` — React rules of hooks
   const kpiFields = useMemo(() => {
     return [...kpiFieldsBase].sort((a, b) => {
       const ra = a.macroKey != null && macroKeyOrder.has(a.macroKey) ? macroKeyOrder.get(a.macroKey)! * 2 : 999;
       const rb = b.macroKey != null && macroKeyOrder.has(b.macroKey) ? macroKeyOrder.get(b.macroKey)! * 2 : 999;
-      // margemBrutaRS stays adjacent to margemBruta
       const ra2 = a.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : ra;
       const rb2 = b.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : rb;
       return ra2 - rb2;
     });
   }, [activeMacroKeys]);
+
+  if (!user) return null;
+
+  const totalPercent  = visibleChannels.reduce((s, ch) => s + percents[ch], 0);
+  const macroOk       = impactedMacro.length === 0 && visibleTotalPct === 100;
+  const hasMacroCheck = activeMacroKeys.length > 0 && macroValues != null;
+  const isPending     = plannedYears.includes(selectedYear) && !reviewedYears.includes(selectedYear);
 
   const fmt = (value: number, format: string) => {
     switch (format) {
