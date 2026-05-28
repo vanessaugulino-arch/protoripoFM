@@ -6,7 +6,8 @@ import { PlanningField } from '../../components/PlanningField'
 import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
-  Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X,
+  Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
+  ToggleLeft, ToggleRight,
 } from "lucide-react";
 import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
@@ -145,6 +146,10 @@ export default function Planning() {
 
   // Compare modal
   const [compareOpen, setCompareOpen] = useState(false)
+
+  // Receita toggle: input em valor absoluto (R$) ou percentual de crescimento (%)
+  const [receitaMode, setReceitaMode] = useState<'value' | 'percent'>('value')
+  const [receitaPctStr, setReceitaPctStr] = useState<string>('')
 
   // ── Derive from route state ──────────────────────────────────────────────
   const year          = routeState?.year ?? new Date().getFullYear() + 1
@@ -304,6 +309,33 @@ export default function Planning() {
     }
     if (window.confirm(`Aplicar as metas do cenário "${activeScenario.name}" como plano oficial de ${year}?`)) {
       alert(`Metas do cenário "${activeScenario.name}" aplicadas ao plano de ${year}.`)
+    }
+  }
+
+  // ── Receita toggle handlers ──────────────────────────────────────────────
+  const toggleReceitaMode = () => {
+    if (receitaMode === 'value') {
+      // Inicializa o % a partir do valor atual vs referência
+      const cur = v.receitaBruta
+      if (cur != null && histRef.receita > 0) {
+        const pct = ((cur - histRef.receita) / histRef.receita) * 100
+        setReceitaPctStr(pct.toFixed(1))
+      } else {
+        setReceitaPctStr('')
+      }
+      setReceitaMode('percent')
+    } else {
+      setReceitaMode('value')
+      setReceitaPctStr('')
+    }
+  }
+
+  const handleReceitaPctChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const str = e.target.value
+    setReceitaPctStr(str)
+    const pct = parseFloat(str)
+    if (!isNaN(pct) && histRef.receita > 0) {
+      setField('receitaBruta', Math.round(histRef.receita * (1 + pct / 100)))
     }
   }
 
@@ -503,6 +535,16 @@ export default function Planning() {
               </div>
             </div>
 
+            {/* Banner de simulação */}
+            <div className="mx-4 mt-3 mb-1 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-3 py-2.5">
+              <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
+              <p className="text-[11px] text-[#28071C]/55 leading-relaxed">
+                <strong className="text-[#28071C]/70">Ambiente de simulação.</strong>{' '}
+                Ajuste os indicadores, salve cenários e compare impactos antes de definir as metas finais.
+                O painel central mostra o efeito de cada decisão no conjunto completo.
+              </p>
+            </div>
+
             <div className="p-4 space-y-3">
               {/* ACTIVE FIELDS only — indicators selected in setup */}
               {activeDefs.length > 0 && (
@@ -522,11 +564,27 @@ export default function Planning() {
                     return (
                       <div key={f.key} className={`rounded-xl ${isRef ? "ring-1 ring-amber-300 bg-amber-50/30" : ""}`}>
                         {isReceita && (
-                          <div className="flex items-center gap-1 px-2 pt-1.5 pb-0.5">
-                            <Lock className="w-2.5 h-2.5 text-[#28071C]/40" />
-                            <span className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-widest">
-                              Obrigatório — Receita
-                            </span>
+                          <div className="flex items-center justify-between px-2 pt-1.5 pb-0.5">
+                            <div className="flex items-center gap-1">
+                              <Lock className="w-2.5 h-2.5 text-[#28071C]/40" />
+                              <span className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-widest">
+                                Obrigatório — Receita
+                              </span>
+                            </div>
+                            <button
+                              onClick={toggleReceitaMode}
+                              title={receitaMode === 'value' ? 'Alternar para % de crescimento' : 'Alternar para valor em R$'}
+                              className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-semibold transition-all ${
+                                receitaMode === 'percent'
+                                  ? 'bg-[#7598CF]/15 border-[#7598CF]/50 text-[#7598CF]'
+                                  : 'bg-transparent border-[#28071C]/18 text-[#28071C]/40 hover:border-[#7598CF]/40 hover:text-[#7598CF]'
+                              }`}
+                            >
+                              {receitaMode === 'value'
+                                ? <><ToggleLeft className="w-3 h-3" /> % crescimento</>
+                                : <><ToggleRight className="w-3 h-3" /> R$ valor</>
+                              }
+                            </button>
                           </div>
                         )}
                         {isRef && !isReceita && (
@@ -537,18 +595,48 @@ export default function Planning() {
                             </span>
                           </div>
                         )}
-                        <div className={borderCls}>
-                          <PlanningField
-                            label={f.label}
-                            fieldKey={f.key}
-                            value={f.getValue(v)}
-                            state={f.getState(s) as "user" | "calculated" | "locked"}
-                            format={f.format}
-                            helpText={f.getHelp(referenceYear, histRef, baseline)}
-                            onEdit={setField}
-                            onUnlock={unlock}
-                          />
-                        </div>
+                        {isReceita && receitaMode === 'percent' ? (
+                          /* ── MODO % — input de crescimento convertido automaticamente ── */
+                          <div className="px-3 pb-3 pt-1">
+                            <p className="text-[10px] text-[#28071C]/40 mb-1.5">
+                              Crescimento sobre {referenceYear} (base R$ {histRef.receita.toLocaleString('pt-BR', { maximumFractionDigits: 0 })})
+                            </p>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={receitaPctStr}
+                                onChange={handleReceitaPctChange}
+                                placeholder="ex: 15  ou  -5"
+                                className="w-full pl-3 pr-8 py-2.5 border-2 border-[#7598CF]/40 rounded-xl text-sm text-[#28071C] placeholder-[#28071C]/25 focus:border-[#7598CF] focus:outline-none"
+                              />
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-[#28071C]/40 font-semibold">%</span>
+                            </div>
+                            <p className="text-[11px] text-[#28071C]/45 mt-1.5">
+                              {receitaPctStr !== '' && !isNaN(parseFloat(receitaPctStr))
+                                ? <>= <strong className="text-[#28071C]">R$ {v.receitaBruta?.toLocaleString('pt-BR', { maximumFractionDigits: 0 }) ?? '—'}</strong>
+                                    {' '}<span className={`font-semibold ${parseFloat(receitaPctStr) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      ({parseFloat(receitaPctStr) >= 0 ? '+' : ''}{parseFloat(receitaPctStr).toFixed(1)}%)
+                                    </span>
+                                  </>
+                                : <span className="text-[#28071C]/30">Digite um número positivo (crescimento) ou negativo (queda)</span>
+                              }
+                            </p>
+                          </div>
+                        ) : (
+                          <div className={borderCls}>
+                            <PlanningField
+                              label={f.label}
+                              fieldKey={f.key}
+                              value={f.getValue(v)}
+                              state={f.getState(s) as "user" | "calculated" | "locked"}
+                              format={f.format}
+                              helpText={f.getHelp(referenceYear, histRef, baseline)}
+                              onEdit={setField}
+                              onUnlock={unlock}
+                            />
+                          </div>
+                        )}
                         {status === 'unlocked' && (
                           <div className="px-2 pb-1">
                             <span className="text-[9px] text-violet-500 font-medium">↑ Liberado manualmente</span>

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router"
 import {
   ArrowLeft, LogOut, User, ChevronRight, RotateCcw,
   PlusCircle, Settings, TrendingUp, TrendingDown, Minus,
-  Calendar, CheckCircle2, AlertCircle, Target,
+  Calendar, CheckCircle2, AlertCircle, Target, Info,
 } from "lucide-react"
 import { isOnboardingComplete } from "../types/onboarding"
 import { getPlanCycle, getPlannedYears } from "../types/planCycle"
@@ -25,6 +25,18 @@ const IS_FLOW: Record<string, boolean> = {
 }
 
 interface UserData { name: string; email: string; profile: string }
+
+function AccTooltip({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex items-center ml-1.5 flex-shrink-0">
+      <Info className="w-3 h-3 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors cursor-help" />
+      <span className="absolute left-0 bottom-full mb-2 w-56 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-normal">
+        {text}
+        <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
+      </span>
+    </span>
+  )
+}
 
 // ─── Mock ACC data for current year (May 2026) ────────────────────────────────
 // Reference = prorated 2025 historical; ACC = realistic Jan-Mai 2026 actuals
@@ -107,6 +119,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "receitaBruta",
       label: "Receita",
+      tooltip: "Total faturado no período. Ponto de partida de todo o planejamento — quanto foi vendido em valor absoluto.",
       ref: fmtBRL(refProrated.receita),
       acc: fmtBRL(ACC_ACTUAL.receita),
       ...delta(ACC_ACTUAL.receita, refProrated.receita),
@@ -115,6 +128,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "margemBruta",
       label: "Margem Bruta",
+      tooltip: "Percentual que sobra da receita após o custo dos produtos. Mede a eficiência do mix e da precificação.",
       ref: `${HIST_2025.margemBruta}%`,
       acc: `${ACC_ACTUAL.margemBruta}%`,
       ...delta(ACC_ACTUAL.margemBruta, HIST_2025.margemBruta),
@@ -123,6 +137,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "pmv",
       label: "PMV",
+      tooltip: "Preço Médio de Venda — valor médio por peça vendida. Impacta diretamente a margem e o volume necessário para atingir a receita.",
       ref: fmtBRL(HIST_2025.pmv),
       acc: fmtBRL(ACC_ACTUAL.pmv),
       ...delta(ACC_ACTUAL.pmv, HIST_2025.pmv),
@@ -131,6 +146,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "otbCompra",
       label: "OTB de Compra",
+      tooltip: "Orçamento disponível para comprar ou produzir mercadoria no período. Controla o nível de investimento em estoque e o risco financeiro.",
       ref: fmtBRL(refProrated.otb),
       acc: fmtBRL(ACC_ACTUAL.otb),
       ...delta(ACC_ACTUAL.otb, refProrated.otb),
@@ -139,6 +155,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "giro",
       label: "Giro de Estoque",
+      tooltip: "Quantas vezes o estoque se renova no período. Giro alto significa menos capital parado e mais liquidez — desejável para moda.",
       ref: HIST_2025.giro.toFixed(2),
       acc: ACC_ACTUAL.giro.toFixed(2),
       ...delta(ACC_ACTUAL.giro, HIST_2025.giro),
@@ -147,6 +164,7 @@ export default function PlanningGateway() {
     {
       fieldKey: "gmroi",
       label: "GMROI",
+      tooltip: "Lucro bruto gerado para cada R$ investido em estoque. GMROI > 1 significa retorno positivo sobre o investimento em produtos.",
       ref: HIST_2025.gmroi.toFixed(2),
       acc: ACC_ACTUAL.gmroi.toFixed(2),
       ...delta(ACC_ACTUAL.gmroi, HIST_2025.gmroi),
@@ -336,7 +354,10 @@ export default function PlanningGateway() {
                         key={row.label}
                         className="grid grid-cols-4 gap-4 items-center py-2.5 px-2 rounded-lg hover:bg-[#28071C]/4 transition-colors"
                       >
-                        <span className="text-[#28071C]/70 text-sm">{row.label}</span>
+                        <span className="text-[#28071C]/70 text-sm flex items-center">
+                          {row.label}
+                          {row.tooltip && <AccTooltip text={row.tooltip} />}
+                        </span>
                         <span className="text-[#28071C] text-sm text-right font-mono font-semibold">{row.acc}</span>
                         <div className="flex items-center justify-end gap-1">
                           {vsPlan != null ? (
@@ -406,7 +427,10 @@ export default function PlanningGateway() {
                         key={row.label}
                         className="grid grid-cols-4 gap-4 items-center py-2.5 px-2 rounded-lg hover:bg-[#28071C]/4 transition-colors"
                       >
-                        <span className="text-[#28071C]/70 text-sm">{row.label}</span>
+                        <span className="text-[#28071C]/70 text-sm flex items-center">
+                          {row.label}
+                          {row.tooltip && <AccTooltip text={row.tooltip} />}
+                        </span>
                         <span className="text-[#28071C] text-sm text-right font-mono font-semibold">{row.acc}</span>
                         <div className="flex items-center justify-end gap-1">
                           {row.positive

@@ -4,7 +4,8 @@ import {
   ArrowLeft, ArrowRight, Check, Star, Lock, Unlock, ChevronUp, ChevronDown, Info,
   AlertTriangle, RotateCcw,
 } from "lucide-react"
-import { isOnboardingComplete } from "../types/onboarding"
+import { isOnboardingComplete, getStoredProfile, ORIGEM_LABELS } from "../types/onboarding"
+import type { OrigemPecas } from "../types/onboarding"
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_DESC, STRATEGIC_FOCUS_ICONS,
   STRATEGIC_FOCUS_COLORS, PLAN_INDICATORS, DEFAULT_PRIORITIES,
@@ -19,6 +20,62 @@ const ALL_FOCUSES: StrategicFocus[] = ["caixa", "margem", "crescimento", "defens
 // Receita é o único indicador macro obrigatório — presente em todos os planos
 const RECEITA_KEY = 'receitaBruta'
 const MAX_DISMISS  = 2
+
+// ─── Classificação do modelo produtivo a partir do onboarding ─────────────────
+function classifyOrigem(origem: OrigemPecas | undefined): 'produtor' | 'comprador' | 'hibrido' | 'unknown' {
+  if (!origem) return 'unknown'
+  if (origem === 'propria' || origem === 'white_label' || origem === 'private_label') return 'produtor'
+  if (origem === 'multimarca') return 'comprador'
+  return 'hibrido' // 'hibrido'
+}
+
+/**
+ * Adapta a lista de prioridades default conforme o modelo produtivo do cliente.
+ *
+ * Produtor (própria/white/private label):
+ *   - NÃO usa OTB (não compra de terceiros como principal alavanca)
+ *   - Substitui otbCompra → producaoPecas nos indicadores sugeridos
+ *
+ * Comprador (multimarca/revenda):
+ *   - NÃO usa indicadores de produção
+ *   - Substitui producaoPecas → otbCompra nos indicadores sugeridos
+ *
+ * Híbrido: mantém ambos, sem troca.
+ */
+function adaptPrioritiesForOrigem(
+  defaults: string[],
+  suggestedCount: number,
+  origem: OrigemPecas | undefined,
+): { priorities: string[]; count: number } {
+  const tipo = classifyOrigem(origem)
+  if (tipo === 'hibrido' || tipo === 'unknown') return { priorities: defaults, count: suggestedCount }
+
+  const suggested = [...defaults.slice(0, suggestedCount)]
+  const rest      = [...defaults.slice(suggestedCount)]
+
+  if (tipo === 'produtor') {
+    const otbIdx  = suggested.indexOf('otbCompra')
+    const prodIdx = suggested.indexOf('producaoPecas')
+    if (otbIdx >= 0 && prodIdx < 0) {
+      suggested[otbIdx] = 'producaoPecas'
+      const prodRestIdx = rest.indexOf('producaoPecas')
+      if (prodRestIdx >= 0) rest.splice(prodRestIdx, 1)
+      rest.unshift('otbCompra')
+    }
+  } else {
+    // comprador
+    const prodIdx = suggested.indexOf('producaoPecas')
+    const otbIdx  = suggested.indexOf('otbCompra')
+    if (prodIdx >= 0 && otbIdx < 0) {
+      suggested[prodIdx] = 'otbCompra'
+      const otbRestIdx = rest.indexOf('otbCompra')
+      if (otbRestIdx >= 0) rest.splice(otbRestIdx, 1)
+      rest.unshift('producaoPecas')
+    }
+  }
+
+  return { priorities: [...suggested, ...rest], count: suggestedCount }
+}
 
 // ─── AJUSTE 4: Tooltips explicativos dos indicadores (orientados a negócio) ──
 const INDICATOR_TOOLTIPS: Record<string, string> = {
@@ -65,6 +122,11 @@ export default function PlanningSetup() {
   const state = location.state as LocationState | null
   const year = state?.year ?? new Date().getFullYear() + 1
 
+  // ── Perfil do onboarding (lido uma vez — não muda durante a sessão) ────────
+  const profile      = getStoredProfile()
+  const origemPerfil = profile?.origem
+  const tipoPerfil   = classifyOrigem(origemPerfil)
+
   // ── Wizard step ────────────────────────────────────────────────────────────
   const [step, setStep] = useState<1 | 2>(1)
   const [focus, setFocus] = useState<StrategicFocus | null>(null)
@@ -83,19 +145,21 @@ export default function PlanningSetup() {
     if (u.profile !== "CEO") navigate("/dashboard")
   }, [navigate])
 
-  // ── Apply focus defaults ───────────────────────────────────────────────────
+  // ── Apply focus defaults (profile-aware) ──────────────────────────────────
   const applyFocusDefaults = (f: StrategicFocus) => {
     setFocus(f)
-    const allKeys = PLAN_INDICATORS.map(i => i.key)
-    const ordered = DEFAULT_PRIORITIES[f]
-    const count = SUGGESTED_COUNTS[f]
+    const { priorities: ordered, count } = adaptPrioritiesForOrigem(
+      DEFAULT_PRIORITIES[f],
+      SUGGESTED_COUNTS[f],
+      origemPerfil,
+    )
     let suggested = ordered.slice(0, count)
     // Receita é sempre obrigatória — garante presença na lista ativa
     if (!suggested.includes(RECEITA_KEY)) {
       suggested = [RECEITA_KEY, ...suggested.slice(0, count - 1)]
     }
     const initStatuses: Record<string, FieldStatus> = {}
-    for (const k of allKeys) {
+    for (const k of ordered) {
       initStatuses[k] = suggested.includes(k) ? "suggested" : "inactive"
     }
     setStatuses(initStatuses)
@@ -276,6 +340,18 @@ export default function PlanningSetup() {
                 Qual é o foco central do planejamento de <strong className="text-[#28071C]">{year}</strong>?
                 A escolha pré-seleciona os indicadores de suporte prioritários.
               </p>
+              {/* Aviso de adaptação por perfil produtivo */}
+              {origemPerfil && tipoPerfil !== 'unknown' && tipoPerfil !== 'hibrido' && (
+                <div className="flex items-start gap-2.5 bg-amber-50/70 border border-amber-200/80 rounded-xl px-4 py-3 mb-2 text-sm">
+                  <span className="flex-shrink-0 mt-0.5">⚙️</span>
+                  <p className="text-amber-800/80 leading-snug">
+                    <strong>Perfil detectado:</strong> {ORIGEM_LABELS[origemPerfil]}.{' '}
+                    {tipoPerfil === 'produtor'
+                      ? 'Os indicadores sugeridos vão priorizar Produção de Peças em vez de OTB de Compra.'
+                      : 'Os indicadores vão priorizar OTB de Compra e não incluir indicadores de produção própria.'}
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 {ALL_FOCUSES.map(f => {
                   const selected = focus === f
@@ -326,6 +402,18 @@ export default function PlanningSetup() {
                   Você pode testar configurações diferentes, comparar alternativas e só confirmar quando estiver seguro da decisão.
                 </p>
               </div>
+
+              {/* Perfil produtivo — nota contextual */}
+              {tipoPerfil !== 'unknown' && tipoPerfil !== 'hibrido' && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-[#28071C]/4 rounded-xl text-xs text-[#28071C]/55">
+                  <span>{tipoPerfil === 'produtor' ? '🏭' : '🛒'}</span>
+                  <span>
+                    {tipoPerfil === 'produtor'
+                      ? 'Modelo produtivo: Produção de Peças priorizado em vez de OTB.'
+                      : 'Modelo de revenda: OTB de Compra priorizado — indicadores de produção em somente leitura.'}
+                  </span>
+                </div>
+              )}
 
               {/* Focus badge + instructions */}
               <div className="flex items-start justify-between gap-4 mb-2">
