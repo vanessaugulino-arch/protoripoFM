@@ -317,7 +317,7 @@ export default function CycleValidation() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <span className="text-[#F6F3AA] text-lg font-light tracking-wide">
-              Fashion Mind <span className="opacity-60 mx-2">|</span> Módulo 4 · Validação de Ciclo
+              Fashion Mind <span className="opacity-60 mx-2">|</span> Módulo 4 · Validação de Sazonalidade
             </span>
           </div>
           <div className="flex items-center space-x-4 text-[#F6F3AA]">

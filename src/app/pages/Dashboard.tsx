@@ -31,7 +31,7 @@ const actionCards = [
     id: 4,
     title: "Módulo 4",
     icon: Package,
-    description: "Validação de Ciclo",
+    description: "Validação de Sazonalidade",
   },
   {
     id: 5,

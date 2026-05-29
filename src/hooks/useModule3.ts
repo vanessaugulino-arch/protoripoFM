@@ -2,7 +2,7 @@
  * Hook para gerenciar lógica do Módulo 3 - Planejamento por Divisão
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Module3State,
   DivisionPlanBlock,
@@ -12,12 +12,10 @@ import {
   RiskMatrix,
   PriceRange,
   VolumeAndCoverage,
-  DEFAULT_DIVISIONS,
+  SeasonConsolidated,
   DEFAULT_PARTICIPATION,
   calculateSellThrough,
-  isValidRiskMatrix,
-  isValidPriceRange,
-} from "../types/module3";
+} from "../app/types/module3";
 import {
   saveModule3Scenario,
   listModule3Scenarios,
@@ -30,213 +28,252 @@ export interface UseModule3Options {
   macroTargets: MacroTarget;
 }
 
+function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated {
+  return {
+    seasonId: macroTargets.seasonId,
+    seasonName: "",
+    referenceSeasonId: undefined,
+    totalRevenue: 0,
+    avgPrice: 0,
+    avgMargin: 0,
+    avgSellThrough: 0,
+    avgGmroi: 0,
+    macroTarget: macroTargets,
+    reachesMacroTarget: false,
+    gaps: { revenue: -macroTargets.revenue, margin: -macroTargets.margin, sellThrough: -macroTargets.sellThrough },
+    divisionBreakdown: {} as SeasonConsolidated["divisionBreakdown"],
+    scenarios: [],
+  };
+}
+
+function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
+  const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
+
+  (["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).forEach((divId) => {
+    divisions[divId] = {
+      divisionId: divId,
+      participation: DEFAULT_PARTICIPATION[divId],
+      indicators: {
+        avgPrice: 195,
+        mkd: 15,
+        margin: 48,
+        sellThrough: 75,
+      },
+      priceRange: {
+        entry: "119-169",
+        middle: "179-259",
+        premium: "269-389",
+        entryPercent: 30,
+        middlePercent: 50,
+        premiumPercent: 20,
+      },
+      riskMatrix: {
+        basics: 40,
+        fashion: 40,
+        highFashion: 20,
+      },
+      volumeCoverage: {
+        coverage: 45,
+        initialStock: 1000,
+        replenishments: 500,
+        unitsExpectedSold: 1200,
+      },
+      meetsTarget: true,
+      status: "draft",
+    };
+  });
+
+  return divisions;
+}
+
 export function useModule3(options: UseModule3Options) {
   const [state, setState] = useState<Module3State>(() => ({
     selectedSeasonId: options.seasonId,
     referenceSeasonId: options.referenceSeasonId,
     divisions: initializeDivisions(),
-    scenarios: listModule3Scenarios(options.seasonId),
+    scenarios: options.seasonId ? listModule3Scenarios(options.seasonId) : [],
     activeScenarioId: undefined,
-    consolidated: {} as any,
+    consolidated: buildInitialConsolidated(options.macroTargets),
     isLoading: false,
     error: undefined,
   }));
 
-  // ─── Inicialização de Divisões ──────────────────────────────────────────
-  function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
-    const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as any;
-    
-    (["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).forEach(
-      (divId) => {
-        divisions[divId] = {
-          divisionId: divId,
-          participation: DEFAULT_PARTICIPATION[divId],
-          indicators: {
-            avgPrice: 195,
-            mkd: 15,
-            margin: 48,
-            sellThrough: 75,
-          },
-          priceRange: {
-            entry: "119-169",
-            middle: "179-259",
-            premium: "269-389",
-            entryPercent: 30,
-            middlePercent: 50,
-            premiumPercent: 20,
-          },
-          riskMatrix: {
-            basics: 40,
-            fashion: 40,
-            highFashion: 20,
-          },
-          volumeCoverage: {
-            coverage: 45,
-            initialStock: 1000,
-            replenishments: 500,
-            unitsExpectedSold: 1200,
-          },
-          meetsTarget: true,
-          status: "draft",
-        };
-      }
-    );
-    
-    return divisions;
+  // Re-inicializar quando a temporada muda
+  useEffect(() => {
+    if (!options.seasonId) return;
+    setState((prev) => ({
+      ...prev,
+      selectedSeasonId: options.seasonId,
+      referenceSeasonId: options.referenceSeasonId,
+      divisions: initializeDivisions(),
+      scenarios: listModule3Scenarios(options.seasonId),
+      activeScenarioId: undefined,
+      consolidated: buildInitialConsolidated(options.macroTargets),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.seasonId]);
+
+  // Atualizar macroTargets no consolidado quando mudam
+  useEffect(() => {
+    setState((prev) => ({
+      ...prev,
+      consolidated: recalcConsolidated(prev.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.macroTargets.revenue, options.macroTargets.margin, options.macroTargets.gmroi]);
+
+  // ─── Recalcular Consolidado ────────────────────────────────────────────────
+  function recalcConsolidated(
+    divisions: Record<BusinessDivisionId, DivisionPlanBlock>,
+    macroTargets: MacroTarget,
+    seasonId: string,
+    refSeasonId: string
+  ): SeasonConsolidated {
+    const raw = calculateScenarioConsolidated(divisions);
+
+    const reachesMacroTarget =
+      (macroTargets.revenue === 0 || raw.totalRevenue >= macroTargets.revenue * 0.95) &&
+      raw.avgMargin >= macroTargets.margin * 0.95 &&
+      raw.avgSellThrough >= macroTargets.sellThrough * 0.95;
+
+    return {
+      seasonId,
+      seasonName: "",
+      referenceSeasonId: refSeasonId,
+      totalRevenue: raw.totalRevenue,
+      avgPrice: 0,
+      avgMargin: raw.avgMargin,
+      avgSellThrough: raw.avgSellThrough,
+      avgGmroi: raw.avgGmroi,
+      macroTarget: macroTargets,
+      reachesMacroTarget,
+      gaps: {
+        revenue: raw.totalRevenue - macroTargets.revenue,
+        margin: raw.avgMargin - macroTargets.margin,
+        sellThrough: raw.avgSellThrough - macroTargets.sellThrough,
+      },
+      divisionBreakdown: {} as SeasonConsolidated["divisionBreakdown"],
+      scenarios: listModule3Scenarios(seasonId),
+    };
   }
 
-  // ─── Atualizar Participação de Divisão ──────────────────────────────────
+  // ─── Atualizar Participação de Divisão ────────────────────────────────────
   const updateDivisionParticipation = useCallback(
     (divisionId: BusinessDivisionId, participation: number) => {
       setState((prev) => {
-        const updated = { ...prev };
-        updated.divisions[divisionId].participation = participation;
-        
-        // Recalcular consolidado
-        updated.consolidated = calculateConsolidated(updated.divisions);
-        
-        return updated;
+        const divisions = {
+          ...prev.divisions,
+          [divisionId]: { ...prev.divisions[divisionId], participation },
+        };
+        return {
+          ...prev,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, prev.selectedSeasonId, prev.referenceSeasonId),
+        };
       });
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [options.macroTargets]
   );
 
-  // ─── Atualizar Indicadores Comerciais ───────────────────────────────────
+  // ─── Atualizar Indicadores Comerciais ─────────────────────────────────────
   const updateIndicators = useCallback(
     (divisionId: BusinessDivisionId, indicators: Partial<CommercialIndicators>) => {
       setState((prev) => {
-        const updated = { ...prev };
-        updated.divisions[divisionId].indicators = {
-          ...updated.divisions[divisionId].indicators,
-          ...indicators,
+        const divisions = {
+          ...prev.divisions,
+          [divisionId]: {
+            ...prev.divisions[divisionId],
+            indicators: { ...prev.divisions[divisionId].indicators, ...indicators },
+          },
         };
-        
-        // Recalcular consolidado
-        updated.consolidated = calculateConsolidated(updated.divisions);
-        
-        return updated;
+        return {
+          ...prev,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, prev.selectedSeasonId, prev.referenceSeasonId),
+        };
       });
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [options.macroTargets]
   );
 
-  // ─── Atualizar Faixa de Preço ──────────────────────────────────────────
+  // ─── Atualizar Faixa de Preço (sem bloquear valores intermediários) ───────
   const updatePriceRange = useCallback(
     (divisionId: BusinessDivisionId, priceRange: Partial<PriceRange>) => {
       setState((prev) => {
-        const updated = { ...prev };
-        const newRange = {
-          ...updated.divisions[divisionId].priceRange,
-          ...priceRange,
+        const newRange = { ...prev.divisions[divisionId].priceRange, ...priceRange };
+        const divisions = {
+          ...prev.divisions,
+          [divisionId]: { ...prev.divisions[divisionId], priceRange: newRange },
         };
-        
-        if (!isValidPriceRange(newRange as PriceRange)) {
-          console.warn("Faixa de preço inválida: não soma 100%");
-          return prev;
-        }
-        
-        updated.divisions[divisionId].priceRange = newRange as PriceRange;
-        updated.consolidated = calculateConsolidated(updated.divisions);
-        
-        return updated;
+        return {
+          ...prev,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, prev.selectedSeasonId, prev.referenceSeasonId),
+        };
       });
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [options.macroTargets]
   );
 
-  // ─── Atualizar Matriz de Risco ─────────────────────────────────────────
+  // ─── Atualizar Matriz de Risco (sem bloquear valores intermediários) ──────
   const updateRiskMatrix = useCallback(
     (divisionId: BusinessDivisionId, riskMatrix: Partial<RiskMatrix>) => {
       setState((prev) => {
-        const updated = { ...prev };
-        const newMatrix = {
-          ...updated.divisions[divisionId].riskMatrix,
-          ...riskMatrix,
+        const newMatrix = { ...prev.divisions[divisionId].riskMatrix, ...riskMatrix };
+        const divisions = {
+          ...prev.divisions,
+          [divisionId]: { ...prev.divisions[divisionId], riskMatrix: newMatrix },
         };
-        
-        if (!isValidRiskMatrix(newMatrix as RiskMatrix)) {
-          console.warn("Matriz de risco inválida: não soma 100%");
-          return prev;
-        }
-        
-        updated.divisions[divisionId].riskMatrix = newMatrix as RiskMatrix;
-        updated.consolidated = calculateConsolidated(updated.divisions);
-        
-        return updated;
+        return {
+          ...prev,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, prev.selectedSeasonId, prev.referenceSeasonId),
+        };
       });
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [options.macroTargets]
   );
 
-  // ─── Atualizar Volume/OTB e Cobertura ───────────────────────────────────
+  // ─── Atualizar Volume/OTB e Cobertura ─────────────────────────────────────
   const updateVolumeCoverage = useCallback(
     (divisionId: BusinessDivisionId, volumeCoverage: Partial<VolumeAndCoverage>) => {
       setState((prev) => {
-        const updated = { ...prev };
-        const newVolume = {
-          ...updated.divisions[divisionId].volumeCoverage,
-          ...volumeCoverage,
+        const newVol = { ...prev.divisions[divisionId].volumeCoverage, ...volumeCoverage };
+        const divisions = {
+          ...prev.divisions,
+          [divisionId]: { ...prev.divisions[divisionId], volumeCoverage: newVol },
         };
-        
-        updated.divisions[divisionId].volumeCoverage = newVolume as VolumeAndCoverage;
-        updated.consolidated = calculateConsolidated(updated.divisions);
-        
-        return updated;
+        return {
+          ...prev,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, prev.selectedSeasonId, prev.referenceSeasonId),
+        };
       });
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [options.macroTargets]
   );
 
-  // ─── Calcular Sell-Through para uma Divisão ────────────────────────────
+  // ─── Calcular Sell-Through para uma Divisão ───────────────────────────────
   const calculateDivisionSellThrough = useCallback(
     (divisionId: BusinessDivisionId) => {
       const block = state.divisions[divisionId];
       if (!block) return 0;
-      
       const { volumeCoverage } = block;
-      const sellThrough = calculateSellThrough({
+      return calculateSellThrough({
         unitsSold: volumeCoverage.unitsExpectedSold,
         initialStock: volumeCoverage.initialStock,
         replenishments: volumeCoverage.replenishments,
       });
-      
-      return sellThrough;
     },
     [state.divisions]
   );
 
-  // ─── Calcular Consolidado da Temporada ──────────────────────────────────
-  function calculateConsolidated(divisions: Record<BusinessDivisionId, DivisionPlanBlock>) {
-    const consolidated = calculateScenarioConsolidated(divisions);
-    
-    // Validar contra metas macro
-    const reachesMacroTarget =
-      consolidated.totalRevenue >= options.macroTargets.revenue * 0.95 && // 5% de tolerância
-      consolidated.avgMargin >= options.macroTargets.margin * 0.95 &&
-      consolidated.avgSellThrough >= options.macroTargets.sellThrough * 0.95;
-
-    return {
-      seasonId: state.selectedSeasonId,
-      seasonName: "",
-      referenceSeasonId: state.referenceSeasonId,
-      totalRevenue: consolidated.totalRevenue,
-      avgPrice: 195, // Será recalculado
-      avgMargin: consolidated.avgMargin,
-      avgSellThrough: consolidated.avgSellThrough,
-      avgGmroi: consolidated.avgGmroi,
-      macroTarget: options.macroTargets,
-      reachesMacroTarget,
-      gaps: {
-        revenue: consolidated.totalRevenue - options.macroTargets.revenue,
-        margin: consolidated.avgMargin - options.macroTargets.margin,
-        sellThrough: consolidated.avgSellThrough - options.macroTargets.sellThrough,
-      },
-      divisionBreakdown: {} as any,
-      scenarios: listModule3Scenarios(state.selectedSeasonId),
-    };
-  }
-
-  // ─── Salvar Cenário ────────────────────────────────────────────────────
+  // ─── Salvar Cenário ───────────────────────────────────────────────────────
   const saveScenario = useCallback(
     (name: string, description?: string) => {
       const scenario = {
@@ -246,14 +283,20 @@ export function useModule3(options: UseModule3Options) {
         seasonId: state.selectedSeasonId,
         referenceSeasonId: state.referenceSeasonId,
         createdAt: new Date().toISOString(),
-        createdBy: "current_user", // Será substituído pelo contexto
+        createdBy: "current_user",
         divisions: state.divisions,
-        consolidated: state.consolidated,
+        consolidated: {
+          totalRevenue: state.consolidated.totalRevenue,
+          avgMargin: state.consolidated.avgMargin,
+          avgSellThrough: state.consolidated.avgSellThrough,
+          avgGmroi: state.consolidated.avgGmroi,
+          meetsAllTargets: state.consolidated.reachesMacroTarget,
+        },
         isActive: false,
       };
-      
+
       saveModule3Scenario(state.selectedSeasonId, scenario);
-      
+
       setState((prev) => ({
         ...prev,
         scenarios: [...prev.scenarios, scenario],
@@ -262,9 +305,17 @@ export function useModule3(options: UseModule3Options) {
     [state.selectedSeasonId, state.referenceSeasonId, state.divisions, state.consolidated]
   );
 
-  // ─── Validar se atinge meta macro ──────────────────────────────────────
+  // ─── Recarregar cenários do storage ──────────────────────────────────────
+  const reloadScenarios = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      scenarios: listModule3Scenarios(prev.selectedSeasonId),
+    }));
+  }, []);
+
+  // ─── Validar se atinge meta macro ────────────────────────────────────────
   const validateAgainstMacro = useCallback(() => {
-    return state.consolidated.reachesMacroTarget;
+    return state.consolidated.reachesMacroTarget ?? false;
   }, [state.consolidated]);
 
   return {
@@ -276,6 +327,7 @@ export function useModule3(options: UseModule3Options) {
     updateVolumeCoverage,
     calculateDivisionSellThrough,
     saveScenario,
+    reloadScenarios,
     validateAgainstMacro,
   };
 }

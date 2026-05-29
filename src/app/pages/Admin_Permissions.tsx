@@ -19,7 +19,7 @@ const SYSTEM_MODULES = [
   "Módulo 1 — Planejamento Estratégico Ano Fiscal",
   "Módulo 2 — Planejamento de Metas por Canal",
   "Módulo 3 — Planejamento por Categorias",
-  "Módulo 4 — Validação de Ciclo",
+  "Módulo 4 — Validação de Sazonalidade",
   "Módulo 5 — Plano de Sortimento 1",
   "Módulo 6 — Plano de Sortimento 2",
   "Configurações de Operação",
