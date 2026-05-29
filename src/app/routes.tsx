@@ -3,6 +3,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Planning from "./pages/Planning";
 import ChannelPlanning from "./pages/ChannelPlanning";
+import Module3DivisionPlanning from "./pages/Module3DivisionPlanning";
 import CyclePlanning from "./pages/CyclePlanning";
 import CycleValidation from "./pages/CycleValidation";
 import OperationSettings from "./pages/OperationSettings";
@@ -48,6 +49,10 @@ export const router = createBrowserRouter([
   {
     path: "/channel-planning",
     Component: ChannelPlanning,
+  },
+  {
+    path: "/module3-division-planning",
+    Component: Module3DivisionPlanning,
   },
   {
     path: "/cycle-planning",

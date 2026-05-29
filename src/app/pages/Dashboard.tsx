@@ -25,7 +25,7 @@ const actionCards = [
     id: 3,
     title: "Módulo 3",
     icon: BarChart3,
-    description: "Quebra de Metas por Grupo de Produto",
+    description: "Planejamento por Divisão de Negócio (Temporada)",
   },
   {
     id: 4,
@@ -88,9 +88,11 @@ export default function Dashboard() {
       alert("Acesso restrito. Apenas usuários com perfil CEO podem acessar esta funcionalidade.");
     }
 
-    // Navigate to cycle planning page if card 3
-    if (cardId === 3) {
-      navigate("/cycle-planning");
+    // Navigate to module 3 division planning if card 3 and user is CEO
+    if (cardId === 3 && user?.profile === "CEO") {
+      navigate("/module3-division-planning");
+    } else if (cardId === 3) {
+      alert("Acesso restrito. Apenas usuários com perfil CEO podem acessar esta funcionalidade.");
     }
 
     // Navigate to cycle validation page if card 4 and user is CEO
