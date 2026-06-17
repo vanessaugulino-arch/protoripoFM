@@ -1,10 +1,11 @@
 import { createBrowserRouter } from "react-router";
 import Login from "./pages/Login";
+import SystemPresentation from "./pages/SystemPresentation";
 import Dashboard from "./pages/Dashboard";
 import Planning from "./pages/Planning";
 import ChannelPlanning from "./pages/ChannelPlanning";
 import Module3DivisionPlanning from "./pages/Module3DivisionPlanning";
-import CyclePlanning from "./pages/CyclePlanning";
+import PricePyramid from "./pages/PricePyramid";
 import CycleValidation from "./pages/CycleValidation";
 import OperationSettings from "./pages/OperationSettings";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -21,6 +22,10 @@ export const router = createBrowserRouter([
   {
     path: "/",
     Component: Login,
+  },
+  {
+    path: "/presentation",
+    Component: SystemPresentation,
   },
   {
     path: "/onboarding",
@@ -55,8 +60,8 @@ export const router = createBrowserRouter([
     Component: Module3DivisionPlanning,
   },
   {
-    path: "/cycle-planning",
-    Component: CyclePlanning,
+    path: "/module3-price-pyramid/:divisionId",
+    Component: PricePyramid,
   },
   {
     path: "/cycle-validation",

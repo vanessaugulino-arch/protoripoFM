@@ -83,7 +83,7 @@ export function PlanningField({
         relative rounded-xl p-4 border-2 transition-all duration-200
         ${isFree       ? 'bg-white border-transparent shadow-sm'        : ''}
         ${isLocked     ? 'bg-amber-50 border-amber-400 shadow-amber-100' : ''}
-        ${isCalculated ? 'bg-[#E7E7E6] border-transparent'              : ''}
+        ${isCalculated ? 'bg-[#F2F2F2] border-transparent'              : ''}
         ${className}
       `}
     >

@@ -114,6 +114,18 @@ export const SALES_CHANNELS: SalesChannelDef[] = [
   { id: 'social_commerce',   label: 'Redes sociais (social commerce)', erpFound: false },
 ]
 
+// ─── Convites de equipe ───────────────────────────────────────────────────────
+export type TeamRole = 'estrategico' | 'tatico' | 'operacional'
+
+export interface TeamInvite {
+  name: string
+  email: string
+  role: TeamRole
+}
+
+// ─── Opção de importação de dados ────────────────────────────────────────────
+export type DataImportChoice = 'completa' | 'hierarquia' | 'deferred'
+
 // ─── Perfil salvo após onboarding ────────────────────────────────────────────
 export interface OnboardingProfile {
   segments: SegmentId[]
@@ -121,8 +133,11 @@ export interface OnboardingProfile {
   origem: OrigemPecas
   hasImportedMaterial: boolean
   exports: boolean
-  productHierarchy: string[]       // ordered level IDs (resultado da validação ERP)
-  salesChannels: SalesChannelId[]  // canais confirmados pelo usuário
+  productHierarchy: string[]
+  salesChannels: SalesChannelId[]
+  teamInvites?: TeamInvite[]
+  dataImportChoice?: DataImportChoice
+  importedFileNames?: string[]
   completedAt: string
 }
 

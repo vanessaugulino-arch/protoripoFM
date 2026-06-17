@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from "react"
 import { useNavigate, useLocation } from "react-router"
 import {
   ArrowLeft, ArrowRight, Check, Star, Lock, Unlock, ChevronUp, ChevronDown, Info,
-  AlertTriangle, RotateCcw,
+  AlertTriangle, RotateCcw, User, LogOut,
 } from "lucide-react"
 import { isOnboardingComplete, getStoredProfile, ORIGEM_LABELS } from "../types/onboarding"
 import type { OrigemPecas } from "../types/onboarding"
@@ -107,7 +107,7 @@ function IndicatorTooltip({ text }: { text: string }) {
   )
 }
 
-interface LocationState { year: number }
+interface LocationState { year: number; mode?: 'new' | 'review' }
 
 // ─── Status visual config ─────────────────────────────────────────────────────
 const STATUS_BADGE: Record<Exclude<FieldStatus, 'inactive'>, { label: string; cls: string }> = {
@@ -119,8 +119,16 @@ const STATUS_BADGE: Record<Exclude<FieldStatus, 'inactive'>, { label: string; cl
 export default function PlanningSetup() {
   const navigate = useNavigate()
   const location = useLocation()
-  const state = location.state as LocationState | null
-  const year = state?.year ?? new Date().getFullYear() + 1
+  const state    = location.state as LocationState | null
+  const year     = state?.year ?? new Date().getFullYear() + 1
+  const isReview = state?.mode === 'review'
+
+  // Se for revisão, carrega o ciclo existente para pré-preencher
+  const existingCycle = useMemo(() => {
+    if (!isReview) return null
+    const raw = localStorage.getItem(`fashionmind_cycle_${year}`)
+    return raw ? JSON.parse(raw) as { focus: StrategicFocus; fieldPriorities: PlanFieldPriority[] } : null
+  }, [isReview, year])
 
   // ── Perfil do onboarding (lido uma vez — não muda durante a sessão) ────────
   const profile      = getStoredProfile()
@@ -128,8 +136,11 @@ export default function PlanningSetup() {
   const tipoPerfil   = classifyOrigem(origemPerfil)
 
   // ── Wizard step ────────────────────────────────────────────────────────────
+  const [user, setUser] = useState<{ name: string; email: string; profile: string } | null>(null)
   const [step, setStep] = useState<1 | 2>(1)
-  const [focus, setFocus] = useState<StrategicFocus | null>(null)
+  const [focus, setFocus] = useState<StrategicFocus | null>(
+    existingCycle?.focus ?? null
+  )
 
   // ── Step 2 state ───────────────────────────────────────────────────────────
   const [statuses,      setStatuses]      = useState<Record<string, FieldStatus>>({})
@@ -137,13 +148,49 @@ export default function PlanningSetup() {
   const [activeOrder,   setActiveOrder]   = useState<string[]>([])
   const [dismissCount,  setDismissCount]  = useState(0)
 
+  const handleLogout = () => {
+    sessionStorage.removeItem("currentUser")
+    navigate("/")
+  }
+
   useEffect(() => {
     if (!isOnboardingComplete()) { navigate("/onboarding"); return }
     const stored = sessionStorage.getItem("currentUser")
     if (!stored) { navigate("/"); return }
     const u = JSON.parse(stored)
+    setUser(u)
     if (u.profile !== "CEO") navigate("/dashboard")
   }, [navigate])
+
+  // Se for revisão e já tiver ciclo salvo, pré-preenche step 2 com as prioridades existentes
+  useEffect(() => {
+    if (isReview && existingCycle?.focus) {
+      const f = existingCycle.focus
+      const fps = existingCycle.fieldPriorities as PlanFieldPriority[]
+      setFocus(f)
+      if (fps?.length) {
+        const initStatuses: Record<string, FieldStatus> = {}
+        const order: string[] = []
+        const refs = new Set<string>()
+        let dismissed = 0
+        for (const fp of fps) {
+          initStatuses[fp.key] = fp.status as FieldStatus
+          if (fp.isPriority) order.push(fp.key)
+          if (fp.isReference) refs.add(fp.key)
+          if (fp.status === 'dismissed') dismissed++
+        }
+        setStatuses(initStatuses)
+        setActiveOrder(order)
+        setReferences(refs)
+        setDismissCount(dismissed)
+        setStep(2)
+      } else {
+        applyFocusDefaults(f)
+        setStep(2)
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Apply focus defaults (profile-aware) ──────────────────────────────────
   const applyFocusDefaults = (f: StrategicFocus) => {
@@ -265,16 +312,16 @@ export default function PlanningSetup() {
 
     const cycle: AnnualPlanCycle = {
       year,
-      mode: "new",
+      mode: isReview ? "review" : "new",
       focus,
       fieldPriorities,
       indicatorPriorities: [],
-      versions: [],
+      versions: existingCycle ? (JSON.parse(localStorage.getItem(`fashionmind_cycle_${year}`) ?? '{}').versions ?? []) : [],
       createdAt: new Date().toISOString(),
       lastModifiedAt: new Date().toISOString(),
     }
     savePlanCycle(cycle)
-    navigate("/planning", { state: { year, mode: "new", focus, fieldPriorities } })
+    navigate("/planning", { state: { year, mode: isReview ? "review" : "new", focus, fieldPriorities } })
   }
 
   const focusColors = focus ? STRATEGIC_FOCUS_COLORS[focus] : null
@@ -283,11 +330,11 @@ export default function PlanningSetup() {
   const indMeta = (key: string) => PLAN_INDICATORS.find(i => i.key === key)!
 
   return (
-    <div className="min-h-screen bg-[#E7E7E6] flex flex-col">
+    <div className="min-h-screen bg-[#F2F2F2] flex flex-col">
 
       {/* HEADER */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg flex-shrink-0">
-        <div className="max-w-[900px] mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
               onClick={() => (step === 1 ? navigate("/planning-gateway") : setStep(1))}
@@ -296,18 +343,18 @@ export default function PlanningSetup() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <p className="text-[#F6F3AA]/70 text-xs uppercase tracking-widest">Novo Ciclo — {year}</p>
-              <p className="text-[#F6F3AA] font-semibold text-lg leading-tight">
-                {step === 1 ? "Foco Estratégico do Ano" : "Indicadores do Plano"}
-              </p>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Configuração de Ciclo</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {[1, 2].map(s => (
-              <div key={s} className={`rounded-full transition-all ${
-                s === step ? "w-6 h-2 bg-[#F6F3AA]" : s < step ? "w-2 h-2 bg-[#F6F3AA]/80" : "w-2 h-2 bg-[#F6F3AA]/30"
-              }`} />
-            ))}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user?.name}</span>
+            </div>
+            <button onClick={handleLogout} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>
@@ -710,7 +757,7 @@ export default function PlanningSetup() {
                   disabled={activeOrder.length === 0}
                   className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] text-white rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 transition-all shadow-md"
                 >
-                  Iniciar planejamento {year}
+                  {isReview ? `Revisar plano ${year}` : `Iniciar planejamento ${year}`}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>

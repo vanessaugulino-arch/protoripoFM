@@ -2,8 +2,9 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
-  Check, X, AlertTriangle, CheckCircle2, Info, Clock,
+  Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown,
 } from "lucide-react";
+import { exportToPDF } from "../../utils/exportPDF";
 import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
@@ -93,7 +94,7 @@ const HIGHER_IS_BETTER: Partial<Record<keyof ChannelData, boolean>> = {
   custoMedio:  false, // lower is better
 };
 
-// AJUSTE 5: tooltip for computed (non-driver) fields explaining the relationship
+// Tooltips para campos calculados (não-driver)
 const COMPUTED_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   margemBrutaRS:     "Calculado: Receita × Margem Bruta %. Para alterar, edite a Margem Bruta (%).",
   otb:               "Calculado: Peças × Custo Médio. Para alterar, edite o Custo Médio.",
@@ -103,6 +104,18 @@ const COMPUTED_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   totalPecas:        "Total de peças = Produção do canal (Receita ÷ PMV).",
   markdown:          "Calculado: Receita × MKD%. Para alterar o valor em R$, edite o MKD%.",
   receita:           "Controlado pela participação (%) × Receita Total do plano macro.",
+};
+
+// Tooltips para campos driver (editáveis)
+const DRIVER_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
+  margemBruta:  "Percentual que sobra da receita após o custo dos produtos. Impacta diretamente a rentabilidade do canal.",
+  pmv:          "Preço Médio de Venda — valor médio por peça vendida neste canal. Determina o volume de peças necessário para atingir a receita.",
+  ticketMedio:  "Valor médio gasto por cliente em cada compra. Tickets maiores indicam maior mix ou volume por transação.",
+  custoMedio:   "Custo unitário médio das peças vendidas neste canal. Base de cálculo do OTB e da margem bruta.",
+  giro:         "Quantas vezes o estoque se renova no período. Giro alto = menos capital parado, mais liquidez.",
+  cobertura:    "Quantos dias o estoque disponível cobre as vendas. Cobertura alta aumenta o risco de sobrestoque.",
+  mkdPct:       "Percentual de desconto aplicado sobre a receita bruta. Markdown alto corrói a margem do canal.",
+  gmroi:        "Lucro bruto gerado por cada R$ investido em estoque. GMROI > 1 indica retorno positivo. Benchmark saudável: acima de 2,0.",
 };
 
 // ─── Pure functions ────────────────────────────────────────────────────────────
@@ -191,24 +204,41 @@ export default function ChannelPlanning() {
     return all.filter(ch => CHANNEL_SALES_IDS[ch].some(id => profile!.salesChannels.includes(id)));
   }, [profile]);
 
-  const [percents, setPercents]       = useState<Record<ChannelId, number>>(INIT_PERCENTS);
+  // Inicializa percentuais distribuídos igualmente entre os canais visíveis
+  const initPercents = useMemo((): Record<ChannelId, number> => {
+    const all: ChannelId[] = ["atacado", "varejo", "ecommerce"];
+    if (visibleChannels.length === 3) return INIT_PERCENTS;
+    const each = Math.floor(100 / visibleChannels.length);
+    const rem  = 100 - each * visibleChannels.length;
+    const result = { atacado: 0, varejo: 0, ecommerce: 0 };
+    visibleChannels.forEach((ch, i) => { result[ch] = each + (i === 0 ? rem : 0); });
+    all.filter(ch => !visibleChannels.includes(ch)).forEach(ch => { result[ch] = 0; });
+    return result;
+  }, [visibleChannels]);
+
+  const [percents, setPercents]       = useState<Record<ChannelId, number>>(initPercents);
   const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(() => initChannelData(macroReceita));
 
   useEffect(() => {
     const plan      = getPlanCycle(selectedYear);
     const newMacroR = (plan?.versions?.[0]?.values?.receitaBruta as number | null) ?? 3_120_000;
     setChannelData(initChannelData(newMacroR));
-    setPercents(INIT_PERCENTS);
+    setPercents(initPercents);
     setSavedScenarios(listChannelScenarios(selectedYear));
-  }, [selectedYear]);
+  }, [selectedYear, initPercents]);
 
   // Scenarios
   const [savedScenarios, setSavedScenarios]         = useState<ChannelScenario[]>(() => listChannelScenarios(selectedYear));
   const [showSaveDialog, setShowSaveDialog]         = useState(false);
   const [saveNameInput, setSaveNameInput]           = useState("");
   const [toast, setToast]                           = useState<string | null>(null);
+
+  // Estado de célula em edição — exibe valor cru enquanto foca, formatado ao sair
+  const [focusedCell, setFocusedCell] = useState<{ ch: ChannelId; key: keyof ChannelData } | null>(null);
+  const [editingValue, setEditingValue] = useState<string>("");
   const [showCompareModal, setShowCompareModal]     = useState(false);
   const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
+  const [compareResults, setCompareResults]         = useState<{ name: string; receita: number; margem: number; pmv: number; giro: number }[] | null>(null);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
@@ -218,13 +248,28 @@ export default function ChannelPlanning() {
     setChannelData(prev => ({ ...prev, [ch]: applyRevenue(prev[ch], Math.round(macroReceita * newPct / 100)) }));
   };
 
+  const handleDriverFocus = (ch: ChannelId, field: keyof ChannelData) => {
+    setFocusedCell({ ch, key: field });
+    // Mostra o número cru (sem formatação) para edição limpa
+    const rawVal = channelData[ch][field] as number;
+    setEditingValue(isNaN(rawVal) ? "" : String(rawVal));
+  };
+
   const handleDriverChange = (ch: ChannelId, field: keyof ChannelData, raw: string) => {
-    const value = parseFloat(raw.replace(/[^0-9.-]/g, ""));
+    // Permite digitar livremente, incluindo ponto/vírgula intermediários
+    setEditingValue(raw);
+    const normalized = raw.replace(",", ".").replace(/[^0-9.]/g, "");
+    const value = parseFloat(normalized);
     if (isNaN(value)) return;
     setChannelData(prev => {
       const updated: ChannelData = { ...prev[ch], [field]: value };
       return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
     });
+  };
+
+  const handleDriverBlur = () => {
+    setFocusedCell(null);
+    setEditingValue("");
   };
 
   const handleConfirmSave = () => {
@@ -241,6 +286,17 @@ export default function ChannelPlanning() {
     showToast("Exportação iniciada.");
   };
 
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const handleExportPDF = async () => {
+    setIsExportingPDF(true);
+    await exportToPDF({
+      elementId: "channel-export-content",
+      fileName:  `planejamento_canais_${selectedYear}`,
+      title:     `Planejamento por Canal ${selectedYear}`,
+    });
+    setIsExportingPDF(false);
+  };
+
   const handleApplyMetas = () => {
     markYearAsChannelReviewed(selectedYear);
     setReviewedYears(getChannelReviewedYears());
@@ -249,13 +305,46 @@ export default function ChannelPlanning() {
 
   const handleCompare = () => {
     const sel = savedScenarios.filter(sc => selectedForCompare.includes(sc.id));
-    const summary = sel.map(sc => {
-      const totalR = visibleChannels.reduce((s, ch) => s + ((sc.data.channelData[ch] as { receita?: number })?.receita ?? 0), 0);
-      const wM = visibleChannels.reduce((s, ch) => s + ((sc.data.channelData[ch] as { receita?: number; margemBruta?: number })?.receita ?? 0) * ((sc.data.channelData[ch] as { margemBruta?: number })?.margemBruta ?? 0), 0);
-      return { name: sc.name, receita: totalR, margem: totalR > 0 ? wM / totalR : 0 };
+
+    // Para cada cenário, recalcula o consolidado de todos os indicadores
+    type ScenarioSummary = {
+      name: string;
+      savedAt: string;
+      channels: Record<string, Record<string, number>>;
+      consolidated: Record<string, number>;
+    };
+
+    const summary: ScenarioSummary[] = sel.map(sc => {
+      const chs = visibleChannels;
+      const chData = sc.data.channelData as Record<string, Record<string, number>>;
+      const totalR = chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0), 0);
+      const wAvg = (key: string) =>
+        totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
+      const sum = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
+
+      return {
+        name: sc.name,
+        savedAt: sc.savedAt,
+        channels: Object.fromEntries(chs.map(ch => [ch, chData[ch] ?? {}])),
+        consolidated: {
+          receita:           totalR,
+          margemBruta:       +wAvg('margemBruta').toFixed(1),
+          margemBrutaRS:     Math.round(totalR * wAvg('margemBruta') / 100),
+          pmv:               +wAvg('pmv').toFixed(0),
+          ticketMedio:       +wAvg('ticketMedio').toFixed(0),
+          custoMedio:        +wAvg('custoMedio').toFixed(0),
+          giro:              +wAvg('giro').toFixed(2),
+          cobertura:         +wAvg('cobertura').toFixed(0),
+          otb:               sum('otb'),
+          mkdPct:            +wAvg('mkdPct').toFixed(1),
+          markdown:          sum('markdown'),
+          producao:          sum('producao'),
+          totalPecas:        sum('totalPecas'),
+          gmroi:             +wAvg('gmroi').toFixed(2),
+        },
+      };
     });
-    alert(`Comparação:\n\n${summary.map(s => `${s.name}\nReceita: R$ ${Math.round(s.receita).toLocaleString("pt-BR")} | Margem: ${s.margem.toFixed(1)}%`).join("\n\n")}`);
-    setShowCompareModal(false); setSelectedForCompare([]);
+    setCompareResults(summary as never);
   };
 
   // ── Consolidated ──────────────────────────────────────────────────────────────
@@ -403,14 +492,13 @@ export default function ChannelPlanning() {
 
   const gridStyle = { gridTemplateColumns: `155px repeat(${visibleChannels.length + 1}, 1fr)` };
 
-  // AJUSTE 5: conflict tooltip for non-driver fields
   const getFieldTooltip = (key: keyof ChannelData, isDriver: boolean): string | undefined => {
-    if (!isDriver) return COMPUTED_TOOLTIP[key];
-    return undefined;
+    if (isDriver) return DRIVER_TOOLTIP[key];
+    return COMPUTED_TOOLTIP[key];
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
 
       {/* ── TOAST ────────────────────────────────────────────────────────────── */}
       {toast && (
@@ -420,7 +508,7 @@ export default function ChannelPlanning() {
       )}
 
       {/* ── HEADER (sticky) ──────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
@@ -558,7 +646,7 @@ export default function ChannelPlanning() {
         )}
 
         {/* ── Simulator grid (AJUSTE 2: per-row highlighting) ──────────────── */}
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4 border-[#F6F3AA] mb-5">
+        <div id="channel-export-content" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4 border-[#F6F3AA] mb-5">
           <div className="px-5 py-3 border-b border-[#28071C]/8 flex items-center justify-between">
             <div>
               <h2 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">Indicadores por Canal</h2>
@@ -653,9 +741,18 @@ export default function ChannelPlanning() {
                           }`}
                         >
                           {field.isDriver ? (
-                            <input type="text"
-                              value={fmt(channelData[ch][field.key], field.format)}
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={
+                                focusedCell?.ch === ch && focusedCell?.key === field.key
+                                  ? editingValue
+                                  : fmt(channelData[ch][field.key], field.format)
+                              }
+                              onFocus={() => handleDriverFocus(ch, field.key)}
                               onChange={e => handleDriverChange(ch, field.key, e.target.value)}
+                              onBlur={handleDriverBlur}
+                              onClick={e => (e.target as HTMLInputElement).select()}
                               className={`w-full bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
                             />
                           ) : (
@@ -719,14 +816,18 @@ export default function ChannelPlanning() {
               </button>
               <button onClick={handleExport} disabled={!savedScenarios.length}
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
-                <Download className="w-4 h-4" />Exportar
+                <Download className="w-4 h-4" />Exportar JSON
+              </button>
+              <button onClick={handleExportPDF} disabled={isExportingPDF}
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
+                <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
               </button>
             </div>
             <button onClick={handleApplyMetas}
-              disabled={totalPercent !== 100 || !macroOk}
-              title={totalPercent !== 100 ? "Participação deve somar 100%" : !macroOk ? "Indicadores macro fora da meta" : "Aplicar metas e concluir revisão"}
+              disabled={totalPercent !== 100}
+              title={totalPercent !== 100 ? "Participação dos canais deve somar 100%" : "Aplicar metas e concluir revisão"}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
-                totalPercent === 100 && macroOk ? "bg-emerald-600 text-white hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
+                totalPercent === 100 ? "bg-emerald-600 text-white hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
               }`}>
               <Lock className="w-4 h-4" />Aplicar Metas
             </button>
@@ -764,32 +865,135 @@ export default function ChannelPlanning() {
       {/* ── COMPARE MODAL ────────────────────────────────────────────────────── */}
       {showCompareModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full mx-4">
-            <h3 className="text-[#28071C] font-bold text-base mb-1">Comparar Cenários</h3>
-            <p className="text-[#28071C]/50 text-sm mb-5">Selecione ao menos 2 cenários.</p>
-            <div className="space-y-2 mb-6 max-h-52 overflow-y-auto">
-              {savedScenarios.map(sc => {
-                const isSel = selectedForCompare.includes(sc.id);
-                return (
-                  <label key={sc.id} className={`flex items-center gap-3 cursor-pointer p-3 rounded-xl border-2 transition-colors ${isSel ? "border-[#7598CF] bg-[#7598CF]/6" : "border-transparent hover:bg-gray-50"}`}>
-                    <input type="checkbox" className="w-4 h-4 accent-[#7598CF]" checked={isSel}
-                      onChange={e => setSelectedForCompare(prev => e.target.checked ? [...prev, sc.id] : prev.filter(id => id !== sc.id))} />
-                    <div className="flex-1">
-                      <p className="text-[#28071C] text-sm font-semibold">{sc.name}</p>
-                      <p className="text-[#28071C]/40 text-xs">{new Date(sc.savedAt).toLocaleString("pt-BR")}</p>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => { setShowCompareModal(false); setSelectedForCompare([]); }}
-                className="flex-1 px-5 py-2.5 border-2 border-[#28071C]/20 rounded-xl text-sm font-semibold text-[#28071C] hover:bg-gray-50">Cancelar</button>
-              <button onClick={handleCompare} disabled={selectedForCompare.length < 2}
-                className="flex-1 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold disabled:opacity-40 hover:opacity-90">
-                Comparar ({selectedForCompare.length})
-              </button>
-            </div>
+          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-xl w-full mx-4">
+            {compareResults ? (
+              /* ── Resultados da comparação — todos os indicadores em colunas ── */
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-[#28071C] font-bold text-base">Comparação de Cenários</h3>
+                    <p className="text-[#28071C]/50 text-xs mt-0.5">
+                      Consolidado ponderado · {(compareResults as never as { name: string }[]).length} cenários
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => { setShowCompareModal(false); setCompareResults(null); setSelectedForCompare([]); }}
+                    className="text-[#28071C]/40 hover:text-[#28071C] transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+                  {(() => {
+                    type R = { name: string; savedAt: string; consolidated: Record<string, number> };
+                    const rows = compareResults as never as R[];
+                    const COMPARE_FIELDS: { key: string; label: string; format: string }[] = [
+                      { key: 'receita',      label: 'Receita Total (R$)',   format: 'currency'   },
+                      { key: 'margemBruta',  label: 'Margem Bruta (%)',     format: 'percent'    },
+                      { key: 'margemBrutaRS',label: 'Margem Bruta (R$)',    format: 'currency'   },
+                      { key: 'pmv',          label: 'PMV (R$)',             format: 'currency'   },
+                      { key: 'ticketMedio',  label: 'Ticket Médio (R$)',    format: 'currency'   },
+                      { key: 'custoMedio',   label: 'Custo Médio (R$)',     format: 'currency'   },
+                      { key: 'giro',         label: 'Giro',                 format: 'multiplier' },
+                      { key: 'cobertura',    label: 'Cobertura (dias)',     format: 'days'       },
+                      { key: 'otb',          label: 'OTB (custo R$)',       format: 'currency'   },
+                      { key: 'mkdPct',       label: 'Markdown (%)',         format: 'percent'    },
+                      { key: 'markdown',     label: 'Markdown (R$)',        format: 'currency'   },
+                      { key: 'producao',     label: 'Produção (peças)',     format: 'number'     },
+                      { key: 'gmroi',        label: 'GMROI',                format: 'multiplier' },
+                    ];
+                    return (
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="sticky top-0 bg-white z-10">
+                          <tr>
+                            <th className="text-left px-3 py-2.5 text-[#28071C]/50 font-semibold uppercase tracking-widest bg-[#28071C]/4 rounded-tl-lg min-w-[140px]">
+                              Indicador
+                            </th>
+                            {rows.map((r, i) => (
+                              <th key={i} className="text-right px-3 py-2.5 font-bold text-[#28071C] bg-[#7598CF]/10 min-w-[130px]">
+                                <div>{r.name}</div>
+                                <div className="text-[10px] font-normal text-[#28071C]/40 mt-0.5">
+                                  {new Date(r.savedAt).toLocaleDateString('pt-BR')}
+                                </div>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#28071C]/6">
+                          {COMPARE_FIELDS.map(field => (
+                            <tr key={field.key} className="hover:bg-[#28071C]/3 transition-colors">
+                              <td className="px-3 py-2 text-[#28071C]/65 font-medium">{field.label}</td>
+                              {rows.map((r, i) => {
+                                const v = r.consolidated[field.key] ?? 0;
+                                const fmtV = field.format === 'currency'
+                                  ? `R$ ${Math.round(v).toLocaleString('pt-BR')}`
+                                  : field.format === 'percent'
+                                    ? `${v.toFixed(1)}%`
+                                    : field.format === 'multiplier'
+                                      ? `${v.toFixed(2)}x`
+                                      : field.format === 'days'
+                                        ? `${Math.round(v)} dias`
+                                        : Math.round(v).toLocaleString('pt-BR');
+                                return (
+                                  <td key={i} className="px-3 py-2 text-right font-mono text-[#28071C] font-semibold">
+                                    {fmtV}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    );
+                  })()}
+                </div>
+
+                <div className="mt-4 flex gap-3 pt-3 border-t border-[#28071C]/8">
+                  <button
+                    onClick={() => { setCompareResults(null); setSelectedForCompare([]); }}
+                    className="flex-1 px-5 py-2.5 border-2 border-[#28071C]/20 rounded-xl text-sm font-semibold text-[#28071C] hover:bg-gray-50"
+                  >
+                    Nova comparação
+                  </button>
+                  <button
+                    onClick={() => { setShowCompareModal(false); setCompareResults(null); setSelectedForCompare([]); }}
+                    className="flex-1 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:opacity-90"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Seleção de cenários ── */
+              <>
+                <h3 className="text-[#28071C] font-bold text-base mb-1">Comparar Cenários</h3>
+                <p className="text-[#28071C]/50 text-sm mb-5">Selecione ao menos 2 cenários para comparar.</p>
+                <div className="space-y-2 mb-6 max-h-52 overflow-y-auto">
+                  {savedScenarios.map(sc => {
+                    const isSel = selectedForCompare.includes(sc.id);
+                    return (
+                      <label key={sc.id} className={`flex items-center gap-3 cursor-pointer p-3 rounded-xl border-2 transition-colors ${isSel ? "border-[#7598CF] bg-[#7598CF]/6" : "border-transparent hover:bg-gray-50"}`}>
+                        <input type="checkbox" className="w-4 h-4 accent-[#7598CF]" checked={isSel}
+                          onChange={e => setSelectedForCompare(prev => e.target.checked ? [...prev, sc.id] : prev.filter(id => id !== sc.id))} />
+                        <div className="flex-1">
+                          <p className="text-[#28071C] text-sm font-semibold">{sc.name}</p>
+                          <p className="text-[#28071C]/40 text-xs">{new Date(sc.savedAt).toLocaleString("pt-BR")}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => { setShowCompareModal(false); setSelectedForCompare([]); }}
+                    className="flex-1 px-5 py-2.5 border-2 border-[#28071C]/20 rounded-xl text-sm font-semibold text-[#28071C] hover:bg-gray-50">Cancelar</button>
+                  <button onClick={handleCompare} disabled={selectedForCompare.length < 2}
+                    className="flex-1 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold disabled:opacity-40 hover:opacity-90">
+                    Comparar ({selectedForCompare.length})
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

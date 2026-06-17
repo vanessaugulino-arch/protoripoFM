@@ -36,7 +36,9 @@ import {
   Check,
   X,
   Play,
+  FileDown,
 } from "lucide-react";
+import { exportToPDF } from "../../utils/exportPDF";
 import {
   BusinessDivisionId,
   DivisionPlanBlock,
@@ -73,6 +75,11 @@ interface Temporada {
   mesInicio: string;
   mesFim: string;
 }
+
+const FALLBACK_TEMPORADAS: Temporada[] = [
+  { id: 1, nome: "Verão 2027",   mesInicio: "Outubro", mesFim: "Março" },
+  { id: 2, nome: "Inverno 2027", mesInicio: "Abril",   mesFim: "Setembro" },
+];
 
 // ─── Utilitário: derivar meta macro da temporada a partir do Módulo 1 ─────────
 
@@ -139,6 +146,7 @@ export default function Module3DivisionPlanning() {
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioDescription, setScenarioDescription] = useState("");
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
 
   // ─── Inicialização ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -162,6 +170,10 @@ export default function Module3DivisionPlanning() {
           setSelectedSeasonId(String(parsed[0].id));
           if (parsed.length > 1) setReferenceSeasonId(String(parsed[1].id));
         }
+      } else {
+        setTemporadas(FALLBACK_TEMPORADAS);
+        setSelectedSeasonId(String(FALLBACK_TEMPORADAS[0].id));
+        setReferenceSeasonId(String(FALLBACK_TEMPORADAS[1].id));
       }
     } catch {
       // temporadas não configuradas ainda
@@ -268,6 +280,16 @@ export default function Module3DivisionPlanning() {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportPDF = async () => {
+    setIsExportingPDF(true);
+    await exportToPDF({
+      elementId: "module3-export-content",
+      fileName:  `planejamento_divisao_${selectedSeasonId}`,
+      title:     `Planejamento por Divisão — ${selectedTemporada?.name ?? selectedSeasonId}`,
+    });
+    setIsExportingPDF(false);
+  };
+
   const handleLogout = () => {
     sessionStorage.removeItem("currentUser");
     navigate("/");
@@ -276,7 +298,10 @@ export default function Module3DivisionPlanning() {
   // ─── Helpers de formatação ────────────────────────────────────────────────
 
   const fmtCurrency = (v: number) =>
-    v === 0 ? "—" : `R$ ${(v / 1_000_000).toFixed(2)}M`;
+    v === 0 ? "—" : `R$ ${Math.round(v).toLocaleString("pt-BR")}`;
+
+  const fmtRevenueLabel = (v: number) =>
+    v === 0 ? "—" : `R$ ${Math.round(v).toLocaleString("pt-BR")}`;
 
   const fmtPct = (v: number) => `${v.toFixed(1)}%`;
 
@@ -285,7 +310,7 @@ export default function Module3DivisionPlanning() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
 
       {/* ─── HEADER ────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
@@ -418,167 +443,141 @@ export default function Module3DivisionPlanning() {
             </div>
 
             {/* ══════════════════════════════════════════════════════════════ */}
-            {/* PARTE C — CARD FIXO: DISTRIBUIÇÃO DE PARTICIPAÇÃO             */}
+            {/* ZONA STICKY — Participação (C) + Consolidado (E)              */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div className="sticky top-[72px] z-30 bg-white/95 backdrop-blur-md rounded-2xl p-5 shadow-md border-t-4 border-[#7598CF]">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-[#28071C]" />
-                  <h2 className="text-[#28071C] font-bold">Distribuição de Participação por Divisão</h2>
+            <div className="sticky top-[72px] z-30 space-y-1.5">
+
+              {/* C — Distribuição de Participação */}
+              <div className="bg-white/95 backdrop-blur-md rounded-xl px-4 py-2.5 shadow-md border-t-4 border-[#7598CF]">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-[#28071C]" />
+                    <h2 className="text-[12px] font-bold text-[#28071C]">Distribuição de Participação por Divisão</h2>
+                  </div>
+                  <div className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                    participationValid ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                  }`}>
+                    {participationValid ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                    Total: {totalParticipation.toFixed(1)}%
+                  </div>
                 </div>
-                <div className={`flex items-center gap-1.5 text-sm font-semibold px-3 py-1 rounded-full ${
-                  participationValid
-                    ? "bg-green-100 text-green-700"
-                    : "bg-red-100 text-red-700"
-                }`}>
-                  {participationValid ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
-                  Total: {totalParticipation.toFixed(1)}%
+                <div className="grid grid-cols-4 gap-2">
+                  {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => {
+                    const block = state.divisions[divId];
+                    if (!block) return null;
+                    return (
+                      <div key={divId} className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-lg px-3 py-2">
+                        <div className="text-[10px] uppercase tracking-wide text-[#28071C]/60 mb-1 font-semibold">
+                          {DEFAULT_DIVISIONS[divId]}
+                        </div>
+                        <div className="flex items-center gap-1 mb-1">
+                          <input
+                            type="number"
+                            value={block.participation}
+                            onChange={(e) => updateDivisionParticipation(divId, Number(e.target.value))}
+                            min={0} max={100}
+                            className="w-full bg-white rounded-md px-2 py-1 text-[#28071C] text-[12px] font-bold border border-[#28071C]/15 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50 text-center"
+                          />
+                          <span className="text-[11px] text-[#28071C]/50 font-semibold">%</span>
+                        </div>
+                        <div className="h-1 bg-[#28071C]/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-[#7598CF] to-[#28071C] rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(block.participation, 100)}%` }}
+                          />
+                        </div>
+                        <div className="text-[10px] font-semibold text-[#28071C]/60 mt-1">
+                          {fmtRevenueLabel((block.participation / 100) * macroTargets.revenue)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="grid grid-cols-4 gap-3">
-                {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => {
-                  const block = state.divisions[divId];
-                  if (!block) return null;
-                  return (
-                    <div
-                      key={divId}
-                      className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3"
-                    >
-                      <div className="text-xs uppercase tracking-wide text-[#28071C]/60 mb-2 font-semibold">
-                        {DEFAULT_DIVISIONS[divId]}
+              {/* E — Consolidado de Metas Macro (sticky, compacto) */}
+              <div className={`rounded-xl px-4 py-2.5 shadow-sm border-t-4 ${
+                meetsTarget ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"
+              }`}>
+                <div className="flex items-center gap-3">
+                  {meetsTarget
+                    ? <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
+                    : <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />}
+                  <span className={`text-[11px] font-bold shrink-0 ${meetsTarget ? "text-green-800" : "text-red-800"}`}>
+                    {meetsTarget ? "Metas atingidas" : "Metas NÃO atingidas"}
+                  </span>
+                  <div className="flex-1 grid grid-cols-4 gap-2">
+                    {[
+                      {
+                        label: "Receita",
+                        value: fmtCurrency(state.consolidated.totalRevenue),
+                        target: macroTargets.revenue > 0 ? fmtCurrency(macroTargets.revenue) : "—",
+                        gap: macroTargets.revenue > 0 ? fmtCurrency(state.consolidated.totalRevenue - macroTargets.revenue) : null,
+                        meets: macroTargets.revenue === 0 || state.consolidated.totalRevenue >= macroTargets.revenue * 0.95,
+                      },
+                      {
+                        label: "Margem",
+                        value: fmtPct(state.consolidated.avgMargin),
+                        target: fmtPct(macroTargets.margin),
+                        gap: fmtPct(state.consolidated.avgMargin - macroTargets.margin),
+                        meets: state.consolidated.avgMargin >= macroTargets.margin * 0.95,
+                      },
+                      {
+                        label: "Sell-Through",
+                        value: fmtPct(state.consolidated.avgSellThrough),
+                        target: fmtPct(macroTargets.sellThrough),
+                        gap: fmtPct(state.consolidated.avgSellThrough - macroTargets.sellThrough),
+                        meets: state.consolidated.avgSellThrough >= macroTargets.sellThrough * 0.95,
+                      },
+                      {
+                        label: "GMROI",
+                        value: `${state.consolidated.avgGmroi.toFixed(2)}x`,
+                        target: `${macroTargets.gmroi.toFixed(2)}x`,
+                        gap: `${(state.consolidated.avgGmroi - macroTargets.gmroi).toFixed(2)}x`,
+                        meets: state.consolidated.avgGmroi >= macroTargets.gmroi * 0.95,
+                      },
+                    ].map((item, i) => (
+                      <div key={i} className={`rounded-lg px-2.5 py-1.5 border bg-white/80 ${
+                        item.meets ? "border-green-200" : "border-red-200"
+                      }`}>
+                        <div className="text-[10px] text-[#28071C]/50 uppercase tracking-wide font-semibold">{item.label}</div>
+                        <div className="flex items-baseline gap-1 mt-0.5">
+                          <span className={`text-[13px] font-bold ${item.meets ? "text-green-700" : "text-red-700"}`}>
+                            {item.value}
+                          </span>
+                          <span className="text-[10px] text-[#28071C]/40">/ {item.target}</span>
+                        </div>
+                        {item.gap !== null && (
+                          <div className={`text-[10px] font-semibold ${item.meets ? "text-green-600" : "text-red-600"}`}>
+                            Δ {item.gap}
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <input
-                          type="number"
-                          value={block.participation}
-                          onChange={(e) => updateDivisionParticipation(divId, Number(e.target.value))}
-                          min={0}
-                          max={100}
-                          className="w-full bg-white rounded-lg px-2 py-1.5 text-[#28071C] text-xl font-bold border-2 border-[#28071C]/15 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-center"
-                        />
-                        <span className="text-[#28071C]/50 font-semibold">%</span>
-                      </div>
-                      <div className="h-1.5 bg-[#28071C]/10 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-[#7598CF] to-[#28071C] rounded-full transition-all duration-300"
-                          style={{ width: `${Math.min(block.participation, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                    ))}
+                  </div>
+                </div>
               </div>
+
             </div>
 
             {/* ══════════════════════════════════════════════════════════════ */}
-            {/* PARTE D — BLOCOS DE PLANEJAMENTO POR DIVISÃO                  */}
+            {/* PARTE D — BLOCOS POR DIVISÃO (4 colunas, cards empilhados)    */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div className="space-y-4">
+            <div id="module3-export-content" className="grid grid-cols-4 gap-3">
               {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => (
                 <DivisionBlockCard
                   key={divId}
                   divId={divId}
                   block={state.divisions[divId]}
-                  expanded={expandedDivision === divId}
-                  onExpand={() =>
-                    setExpandedDivision(expandedDivision === divId ? null : divId)
-                  }
+                  expanded={true}
+                  onExpand={() => {}}
                   onUpdateIndicators={(ind) => updateIndicators(divId, ind)}
-                  onUpdatePriceRange={(range) => updatePriceRange(divId, range)}
                   onUpdateRiskMatrix={(matrix) => updateRiskMatrix(divId, matrix)}
                   onUpdateVolume={(vol) => updateVolumeCoverage(divId, vol)}
                 />
               ))}
-            </div>
-
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {/* PARTE E — CONSOLIDADO COM VALIDAÇÃO DE METAS MACRO            */}
-            {/* ══════════════════════════════════════════════════════════════ */}
-
-            <div className={`rounded-2xl p-6 shadow-sm border-t-4 ${
-              meetsTarget ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"
-            }`}>
-              <div className="flex items-center gap-3 mb-5">
-                {meetsTarget ? (
-                  <CheckCircle className="w-6 h-6 text-green-600" />
-                ) : (
-                  <AlertTriangle className="w-6 h-6 text-red-600" />
-                )}
-                <div>
-                  <h2 className={`text-lg font-bold ${meetsTarget ? "text-green-900" : "text-red-900"}`}>
-                    {meetsTarget
-                      ? "Consolidado atinge as metas macro"
-                      : "Consolidado NÃO atinge as metas macro"}
-                  </h2>
-                  {!meetsTarget && (
-                    <p className="text-sm text-red-700 mt-0.5">
-                      Ajuste as proporções ou indicadores das divisões para convergir ao plano macro.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-4 gap-4">
-                {[
-                  {
-                    label: "Receita Total",
-                    value: fmtCurrency(state.consolidated.totalRevenue),
-                    target: macroTargets.revenue > 0 ? fmtCurrency(macroTargets.revenue) : "—",
-                    gap: macroTargets.revenue > 0
-                      ? fmtCurrency(state.consolidated.totalRevenue - macroTargets.revenue)
-                      : null,
-                    meets:
-                      macroTargets.revenue === 0 ||
-                      state.consolidated.totalRevenue >= macroTargets.revenue * 0.95,
-                  },
-                  {
-                    label: "Margem Média",
-                    value: fmtPct(state.consolidated.avgMargin),
-                    target: fmtPct(macroTargets.margin),
-                    gap: fmtPct(state.consolidated.avgMargin - macroTargets.margin),
-                    meets: state.consolidated.avgMargin >= macroTargets.margin * 0.95,
-                  },
-                  {
-                    label: "Sell-Through",
-                    value: fmtPct(state.consolidated.avgSellThrough),
-                    target: fmtPct(macroTargets.sellThrough),
-                    gap: fmtPct(state.consolidated.avgSellThrough - macroTargets.sellThrough),
-                    meets: state.consolidated.avgSellThrough >= macroTargets.sellThrough * 0.95,
-                  },
-                  {
-                    label: "GMROI",
-                    value: `${state.consolidated.avgGmroi.toFixed(2)}x`,
-                    target: `${macroTargets.gmroi.toFixed(2)}x`,
-                    gap: `${(state.consolidated.avgGmroi - macroTargets.gmroi).toFixed(2)}x`,
-                    meets: state.consolidated.avgGmroi >= macroTargets.gmroi * 0.95,
-                  },
-                ].map((item, i) => (
-                  <div
-                    key={i}
-                    className={`rounded-xl p-4 border-2 bg-white ${
-                      item.meets ? "border-green-300" : "border-red-300"
-                    }`}
-                  >
-                    <div className="text-xs text-[#28071C]/60 uppercase tracking-wide mb-2 font-semibold">
-                      {item.label}
-                    </div>
-                    <div className={`text-2xl font-bold mb-1 ${item.meets ? "text-green-700" : "text-red-700"}`}>
-                      {item.value}
-                    </div>
-                    <div className="text-xs text-[#28071C]/50">
-                      Meta equivalente: <span className="font-semibold text-[#28071C]/70">{item.target}</span>
-                    </div>
-                    {item.gap !== null && (
-                      <div className={`text-xs mt-1 font-semibold ${item.meets ? "text-green-600" : "text-red-600"}`}>
-                        Gap: {item.gap}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
             </div>
 
             {/* ══════════════════════════════════════════════════════════════ */}
@@ -604,7 +603,15 @@ export default function Module3DivisionPlanning() {
                     className="flex items-center gap-2 px-4 py-2 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl hover:bg-[#28071C]/5 transition-all text-sm font-semibold"
                   >
                     <Download className="w-4 h-4" />
-                    Exportar
+                    Exportar JSON
+                  </button>
+                  <button
+                    onClick={handleExportPDF}
+                    disabled={isExportingPDF}
+                    className="flex items-center gap-2 px-4 py-2 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl hover:bg-[#28071C]/5 transition-all text-sm font-semibold disabled:opacity-40"
+                  >
+                    <FileDown className="w-4 h-4" />
+                    {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
                   </button>
                 </div>
               </div>
@@ -742,7 +749,6 @@ interface DivisionBlockCardProps {
   expanded: boolean;
   onExpand: () => void;
   onUpdateIndicators: (ind: Partial<CommercialIndicators>) => void;
-  onUpdatePriceRange: (range: Partial<PriceRange>) => void;
   onUpdateRiskMatrix: (matrix: Partial<RiskMatrix>) => void;
   onUpdateVolume: (vol: Partial<VolumeAndCoverage>) => void;
 }
@@ -750,296 +756,224 @@ interface DivisionBlockCardProps {
 function DivisionBlockCard({
   divId,
   block,
-  expanded,
-  onExpand,
   onUpdateIndicators,
-  onUpdatePriceRange,
   onUpdateRiskMatrix,
   onUpdateVolume,
 }: DivisionBlockCardProps) {
+  const navigate = useNavigate();
   const [isProducer, setIsProducer] = useState(true);
 
   const riskValid = isValidRiskMatrix(block.riskMatrix);
-  const priceValid = isValidPriceRange(block.priceRange);
   const riskTotal = block.riskMatrix.basics + block.riskMatrix.fashion + block.riskMatrix.highFashion;
-  const priceTotal = block.priceRange.entryPercent + block.priceRange.middlePercent + block.priceRange.premiumPercent;
 
   return (
-    <div className="bg-white/70 backdrop-blur-sm rounded-2xl overflow-hidden shadow-sm border-l-4 border-[#28071C]">
-      {/* Header colapsível */}
-      <button
-        onClick={onExpand}
-        className="w-full px-6 py-4 flex items-center justify-between hover:bg-[#28071C]/5 transition-colors"
-      >
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-[#28071C] flex items-center justify-center text-[#F6F3AA] font-bold text-sm">
-            {DEFAULT_DIVISIONS[divId][0]}
+    <div className="space-y-2">
+
+      {/* Cabeçalho do segmento */}
+      <div className="bg-[#28071C] rounded-xl px-3 py-2">
+        <div className="text-[#F6F3AA] text-[11px] font-bold uppercase tracking-wide">
+          {DEFAULT_DIVISIONS[divId]}
+        </div>
+        <div className="text-[#F6F3AA]/55 text-[10px] mt-0.5">
+          {block.participation}% · PMV R${block.indicators.avgPrice.toFixed(0)} · M {block.indicators.margin.toFixed(0)}% · ST {block.indicators.sellThrough.toFixed(0)}%
+        </div>
+      </div>
+
+      {/* Bloco 1 — Indicadores Comerciais */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border-l-2 border-[#7598CF] shadow-sm">
+        <div className="text-[10px] uppercase font-bold text-[#28071C]/50 mb-2 tracking-wide">
+          Indicadores Comerciais
+        </div>
+        <div className="space-y-1.5">
+          <CompactField
+            label="PMV (R$)"
+            value={block.indicators.avgPrice}
+            onChange={(v) => onUpdateIndicators({ avgPrice: v })}
+            tooltip="Preço Médio de Venda — valor médio por peça desta divisão. Determina o volume de peças necessário para atingir a receita da divisão."
+          />
+          <CompactField
+            label="MKD"
+            value={block.indicators.mkd}
+            onChange={(v) => onUpdateIndicators({ mkd: v })}
+            suffix="%"
+            min={0}
+            max={100}
+            tooltip="Percentual de desconto médio aplicado sobre a receita bruta. Markdown alto corrói a margem da divisão."
+          />
+          <CompactField
+            label="Margem"
+            value={block.indicators.margin}
+            onChange={(v) => onUpdateIndicators({ margin: v })}
+            suffix="%"
+            min={0}
+            max={100}
+            tooltip="Margem Bruta — percentual que sobra da receita após o custo dos produtos desta divisão."
+          />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-0.5">
+              <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide">ST</label>
+              <div className="group relative ml-0.5">
+                <Info className="w-3 h-3 text-[#28071C]/30 cursor-help" />
+                <div className="absolute left-full ml-1.5 top-1/2 -translate-y-1/2 w-48 bg-[#28071C] text-white text-[10px] rounded-lg p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+                  ST = Vendas ÷ (Est. inicial + Reposições)
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-0.5 flex-shrink-0">
+              <input
+                type="number"
+                value={block.indicators.sellThrough}
+                onChange={(e) => onUpdateIndicators({ sellThrough: Number(e.target.value) })}
+                min={0} max={100}
+                className="w-16 px-1.5 py-1 border border-[#28071C]/15 rounded-md text-[11px] font-semibold text-right text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+              />
+              <span className="text-[10px] text-[#28071C]/50 w-4">%</span>
+            </div>
           </div>
-          <div className="text-left">
-            <div className="font-bold text-[#28071C]">{DEFAULT_DIVISIONS[divId]}</div>
-            <div className="text-sm text-[#28071C]/60">
-              {block.participation}% participação · PMV R$ {block.indicators.avgPrice.toFixed(0)} ·
-              Margem {block.indicators.margin.toFixed(1)}% · ST {block.indicators.sellThrough.toFixed(1)}%
+        </div>
+      </div>
+
+      {/* Bloco 2 — Pirâmide de Preço */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border-l-2 border-[#7598CF] shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Pirâmide de Preço</div>
+          <button
+            onClick={() => navigate(`/module3-price-pyramid/${divId}`, { state: { plannedAvgPrice: block.indicators.avgPrice } })}
+            className="flex items-center gap-0.5 text-[10px] font-semibold text-[#7598CF] hover:text-[#28071C] transition-colors"
+          >
+            Revisão <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+        <div className="space-y-1.5">
+          {[
+            { label: "P1 Entrada", range: block.priceRange.entry,   pct: block.priceRange.entryPercent,   color: "bg-blue-500" },
+            { label: "P2 Médio",   range: block.priceRange.middle,  pct: block.priceRange.middlePercent,  color: "bg-amber-500" },
+            { label: "P3 Premium", range: block.priceRange.premium, pct: block.priceRange.premiumPercent, color: "bg-[#28071C]" },
+          ].map((item) => {
+            const mid = parsePriceMidpoint(item.range);
+            return (
+              <div key={item.label} className="flex items-center justify-between gap-1">
+                <div className="flex items-center gap-1 min-w-0">
+                  <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.color}`} />
+                  <span className="text-[10px] text-[#28071C]/60 font-semibold truncate">{item.label}</span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <span className="text-[10px] text-[#28071C]/40">{item.range || "—"}</span>
+                  <span className="text-[11px] font-bold text-[#28071C]">{item.pct.toFixed(0)}%</span>
+                  {mid != null && <span className="text-[10px] text-[#28071C]/50">R${mid.toFixed(0)}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Bloco 3 — Matriz de Risco */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border-l-2 border-[#7598CF] shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Matriz de Risco</div>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+            riskValid ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+          }`}>
+            {riskValid ? "100%" : `${riskTotal.toFixed(0)}%`}
+          </span>
+        </div>
+        <div className="space-y-1.5">
+          <CompactRiskField label="Básicos"   value={block.riskMatrix.basics}      onChange={(v) => onUpdateRiskMatrix({ basics: v })}      color="bg-blue-500" />
+          <CompactRiskField label="Moda"      value={block.riskMatrix.fashion}     onChange={(v) => onUpdateRiskMatrix({ fashion: v })}     color="bg-amber-500" />
+          <CompactRiskField label="Alta Moda" value={block.riskMatrix.highFashion} onChange={(v) => onUpdateRiskMatrix({ highFashion: v })} color="bg-red-500" />
+        </div>
+        <div className="mt-2 h-1 rounded-full overflow-hidden flex">
+          <div className="bg-blue-500  transition-all duration-300" style={{ width: `${block.riskMatrix.basics}%` }} />
+          <div className="bg-amber-500 transition-all duration-300" style={{ width: `${block.riskMatrix.fashion}%` }} />
+          <div className="bg-red-500   transition-all duration-300" style={{ width: `${block.riskMatrix.highFashion}%` }} />
+        </div>
+      </div>
+
+      {/* Bloco 4 — Volume / OTB + Cobertura */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border-l-2 border-[#7598CF] shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Volume / OTB</div>
+          <div className="flex bg-[#28071C]/10 rounded p-0.5">
+            <button
+              onClick={() => setIsProducer(true)}
+              className={`text-[10px] px-2 py-0.5 rounded font-semibold transition-all ${isProducer ? "bg-[#28071C] text-white" : "text-[#28071C]/60"}`}
+            >Prod</button>
+            <button
+              onClick={() => setIsProducer(false)}
+              className={`text-[10px] px-2 py-0.5 rounded font-semibold transition-all ${!isProducer ? "bg-[#28071C] text-white" : "text-[#28071C]/60"}`}
+            >Rev</button>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          {isProducer ? (
+            <CompactField
+              label="Volume (pçs)"
+              value={block.volumeCoverage.productionVolume ?? 0}
+              onChange={(v) => onUpdateVolume({ productionVolume: v })}
+              tooltip="Total de peças a produzir nesta divisão para a temporada. Determina o investimento total em produção."
+            />
+          ) : (
+            <CompactField
+              label="OTB (R$)"
+              value={block.volumeCoverage.otbBudget ?? 0}
+              onChange={(v) => onUpdateVolume({ otbBudget: v })}
+              tooltip="Open-To-Buy — orçamento disponível para comprar mercadoria desta divisão. Controla o nível de investimento em estoque."
+            />
+          )}
+          <CompactField
+            label="Cobertura (d)"
+            value={block.volumeCoverage.coverage}
+            onChange={(v) => onUpdateVolume({ coverage: v })}
+            tooltip="Quantos dias o estoque disponível cobre as vendas planejadas. Cobertura alta aumenta risco de sobrestoque e capital parado."
+          />
+          <CompactField
+            label="Est. Inicial"
+            value={block.volumeCoverage.initialStock}
+            onChange={(v) => onUpdateVolume({ initialStock: v })}
+            tooltip="Quantidade de peças em estoque no início da temporada para esta divisão."
+          />
+          <CompactField
+            label="Reposições"
+            value={block.volumeCoverage.replenishments}
+            onChange={(v) => onUpdateVolume({ replenishments: v })}
+            tooltip="Quantidade de peças de reposição previstas para recebimento ao longo da temporada."
+          />
+          <CompactField label="Vendas Esp."     value={block.volumeCoverage.unitsExpectedSold} onChange={(v) => onUpdateVolume({ unitsExpectedSold: v })} />
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
+            <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">ST Calc.</label>
+            <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">
+              {block.volumeCoverage.initialStock + block.volumeCoverage.replenishments > 0
+                ? `${((block.volumeCoverage.unitsExpectedSold / (block.volumeCoverage.initialStock + block.volumeCoverage.replenishments)) * 100).toFixed(1)}%`
+                : "—"}
             </div>
           </div>
         </div>
-        <div className="text-[#28071C]/50">
-          {expanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-        </div>
-      </button>
+      </div>
 
-      {expanded && (
-        <div className="px-6 pb-6 border-t border-[#28071C]/10 space-y-8 pt-6">
-
-          {/* ── BLOCO 1: Indicadores Comerciais ──────────────────────────── */}
-          <section>
-            <h4 className="text-xs uppercase tracking-wide font-bold text-[#28071C]/70 mb-4">
-              Bloco 1 — Indicadores Comerciais e de Rentabilidade
-            </h4>
-            <div className="grid grid-cols-4 gap-4">
-              <FieldInput
-                label="Preço Médio de Venda (R$)"
-                value={block.indicators.avgPrice}
-                onChange={(v) => onUpdateIndicators({ avgPrice: v })}
-              />
-              <FieldInput
-                label="MKD %"
-                value={block.indicators.mkd}
-                onChange={(v) => onUpdateIndicators({ mkd: v })}
-                suffix="%"
-                min={0}
-                max={100}
-              />
-              <FieldInput
-                label="Margem %"
-                value={block.indicators.margin}
-                onChange={(v) => onUpdateIndicators({ margin: v })}
-                suffix="%"
-                min={0}
-                max={100}
-              />
-              <div>
-                <div className="flex items-center gap-1 mb-1.5">
-                  <label className="text-xs text-[#28071C]/60 font-semibold uppercase tracking-wide">
-                    Sell-Through %
-                  </label>
-                  <div className="group relative">
-                    <Info className="w-3.5 h-3.5 text-[#28071C]/40 cursor-help" />
-                    <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 w-64 bg-[#28071C] text-white text-xs rounded-lg p-3 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      <p className="font-semibold mb-1">Sell-Through</p>
-                      <p>Mede o % de produtos vendidos ao longo da vida da coleção.</p>
-                      <p className="mt-1 font-mono text-[10px] bg-white/10 rounded px-2 py-1">
-                        ST = Vendas ÷ (Est. inicial + Reposições)
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    value={block.indicators.sellThrough}
-                    onChange={(e) => onUpdateIndicators({ sellThrough: Number(e.target.value) })}
-                    min={0}
-                    max={100}
-                    className="flex-1 px-3 py-2 border-2 border-[#28071C]/20 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#28071C]/40"
-                  />
-                  <span className="text-xs text-[#28071C]/50">%</span>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* ── BLOCO 2: Faixa de Preço ──────────────────────────────────── */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-xs uppercase tracking-wide font-bold text-[#28071C]/70">
-                Bloco 2 — Planejamento / Revisão da Faixa de Preço
-              </h4>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                priceValid ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-              }`}>
-                {priceValid ? "Soma 100%" : `Soma: ${priceTotal.toFixed(0)}%`}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-4 mb-4">
-              {[
-                { label: "Entrada (faixa R$)", field: "entry" as keyof PriceRange },
-                { label: "Médio (faixa R$)", field: "middle" as keyof PriceRange },
-                { label: "Premium (faixa R$)", field: "premium" as keyof PriceRange },
-              ].map((item) => (
-                <div key={item.field}>
-                  <label className="text-xs text-[#28071C]/60 mb-1.5 block font-semibold uppercase tracking-wide">
-                    {item.label}
-                  </label>
-                  <input
-                    type="text"
-                    value={block.priceRange[item.field] as string}
-                    onChange={(e) => onUpdatePriceRange({ [item.field]: e.target.value })}
-                    placeholder="Ex: 119-169"
-                    className="w-full px-3 py-2 border-2 border-[#28071C]/20 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#28071C]/40"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="grid grid-cols-3 gap-4 pt-4 border-t border-[#28071C]/10">
-              {[
-                { label: "% Entrada", field: "entryPercent" as keyof PriceRange },
-                { label: "% Médio", field: "middlePercent" as keyof PriceRange },
-                { label: "% Premium", field: "premiumPercent" as keyof PriceRange },
-              ].map((item) => (
-                <FieldInput
-                  key={item.field}
-                  label={item.label}
-                  value={block.priceRange[item.field] as number}
-                  onChange={(v) => onUpdatePriceRange({ [item.field]: v })}
-                  suffix="%"
-                  min={0}
-                  max={100}
-                />
-              ))}
-            </div>
-          </section>
-
-          {/* ── BLOCO 3: Matriz de Risco ─────────────────────────────────── */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-xs uppercase tracking-wide font-bold text-[#28071C]/70">
-                Bloco 3 — Planejamento de Risco por Divisão
-              </h4>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                riskValid ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-              }`}>
-                {riskValid ? "Soma 100%" : `Soma: ${riskTotal.toFixed(0)}%`}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              <RiskFieldInput
-                label="Básicos"
-                description="Produtos recorrentes / baixo risco"
-                value={block.riskMatrix.basics}
-                onChange={(v) => onUpdateRiskMatrix({ basics: v })}
-                color="bg-blue-500"
-              />
-              <RiskFieldInput
-                label="Moda"
-                description="Produtos de tendência / risco médio"
-                value={block.riskMatrix.fashion}
-                onChange={(v) => onUpdateRiskMatrix({ fashion: v })}
-                color="bg-amber-500"
-              />
-              <RiskFieldInput
-                label="Alta Moda"
-                description="Produtos de imagem / alto risco"
-                value={block.riskMatrix.highFashion}
-                onChange={(v) => onUpdateRiskMatrix({ highFashion: v })}
-                color="bg-red-500"
-              />
-            </div>
-            {/* Barra visual da matriz */}
-            <div className="mt-3 h-2 rounded-full overflow-hidden flex">
-              <div
-                className="bg-blue-500 transition-all duration-300"
-                style={{ width: `${block.riskMatrix.basics}%` }}
-              />
-              <div
-                className="bg-amber-500 transition-all duration-300"
-                style={{ width: `${block.riskMatrix.fashion}%` }}
-              />
-              <div
-                className="bg-red-500 transition-all duration-300"
-                style={{ width: `${block.riskMatrix.highFashion}%` }}
-              />
-            </div>
-          </section>
-
-          {/* ── BLOCO 4: Volume / OTB + Cobertura ───────────────────────── */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-xs uppercase tracking-wide font-bold text-[#28071C]/70">
-                Bloco 4 — Volume / OTB + Cobertura
-              </h4>
-              <div className="flex bg-[#28071C]/10 rounded-lg p-0.5">
-                <button
-                  onClick={() => setIsProducer(true)}
-                  className={`text-xs px-3 py-1 rounded-md font-semibold transition-all ${
-                    isProducer ? "bg-[#28071C] text-white" : "text-[#28071C]/60"
-                  }`}
-                >
-                  Produtor
-                </button>
-                <button
-                  onClick={() => setIsProducer(false)}
-                  className={`text-xs px-3 py-1 rounded-md font-semibold transition-all ${
-                    !isProducer ? "bg-[#28071C] text-white" : "text-[#28071C]/60"
-                  }`}
-                >
-                  Revenda
-                </button>
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              {isProducer ? (
-                <FieldInput
-                  label="Volume de Produção (peças)"
-                  value={block.volumeCoverage.productionVolume ?? 0}
-                  onChange={(v) => onUpdateVolume({ productionVolume: v })}
-                />
-              ) : (
-                <FieldInput
-                  label="OTB — Orçamento de Compra (R$)"
-                  value={block.volumeCoverage.otbBudget ?? 0}
-                  onChange={(v) => onUpdateVolume({ otbBudget: v })}
-                />
-              )}
-              <FieldInput
-                label="Cobertura (dias)"
-                value={block.volumeCoverage.coverage}
-                onChange={(v) => onUpdateVolume({ coverage: v })}
-              />
-              <FieldInput
-                label="Estoque Inicial (peças)"
-                value={block.volumeCoverage.initialStock}
-                onChange={(v) => onUpdateVolume({ initialStock: v })}
-              />
-              <FieldInput
-                label="Reposições no Período"
-                value={block.volumeCoverage.replenishments}
-                onChange={(v) => onUpdateVolume({ replenishments: v })}
-              />
-              <FieldInput
-                label="Peças Esperadas Vendidas"
-                value={block.volumeCoverage.unitsExpectedSold}
-                onChange={(v) => onUpdateVolume({ unitsExpectedSold: v })}
-              />
-              {/* Sell-Through calculado */}
-              <div>
-                <label className="text-xs text-[#28071C]/60 mb-1.5 block font-semibold uppercase tracking-wide">
-                  Sell-Through Calculado
-                </label>
-                <div className="px-3 py-2 bg-[#28071C]/5 border-2 border-[#28071C]/10 rounded-lg text-sm font-bold text-[#28071C]">
-                  {block.volumeCoverage.initialStock + block.volumeCoverage.replenishments > 0
-                    ? `${((block.volumeCoverage.unitsExpectedSold / (block.volumeCoverage.initialStock + block.volumeCoverage.replenishments)) * 100).toFixed(1)}%`
-                    : "—"}
-                </div>
-              </div>
-            </div>
-          </section>
-
-        </div>
-      )}
     </div>
   );
 }
 
 // ─── Helpers de campos ────────────────────────────────────────────────────────
 
-function FieldInput({
+function parsePriceMidpoint(range: string): number | null {
+  if (!range) return null;
+  const parts = range.split("-").map((s) => parseFloat(s.trim()));
+  if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+    return (parts[0] + parts[1]) / 2;
+  }
+  return null;
+}
+
+function CompactField({
   label,
   value,
   onChange,
   suffix,
   min,
   max,
+  tooltip,
 }: {
   label: string;
   value: number;
@@ -1047,59 +981,66 @@ function FieldInput({
   suffix?: string;
   min?: number;
   max?: number;
+  tooltip?: string;
 }) {
   return (
-    <div>
-      <label className="text-xs text-[#28071C]/60 mb-1.5 block font-semibold uppercase tracking-wide">
-        {label}
-      </label>
-      <div className="flex items-center gap-1">
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-0.5 shrink-0">
+        <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide leading-tight">
+          {label}
+        </label>
+        {tooltip && (
+          <div className="group relative ml-0.5">
+            <Info className="w-3 h-3 text-[#28071C]/25 cursor-help group-hover:text-[#7598CF] transition-colors" />
+            <div className="absolute left-full ml-1.5 top-1/2 -translate-y-1/2 w-52 bg-[#28071C] text-white text-[10px] rounded-lg p-2.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-30 leading-relaxed">
+              {tooltip}
+              <span className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[#28071C]" />
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-0.5 flex-shrink-0">
         <input
           type="number"
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           min={min}
           max={max}
-          className="flex-1 px-3 py-2 border-2 border-[#28071C]/20 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#28071C]/40"
+          className="w-16 px-1.5 py-1 border border-[#28071C]/15 rounded-md text-[11px] font-semibold text-right text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
         />
-        {suffix && <span className="text-xs text-[#28071C]/50 font-medium">{suffix}</span>}
+        {suffix && <span className="text-[10px] text-[#28071C]/50 w-4">{suffix}</span>}
       </div>
     </div>
   );
 }
 
-function RiskFieldInput({
+function CompactRiskField({
   label,
-  description,
   value,
   onChange,
   color,
 }: {
   label: string;
-  description: string;
   value: number;
   onChange: (v: number) => void;
   color: string;
 }) {
   return (
-    <div>
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <div className={`w-2.5 h-2.5 rounded-full ${color}`} />
-        <label className="text-xs text-[#28071C]/60 font-semibold uppercase tracking-wide">
-          {label}
-        </label>
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-1 min-w-0">
+        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${color}`} />
+        <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide truncate">{label}</label>
       </div>
-      <p className="text-xs text-[#28071C]/40 mb-2">{description}</p>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5 flex-shrink-0">
         <input
           type="number"
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           min={0}
           max={100}
-          className="flex-1 px-3 py-2 border-2 border-[#28071C]/20 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#28071C]/40"
+          className="w-16 px-1.5 py-1 border border-[#28071C]/15 rounded-md text-[11px] font-semibold text-right text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
         />
-        <span className="text-xs text-[#28071C]/50">%</span>
+        <span className="text-[10px] text-[#28071C]/50 w-4">%</span>
       </div>
     </div>
   );

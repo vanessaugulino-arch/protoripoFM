@@ -7,8 +7,9 @@ import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
   Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
-  ToggleLeft, ToggleRight,
+  ToggleLeft, ToggleRight, FileDown,
 } from "lucide-react";
+import { exportToPDF } from '../../utils/exportPDF';
 import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
 import {
@@ -302,6 +303,18 @@ export default function Planning() {
     setScenarioNameInput("")
   }
 
+  const [isExportingPDF, setIsExportingPDF] = useState(false)
+
+  const handleExportPDF = async () => {
+    setIsExportingPDF(true)
+    await exportToPDF({
+      elementId: "planning-export-content",
+      fileName:  `planejamento_estrategico_${year}`,
+      title:     `Planejamento Estratégico ${year}`,
+    })
+    setIsExportingPDF(false)
+  }
+
   const handleExportScenarios = () => {
     if (scenarios.length === 0) {
       alert("Nenhum cenário salvo para exportar. Salve ao menos um cenário primeiro.")
@@ -327,12 +340,17 @@ export default function Planning() {
   }
 
   const handleApplyMetas = () => {
-    if (!activeScenario) {
+    const target = activeScenario ?? (scenarios.length > 0 ? scenarios[scenarios.length - 1] : null)
+    if (!target) {
       alert("Salve um cenário antes de aplicar as metas.")
       return
     }
-    if (window.confirm(`Aplicar as metas do cenário "${activeScenario.name}" como plano oficial de ${year}?`)) {
-      alert(`Metas do cenário "${activeScenario.name}" aplicadas ao plano de ${year}.`)
+    if (window.confirm(`Aplicar as metas do cenário "${target.name}" como plano oficial de ${year}?`)) {
+      // Persiste o cenário aplicado no ciclo do localStorage
+      const vals: Record<string, number | null> = {}
+      FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
+      addVersionToCycle(year, target.name, vals)
+      alert(`Metas do cenário "${target.name}" aplicadas ao plano de ${year}.`)
     }
   }
 
@@ -380,48 +398,29 @@ export default function Planning() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
 
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-3 shadow-lg">
-        <div className="max-w-[1800px] mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/planning-gateway")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <div className="flex items-center gap-2">
-                <p className="text-[#F6F3AA]/70 text-[10px] uppercase tracking-widest">Módulo 1 — Planejamento Estratégico</p>
-              </div>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-[#F6F3AA] font-bold text-lg">Ano Fiscal {year}</span>
-                <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold border ${
-                  mode === "new"
-                    ? "bg-[#F6F3AA]/20 text-[#F6F3AA] border-[#F6F3AA]/30"
-                    : "bg-white/20 text-[#F6F3AA]/80 border-white/20"
-                }`}>
-                  {mode === "new" ? "✦ Novo Ciclo" : "↺ Revisão"}
-                </span>
-                {focus && focusColors && (
-                  <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${focusColors.badge}`}>
-                    {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
-                  </span>
-                )}
-              </div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento Estratégico</span>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate("/profile-adjust")}
-              className="flex items-center gap-1.5 text-[#F6F3AA]/70 hover:text-[#F6F3AA] text-sm transition-colors"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
             <div className="flex items-center gap-2 text-[#F6F3AA]">
-              <User className="w-4 h-4" /><span className="text-sm">{user.name}</span>
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/") }}
-              className="text-[#F6F3AA] hover:opacity-80"><LogOut className="w-5 h-5" /></button>
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>
@@ -521,7 +520,7 @@ export default function Planning() {
       </div>
 
       {/* ── 3-COLUMN LAYOUT ────────────────────────────────────────────────── */}
-      <div className="max-w-[1800px] mx-auto px-6 py-6 flex gap-5 items-start">
+      <div id="planning-export-content" className="max-w-[1800px] mx-auto px-6 py-6 flex gap-5 items-start">
 
         {/* ═══════════════════════════════════════════════════════════════════
             COLUNA 1 — Indicadores Selecionados para Planejamento
@@ -884,7 +883,7 @@ export default function Planning() {
                 )}
               </button>
 
-              {/* Exportar */}
+              {/* Exportar JSON */}
               <button
                 onClick={handleExportScenarios}
                 disabled={scenarios.length === 0}
@@ -892,7 +891,18 @@ export default function Planning() {
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
               >
                 <Download className="w-4 h-4" />
-                Exportar cenários
+                Exportar JSON
+              </button>
+
+              {/* Exportar PDF */}
+              <button
+                onClick={handleExportPDF}
+                disabled={isExportingPDF}
+                title="Exportar visualização atual como PDF"
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+              >
+                <FileDown className="w-4 h-4" />
+                {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
               </button>
             </div>
 
@@ -900,8 +910,14 @@ export default function Planning() {
               {/* Aplicar metas */}
               <button
                 onClick={handleApplyMetas}
-                disabled={!activeScenario}
-                title={!activeScenario ? "Salve um cenário antes de aplicar" : "Aplicar metas como plano oficial"}
+                disabled={!activeScenario && scenarios.length === 0}
+                title={
+                  !activeScenario && scenarios.length === 0
+                    ? "Salve um cenário antes de aplicar"
+                    : activeScenario
+                      ? `Aplicar metas do cenário "${activeScenario.name}"`
+                      : "Aplicar metas do último cenário salvo"
+                }
                 className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
               >
                 <CheckCheck className="w-4 h-4" />

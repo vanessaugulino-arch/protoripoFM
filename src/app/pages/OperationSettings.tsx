@@ -12,6 +12,15 @@ import {
   Layers,
   Lock,
   AlertCircle,
+  Tag,
+  Upload,
+  FileSpreadsheet,
+  CheckCircle2,
+  ChevronRight,
+  X,
+  Info,
+  Plus,
+  ChevronDown,
 } from "lucide-react";
 
 interface UserData {
@@ -40,6 +49,19 @@ interface Colecao {
   dataFim: string;    // YYYY-MM-DD
 }
 
+// ─── Faixas de Preço por Categoria ────────────────────────────────────────────
+interface FaixaPreco {
+  id: number;
+  grupo: string;
+  divisao?: string;
+  categoria: string;
+  faixas: {
+    P1: { inicio: number; fim: number };
+    P2: { inicio: number; fim: number };
+    P3: { inicio: number; fim: number };
+  };
+}
+
 // ─── Lead Times ───────────────────────────────────────────────────────────────
 interface LeadTimeRule {
   id: number;
@@ -58,11 +80,46 @@ const months = [
   "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
   "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 ];
-const grupos        = ["Vestuário", "Acessórios", "Calçados", "Joias"];
-const categorias    = ["Blusas", "Vestidos", "Calças", "Saias", "Jaquetas"];
-const subcategorias = ["Casual", "Formal", "Esportivo", "Festa"];
-const niveisRisco   = ["Básico", "Moda", "Alta Moda"];
-const faixasPreco   = ["Econômico", "Médio", "Premium", "Luxo"];
+const grupos               = ["Vestuário", "Acessórios", "Calçados", "Joias"];
+const categorias           = ["Blusas", "Vestidos", "Calças", "Saias", "Jaquetas"];
+const SUBCATEGORIAS_DEFAULT = ["Casual", "Formal", "Esportivo", "Festa"];
+const niveisRisco          = ["Básico", "Moda", "Alta Moda"];
+const FAIXAS_PRECO_OPTIONS = ["Econômico", "Médio", "Premium", "Luxo"];
+
+// ─── Hierarquia estruturada ───────────────────────────────────────────────────
+export interface HierNode { id: string; label: string; children: HierNode[] }
+const HIER_STRUCT_KEY = 'fashionmind_hierarchy_struct'
+const LEVEL_LABELS = ['Divisão', 'Grupo', 'Categoria', 'Subcategoria']
+
+// ─── Importação de Planilhas ─────────────────────────────────────────────────
+type ImportMode = "completa" | "hierarquia";
+type ImportStep = "select" | "upload" | "mapping" | "done";
+
+interface SystemField {
+  key: string;
+  label: string;
+  required: boolean;
+}
+
+const SYSTEM_FIELDS_COMPLETA: SystemField[] = [
+  { key: "sku",         label: "Código do Produto (SKU)",   required: true  },
+  { key: "name",        label: "Descrição / Nome",           required: true  },
+  { key: "division",    label: "Divisão",                    required: false },
+  { key: "group",       label: "Grupo / Categoria",          required: false },
+  { key: "category",    label: "Subcategoria",               required: false },
+  { key: "salePrice",   label: "Preço de Venda",             required: true  },
+  { key: "cost",        label: "Custo",                      required: true  },
+  { key: "color",       label: "Cor",                        required: false },
+  { key: "season",      label: "Temporada / Coleção",        required: false },
+];
+
+const SYSTEM_FIELDS_HIERARQUIA: SystemField[] = [
+  { key: "sku",        label: "Código do Produto (chave de join)", required: true  },
+  { key: "hierLevel1", label: "Nível Hierárquico 1",               required: true  },
+  { key: "hierLevel2", label: "Nível Hierárquico 2",               required: false },
+  { key: "hierLevel3", label: "Nível Hierárquico 3",               required: false },
+  { key: "hierLevel4", label: "Nível Hierárquico 4",               required: false },
+];
 
 const TEMPORADAS_KEY = "fashionmind_temporadas";
 const COLECOES_KEY   = "fashionmind_colecoes";
@@ -71,6 +128,126 @@ const DEFAULT_TEMPORADAS: Temporada[] = [
   { id: 1, nome: "Verão 2027",   mesInicio: "Outubro", mesFim: "Março",    criadaEm: new Date().toISOString() },
   { id: 2, nome: "Inverno 2027", mesInicio: "Abril",   mesFim: "Setembro", criadaEm: new Date().toISOString() },
 ];
+
+// ─── Componente recursivo da árvore de hierarquia ────────────────────────────
+function HierNodeRow({
+  node, depth, expanded, onToggle,
+  editId, editLabel, onEditStart, onEditChange, onEditSave, onEditCancel,
+  addTarget, addLabel, onAddStart, onAddChange, onAddConfirm, onAddCancel,
+  onDelete, levelLabels, isLast,
+}: {
+  node: HierNode; depth: number;
+  expanded: Set<string>; onToggle: (id: string) => void;
+  editId: string | null; editLabel: string;
+  onEditStart: (id: string, label: string) => void;
+  onEditChange: (v: string) => void;
+  onEditSave: () => void;
+  onEditCancel: () => void;
+  addTarget: string | null; addLabel: string;
+  onAddStart: (id: string) => void;
+  onAddChange: (v: string) => void;
+  onAddConfirm: (parentId: string | null) => void;
+  onAddCancel: () => void;
+  onDelete: (id: string) => void;
+  levelLabels: string[];
+  isLast: boolean;
+}) {
+  const isExpanded = expanded.has(node.id);
+  const isEditing  = editId === node.id;
+  const isAdding   = addTarget === node.id;
+  const childLevel = Math.min(depth + 1, levelLabels.length - 1);
+  const canAddChild = depth < levelLabels.length - 1;
+
+  return (
+    <div className={`${isLast ? '' : 'border-b border-[#28071C]/6'}`}>
+      {/* Row */}
+      <div className={`flex items-center gap-2 px-4 py-2.5 hover:bg-[#28071C]/3 transition-colors`}
+        style={{ paddingLeft: `${16 + depth * 20}px` }}>
+        {/* Expand/collapse */}
+        {node.children.length > 0 ? (
+          <button onClick={() => onToggle(node.id)} className="text-[#28071C]/30 hover:text-[#28071C] transition-colors flex-shrink-0">
+            {isExpanded
+              ? <ChevronDown className="w-3.5 h-3.5" />
+              : <ChevronRight className="w-3.5 h-3.5" />}
+          </button>
+        ) : <span className="w-3.5 flex-shrink-0" />}
+
+        {/* Level badge */}
+        <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded flex-shrink-0 ${
+          depth === 0 ? 'bg-[#7598CF]/15 text-[#7598CF]'
+            : depth === 1 ? 'bg-[#9B8CD8]/15 text-[#9B8CD8]'
+            : depth === 2 ? 'bg-amber-100 text-amber-700'
+            : 'bg-emerald-100 text-emerald-700'
+        }`}>
+          {levelLabels[depth]}
+        </span>
+
+        {/* Label or edit input */}
+        {isEditing ? (
+          <div className="flex items-center gap-2 flex-1">
+            <input autoFocus type="text" value={editLabel} onChange={e => onEditChange(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') onEditSave(); if (e.key === 'Escape') onEditCancel(); }}
+              className="flex-1 px-2 py-1 border-2 border-[#7598CF]/50 rounded text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
+            <button onClick={onEditSave} className="text-emerald-600 hover:text-emerald-700 text-xs font-semibold">OK</button>
+            <button onClick={onEditCancel} className="text-[#28071C]/40 hover:text-[#28071C]"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        ) : (
+          <span className="text-[#28071C] text-sm flex-1 truncate">{node.label}</span>
+        )}
+
+        {/* Actions */}
+        {!isEditing && (
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-auto"
+            onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+            onMouseLeave={e => (e.currentTarget.style.opacity = '0')}>
+            {canAddChild && (
+              <button onClick={() => onAddStart(node.id)} title={`Adicionar ${levelLabels[childLevel]}`}
+                className="p-1 text-[#7598CF] hover:bg-[#7598CF]/10 rounded transition-colors">
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button onClick={() => onEditStart(node.id, node.label)} title="Editar"
+              className="p-1 text-[#28071C]/40 hover:text-[#28071C] hover:bg-[#28071C]/8 rounded transition-colors">
+              <Edit className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => onDelete(node.id)} title="Excluir"
+              className="p-1 text-[#28071C]/30 hover:text-red-500 hover:bg-red-50 rounded transition-colors">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Inline add-child input */}
+      {isAdding && (
+        <div className="flex gap-2 px-4 py-2 bg-[#7598CF]/5 border-b border-[#28071C]/6"
+          style={{ paddingLeft: `${16 + (depth + 1) * 20}px` }}>
+          <input autoFocus type="text" value={addLabel} onChange={e => onAddChange(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') onAddConfirm(node.id); if (e.key === 'Escape') onAddCancel(); }}
+            placeholder={`Nome da ${levelLabels[childLevel]}…`}
+            className="flex-1 px-2 py-1.5 border-2 border-[#7598CF]/50 rounded text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white" />
+          <button onClick={() => onAddConfirm(node.id)} className="px-3 py-1.5 bg-[#7598CF] text-white rounded text-xs font-semibold hover:opacity-90">Adicionar</button>
+          <button onClick={onAddCancel} className="px-2 py-1.5 border border-[#28071C]/20 text-[#28071C]/50 rounded text-xs hover:bg-gray-50"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
+
+      {/* Children */}
+      {isExpanded && node.children.map((child, i) => (
+        <HierNodeRow key={child.id} node={child} depth={depth + 1}
+          expanded={expanded} onToggle={onToggle}
+          editId={editId} editLabel={editLabel}
+          onEditStart={onEditStart} onEditChange={onEditChange}
+          onEditSave={onEditSave} onEditCancel={onEditCancel}
+          addTarget={addTarget} addLabel={addLabel}
+          onAddStart={onAddStart} onAddChange={onAddChange}
+          onAddConfirm={onAddConfirm} onAddCancel={onAddCancel}
+          onDelete={onDelete} levelLabels={levelLabels}
+          isLast={i === node.children.length - 1}
+        />
+      ))}
+    </div>
+  );
+}
 
 // ─── Month-range validation ───────────────────────────────────────────────────
 function monthInRange(testIdx: number, startIdx: number, endIdx: number): boolean {
@@ -130,6 +307,115 @@ export default function OperationSettings() {
     { id: 2, type: "pedido",   grupo: "Acessórios", categoria: "Vestidos", subcategoria: "Formal",  nivelRisco: "Alta Moda", faixaPreco: "Premium", leadTime: 60, unit: "dias" },
   ]);
 
+  // ── Hierarquia de Produtos ───────────────────────────────────────────────────
+  const [hierDivisaoAtiva, setHierDivisaoAtiva] = useState<boolean>(() => {
+    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).hierDivisaoAtiva ?? false : false; } catch { return false; }
+  });
+  const [hierOrdem, setHierOrdem] = useState<"divisao_primeiro" | "grupo_primeiro">(() => {
+    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).hierOrdem ?? "grupo_primeiro" : "grupo_primeiro"; } catch { return "grupo_primeiro"; }
+  });
+  const [subcategorias, setSubcategorias] = useState<string[]>(() => {
+    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).subcategorias ?? SUBCATEGORIAS_DEFAULT : SUBCATEGORIAS_DEFAULT; } catch { return SUBCATEGORIAS_DEFAULT; }
+  });
+  const [novaSubcategoria, setNovaSubcategoria] = useState("");
+  const [hierSavedOk, setHierSavedOk] = useState(false);
+
+  // ── Faixas de Preço por Categoria ────────────────────────────────────────────
+  const [faixasPreco, setFaixasPreco] = useState<FaixaPreco[]>(() => {
+    try { const r = localStorage.getItem("fashionmind_faixas_preco"); return r ? JSON.parse(r) : []; } catch { return []; }
+  });
+  const [fpGrupo,    setFpGrupo]    = useState("");
+  const [fpDivisao,  setFpDivisao]  = useState("");
+  const [fpCategoria, setFpCategoria] = useState("");
+  const [fpP1Inicio, setFpP1Inicio] = useState<number>(0);
+  const [fpP1Fim,    setFpP1Fim]    = useState<number>(0);
+  const [fpP2Inicio, setFpP2Inicio] = useState<number>(0);
+  const [fpP2Fim,    setFpP2Fim]    = useState<number>(0);
+  const [fpP3Inicio, setFpP3Inicio] = useState<number>(0);
+  const [fpP3Fim,    setFpP3Fim]    = useState<number>(0);
+  const [fpSavedOk,  setFpSavedOk]  = useState(false);
+
+  // ── Sustentador de Margem ────────────────────────────────────────────────────
+  const [basicosAtivos, setBasicosAtivos] = useState<boolean>(() => {
+    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosAtivos ?? false : false; } catch { return false; }
+  });
+  const [basicosTipo, setBasicosTipo] = useState<"estoque" | "novos">(() => {
+    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosTipo ?? "novos" : "novos"; } catch { return "novos"; }
+  });
+  const [basicosSkus, setBasicosSkus] = useState<string>(() => {
+    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosSkus ?? "" : ""; } catch { return ""; }
+  });
+  const [basicosSavedOk, setBasicosSavedOk] = useState(false);
+
+  // ── Hierarquia estruturada (árvore de Divisão → Grupo → Categoria → Subcat.) ──
+  const [hierStruct, setHierStruct] = useState<HierNode[]>(() => {
+    try { return JSON.parse(localStorage.getItem(HIER_STRUCT_KEY) ?? '[]') } catch { return [] }
+  });
+  const [hierExpanded, setHierExpanded] = useState<Set<string>>(new Set());
+  const [hierAddTarget, setHierAddTarget] = useState<string | null>(null); // 'root' | nodeId
+  const [hierAddLabel,  setHierAddLabel]  = useState('');
+  const [hierEditId,    setHierEditId]    = useState<string | null>(null);
+  const [hierEditLabel, setHierEditLabel] = useState('');
+  const [hierSavedStructOk, setHierSavedStructOk] = useState(false);
+
+  // ── Importação de Planilhas ────────────────────────────────────────────────
+  const [importMode, setImportMode]           = useState<ImportMode | null>(null);
+  const [importStep, setImportStep]           = useState<ImportStep>("select");
+  const [importFileName, setImportFileName]   = useState<string>("");
+  const [importHeaders, setImportHeaders]     = useState<string[]>([]);
+  const [columnMapping, setColumnMapping]     = useState<Record<string, string>>({});
+  const [importDragging, setImportDragging]   = useState(false);
+
+  // ── Importação handlers ────────────────────────────────────────────────────
+  const processImportFile = (file: File) => {
+    setImportFileName(file.name);
+    const isCsv = file.name.toLowerCase().endsWith(".csv");
+
+    if (isCsv) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        const firstLine = text.split(/\r?\n/)[0] ?? "";
+        const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+        setImportHeaders(headers.length > 0 ? headers : ["Coluna A", "Coluna B", "Coluna C"]);
+        setColumnMapping({});
+        setImportStep("mapping");
+      };
+      reader.readAsText(file, "utf-8");
+    } else {
+      // XLSX: sem parser instalado — simular com colunas genéricas
+      setImportHeaders(["Coluna A", "Coluna B", "Coluna C", "Coluna D", "Coluna E", "Coluna F"]);
+      setColumnMapping({});
+      setImportStep("mapping");
+    }
+  };
+
+  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processImportFile(file);
+  };
+
+  const handleImportDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setImportDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) processImportFile(file);
+  };
+
+  const handleImportReset = () => {
+    setImportMode(null);
+    setImportStep("select");
+    setImportFileName("");
+    setImportHeaders([]);
+    setColumnMapping({});
+  };
+
+  const activeSystemFields = importMode === "completa" ? SYSTEM_FIELDS_COMPLETA : SYSTEM_FIELDS_HIERARQUIA;
+
+  const requiredFieldsMapped = activeSystemFields
+    .filter(f => f.required)
+    .every(f => Boolean(columnMapping[f.key]));
+
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
     if (stored) {
@@ -140,6 +426,12 @@ export default function OperationSettings() {
       navigate("/");
     }
   }, [navigate]);
+
+  useEffect(() => {
+    if (!localStorage.getItem(TEMPORADAS_KEY)) {
+      localStorage.setItem(TEMPORADAS_KEY, JSON.stringify(DEFAULT_TEMPORADAS));
+    }
+  }, []);
 
   // ── Persistência helpers ──────────────────────────────────────────────────────
   const persistTemporadas = (data: Temporada[]) => {
@@ -263,6 +555,128 @@ export default function OperationSettings() {
   const handleDeleteRule = (id: number) =>
     setLeadTimeRules(leadTimeRules.filter(r => r.id !== id));
 
+  // ── Handlers: Hierarquia ─────────────────────────────────────────────────────
+  const handleAddSubcategoria = () => {
+    const val = novaSubcategoria.trim();
+    if (!val || subcategorias.includes(val)) return;
+    setSubcategorias([...subcategorias, val]);
+    setNovaSubcategoria("");
+  };
+  const handleDeleteSubcategoria = (s: string) =>
+    setSubcategorias(subcategorias.filter(x => x !== s));
+
+  const handleSaveHierarquia = () => {
+    try { localStorage.setItem("fashionmind_hierarquia", JSON.stringify({ hierDivisaoAtiva, hierOrdem, subcategorias })); } catch { /* */ }
+    setHierSavedOk(true);
+    setTimeout(() => setHierSavedOk(false), 2500);
+  };
+
+  // ── Handlers: Hierarquia estruturada ─────────────────────────────────────────
+  function hierNodeDepth(nodes: HierNode[], id: string, depth = 0): number {
+    for (const n of nodes) {
+      if (n.id === id) return depth;
+      const d = hierNodeDepth(n.children, id, depth + 1);
+      if (d >= 0) return d;
+    }
+    return -1;
+  }
+
+  function persistHierStruct(nodes: HierNode[]) {
+    setHierStruct(nodes);
+    try { localStorage.setItem(HIER_STRUCT_KEY, JSON.stringify(nodes)); } catch { /* */ }
+    setHierSavedStructOk(true);
+    setTimeout(() => setHierSavedStructOk(false), 2000);
+  }
+
+  function hierAddNode(parentId: string | null) {
+    const label = hierAddLabel.trim();
+    if (!label) return;
+    const newNode: HierNode = { id: `${Date.now()}`, label, children: [] };
+    function addTo(nodes: HierNode[]): HierNode[] {
+      if (parentId === null) return [...nodes, newNode];
+      return nodes.map(n => ({
+        ...n,
+        children: n.id === parentId ? [...n.children, newNode] : addTo(n.children),
+      }));
+    }
+    persistHierStruct(addTo(hierStruct));
+    setHierAddTarget(null);
+    setHierAddLabel('');
+    setHierExpanded(prev => new Set([...prev, ...(parentId ? [parentId] : [])]));
+  }
+
+  function hierDeleteNode(id: string) {
+    function deleteFrom(nodes: HierNode[]): HierNode[] {
+      return nodes.filter(n => n.id !== id).map(n => ({ ...n, children: deleteFrom(n.children) }));
+    }
+    persistHierStruct(deleteFrom(hierStruct));
+  }
+
+  function hierSaveEdit() {
+    const label = hierEditLabel.trim();
+    if (!label || !hierEditId) return;
+    function editIn(nodes: HierNode[]): HierNode[] {
+      return nodes.map(n => n.id === hierEditId
+        ? { ...n, label }
+        : { ...n, children: editIn(n.children) }
+      );
+    }
+    persistHierStruct(editIn(hierStruct));
+    setHierEditId(null);
+    setHierEditLabel('');
+  }
+
+  function toggleExpand(id: string) {
+    setHierExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // ── Handlers: Faixas de Preço ────────────────────────────────────────────────
+  const handleSaveFaixaPreco = () => {
+    if (!fpGrupo || !fpCategoria) { alert("Selecione Grupo e Categoria."); return; }
+    if (fpP1Fim >= fpP2Inicio) { alert("P1 Fim deve ser menor que P2 Início — faixas não podem se sobrepor."); return; }
+    if (fpP2Fim >= fpP3Inicio) { alert("P2 Fim deve ser menor que P3 Início — faixas não podem se sobrepor."); return; }
+    const nova: FaixaPreco = {
+      id: Date.now(),
+      grupo: fpGrupo,
+      divisao: hierDivisaoAtiva && fpDivisao ? fpDivisao : undefined,
+      categoria: fpCategoria,
+      faixas: {
+        P1: { inicio: fpP1Inicio, fim: fpP1Fim },
+        P2: { inicio: fpP2Inicio, fim: fpP2Fim },
+        P3: { inicio: fpP3Inicio, fim: fpP3Fim },
+      },
+    };
+    const key = `${fpGrupo}|${fpCategoria}`;
+    const updated = faixasPreco.some(f => `${f.grupo}|${f.categoria}` === key)
+      ? faixasPreco.map(f => `${f.grupo}|${f.categoria}` === key ? { ...nova, id: f.id } : f)
+      : [...faixasPreco, nova];
+    setFaixasPreco(updated);
+    try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(updated)); } catch { /* */ }
+    setFpGrupo(""); setFpCategoria(""); setFpDivisao("");
+    setFpP1Inicio(0); setFpP1Fim(0); setFpP2Inicio(0); setFpP2Fim(0); setFpP3Inicio(0); setFpP3Fim(0);
+    setFpSavedOk(true);
+    setTimeout(() => setFpSavedOk(false), 2500);
+  };
+
+  const handleDeleteFaixa = (id: number) => {
+    const updated = faixasPreco.filter(f => f.id !== id);
+    setFaixasPreco(updated);
+    try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(updated)); } catch { /* */ }
+  };
+
+  // ── Handlers: Sustentador de Margem ─────────────────────────────────────────
+  const handleSaveBasicos = () => {
+    try { localStorage.setItem("fashionmind_basicos_sustentador", JSON.stringify({ basicosAtivos, basicosTipo, basicosSkus })); } catch { /* */ }
+    setBasicosSavedOk(true);
+    setTimeout(() => setBasicosSavedOk(false), 2500);
+  };
+
+  const fmtBrl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
   const fmtDate = (d: string) => {
     if (!d) return "—";
     const [y, m, day] = d.split("-");
@@ -275,19 +689,23 @@ export default function OperationSettings() {
 
   // ─── JSX ──────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Header */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <span className="text-[#F6F3AA] text-xl">Fashion Mind | Configurações de Operação</span>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Configurações</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Configurações de Operação</span>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-[#F6F3AA]">
-              <User className="w-5 h-5" /><span>{user.name}</span>
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
@@ -518,7 +936,343 @@ export default function OperationSettings() {
           </div>
         </div>
 
-        {/* ── CARD 3: Configuração de Lead Times (inalterado) ─────────────────── */}
+        {/* ── CARD 3 (NEW): Faixas de Preço por Categoria ────────────────────── */}
+        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
+          <div className="flex items-center gap-3 mb-2">
+            <Tag className="w-6 h-6 text-[#28071C]" />
+            <h2 className="text-[#28071C] text-xl font-bold">Faixas de Preço por Categoria</h2>
+          </div>
+
+          {/* Section A: Selectors */}
+          <div className={`grid gap-4 mb-6 mt-4 ${hierDivisaoAtiva ? "grid-cols-3" : "grid-cols-2"}`}>
+            {hierDivisaoAtiva && (
+              <div>
+                <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Divisão</label>
+                <input type="text" value={fpDivisao} onChange={e => setFpDivisao(e.target.value)}
+                  placeholder="Ex: Feminino Adulto"
+                  className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
+              </div>
+            )}
+            <div>
+              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Grupo</label>
+              <select value={fpGrupo} onChange={e => setFpGrupo(e.target.value)}
+                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
+                <option value="">Selecione…</option>
+                {grupos.map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Categoria</label>
+              <select value={fpCategoria} onChange={e => setFpCategoria(e.target.value)}
+                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
+                <option value="">Selecione…</option>
+                {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Section B: Band inputs */}
+          <div className="space-y-3 mb-6">
+            {([
+              { label: "P1", color: "bg-green-100 text-green-800",   inicio: fpP1Inicio, setInicio: setFpP1Inicio, fim: fpP1Fim, setFim: setFpP1Fim },
+              { label: "P2", color: "bg-yellow-100 text-yellow-800", inicio: fpP2Inicio, setInicio: setFpP2Inicio, fim: fpP2Fim, setFim: setFpP2Fim },
+              { label: "P3", color: "bg-purple-100 text-purple-800", inicio: fpP3Inicio, setInicio: setFpP3Inicio, fim: fpP3Fim, setFim: setFpP3Fim },
+            ] as const).map(({ label, color, inicio, setInicio, fim, setFim }) => (
+              <div key={label} className="flex items-center gap-4">
+                <span className={`text-xs font-bold px-3 py-1 rounded-full w-10 text-center shrink-0 ${color}`}>{label}</span>
+                <div className="flex items-center gap-3 flex-1">
+                  <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Início</label>
+                  <input type="number" value={inicio} onChange={e => setInicio(Number(e.target.value))} min={0}
+                    className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
+                  <span className="text-[#28071C]/30 font-bold">→</span>
+                  <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Fim</label>
+                  <input type="number" value={fim} onChange={e => setFim(Number(e.target.value))} min={0}
+                    className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Section C: Info banner */}
+          <div className="flex items-start gap-2 mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <p className="text-amber-800 text-sm">
+              Alterações nas faixas valem apenas para produtos novos. O histórico de vendas mantém a faixa original de cada produto.
+            </p>
+          </div>
+
+          {/* Section D: Save + Table */}
+          <div className="flex items-center gap-3 mb-6">
+            <button onClick={handleSaveFaixaPreco}
+              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md">
+              <Save className="w-5 h-5 mr-2" />Salvar Faixa
+            </button>
+            {fpSavedOk && (
+              <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                Faixa salva com sucesso!
+              </span>
+            )}
+          </div>
+
+          {faixasPreco.length > 0 && (
+            <div className="bg-white rounded-lg overflow-hidden border border-[#F6F3AA]/80">
+              <table className="w-full">
+                <thead className="bg-[#F6F3AA]">
+                  <tr>
+                    {["Grupo","Categoria","P1","P2","P3","Ações"].map(h => (
+                      <th key={h} className={`px-4 py-3 text-[#28071C] text-sm uppercase tracking-wide ${h === "Ações" ? "text-center" : "text-left"}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {faixasPreco.map(f => (
+                    <tr key={f.id} className="border-b border-[#28071C]/10 hover:bg-gray-50">
+                      <td className="px-4 py-3 text-[#28071C] font-medium">{f.grupo}</td>
+                      <td className="px-4 py-3 text-[#28071C]">{f.categoria}</td>
+                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P1.inicio)} – {fmtBrl(f.faixas.P1.fim)}</td>
+                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P2.inicio)} – {fmtBrl(f.faixas.P2.fim)}</td>
+                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P3.inicio)} – {fmtBrl(f.faixas.P3.fim)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-center">
+                          <button onClick={() => handleDeleteFaixa(f.id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* ── CARD 4: Importação de Planilhas (antes da Hierarquia) ───────────── */}
+        {(() => {
+          // Re-render do card de importação na posição correta
+          // O estado e handlers já existem (importMode, importStep, etc.)
+          return (
+            <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
+                  <div>
+                    <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
+                    <p className="text-[#28071C]/50 text-sm mt-0.5">Carregue dados de produtos ou hierarquia de códigos do seu sistema</p>
+                  </div>
+                </div>
+                {importStep !== "select" && (
+                  <button onClick={handleImportReset} className="flex items-center gap-1.5 text-[#28071C]/40 hover:text-[#28071C] text-sm transition-colors">
+                    <X className="w-4 h-4" />Reiniciar
+                  </button>
+                )}
+              </div>
+
+              {importStep === "select" && (
+                <div className="mt-6">
+                  <p className="text-[#28071C]/60 text-sm mb-4">Selecione o fluxo que melhor descreve sua situação:</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button onClick={() => { setImportMode("completa"); setImportStep("upload"); }}
+                      className="text-left border-2 border-[#9B8CD8]/30 hover:border-[#9B8CD8] rounded-2xl p-5 transition-all group hover:bg-[#9B8CD8]/4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-8 h-8 bg-[#9B8CD8]/15 rounded-lg flex items-center justify-center">
+                          <Upload className="w-4 h-4 text-[#9B8CD8]" />
+                        </div>
+                        <span className="text-xs font-bold text-[#9B8CD8] uppercase tracking-widest">Sem ERP</span>
+                      </div>
+                      <h3 className="text-[#28071C] font-bold text-base mb-2">Importação Completa</h3>
+                      <p className="text-[#28071C]/55 text-sm leading-relaxed">Catálogo completo via planilha — código, descrição, preço, custo e hierarquia.</p>
+                      <div className="flex items-center gap-1 mt-4 text-[#9B8CD8] text-xs font-semibold">Selecionar <ChevronRight className="w-3.5 h-3.5" /></div>
+                    </button>
+                    <button onClick={() => { setImportMode("hierarquia"); setImportStep("upload"); }}
+                      className="text-left border-2 border-[#7598CF]/30 hover:border-[#7598CF] rounded-2xl p-5 transition-all group hover:bg-[#7598CF]/4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-8 h-8 bg-[#7598CF]/15 rounded-lg flex items-center justify-center">
+                          <Layers className="w-4 h-4 text-[#7598CF]" />
+                        </div>
+                        <span className="text-xs font-bold text-[#7598CF] uppercase tracking-widest">Com ERP</span>
+                      </div>
+                      <h3 className="text-[#28071C] font-bold text-base mb-2">Complemento de Hierarquia</h3>
+                      <p className="text-[#28071C]/55 text-sm leading-relaxed">ERP sem hierarquia de códigos — planilha separada cruzada pelo SKU.</p>
+                      <div className="flex items-center gap-1 mt-4 text-[#7598CF] text-xs font-semibold">Selecionar <ChevronRight className="w-3.5 h-3.5" /></div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {importStep === "upload" && importMode && (
+                <div className="mt-6">
+                  <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 border ${importMode === "completa" ? "bg-[#9B8CD8]/8 border-[#9B8CD8]/25" : "bg-[#7598CF]/8 border-[#7598CF]/25"}`}>
+                    <Info className={`w-4 h-4 flex-shrink-0 mt-0.5 ${importMode === "completa" ? "text-[#9B8CD8]" : "text-[#7598CF]"}`} />
+                    <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                      {importMode === "completa" ? "Faça upload do catálogo. Na próxima etapa mapeie cada coluna ao campo do sistema." : "Faça upload da planilha de hierarquia. Cruzamento pelo código do produto (SKU)."}
+                    </p>
+                  </div>
+                  <div onDragOver={e => { e.preventDefault(); setImportDragging(true); }} onDragLeave={() => setImportDragging(false)} onDrop={handleImportDrop}
+                    className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all ${importDragging ? "border-[#7598CF] bg-[#7598CF]/8" : "border-[#28071C]/20 hover:border-[#7598CF]/60 hover:bg-[#7598CF]/4"}`}>
+                    <Upload className="w-10 h-10 text-[#28071C]/25 mx-auto mb-3" />
+                    <p className="text-[#28071C]/60 text-sm mb-1 font-medium">Arraste o arquivo aqui ou clique para selecionar</p>
+                    <p className="text-[#28071C]/35 text-xs mb-4">Formatos aceitos: .xlsx · .csv</p>
+                    <label className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold cursor-pointer hover:bg-[#28071C]/90 transition-colors">
+                      <Upload className="w-4 h-4" />Selecionar arquivo
+                      <input type="file" accept=".xlsx,.csv" className="sr-only" onChange={handleImportFileChange} />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {importStep === "mapping" && importMode && (
+                <div className="mt-6">
+                  <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-emerald-800 text-sm font-semibold">{importFileName}</p>
+                      <p className="text-emerald-700 text-xs mt-0.5">{importHeaders.length} colunas detectadas</p>
+                    </div>
+                    <button onClick={() => setImportStep("upload")} className="text-emerald-600 hover:text-emerald-800 text-xs underline">Trocar</button>
+                  </div>
+                  <div className="border border-[#28071C]/10 rounded-2xl overflow-hidden">
+                    <div className="grid grid-cols-2 gap-0 bg-[#28071C]/5 px-5 py-2.5">
+                      <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Campo do sistema</span>
+                      <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Coluna na planilha</span>
+                    </div>
+                    <div className="divide-y divide-[#28071C]/6">
+                      {activeSystemFields.map(field => (
+                        <div key={field.key} className="grid grid-cols-2 gap-4 items-center px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[#28071C]/70 text-sm">{field.label}</span>
+                            {field.required && <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">Obrigatório</span>}
+                          </div>
+                          <select value={columnMapping[field.key] ?? ""} onChange={e => setColumnMapping(prev => ({ ...prev, [field.key]: e.target.value }))}
+                            className={`bg-white border-2 rounded-lg px-3 py-2 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 ${field.required && !columnMapping[field.key] ? "border-red-200" : "border-[#28071C]/15 focus:border-[#7598CF]"}`}>
+                            <option value="">— Não mapear —</option>
+                            {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between mt-5">
+                    <div className="text-xs text-[#28071C]/40">
+                      {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length === 0
+                        ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />Todos os campos obrigatórios mapeados</span>
+                        : <span className="text-red-500">{activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length} campo(s) obrigatório(s) sem mapeamento</span>}
+                    </div>
+                    <button onClick={() => setImportStep("done")} disabled={!requiredFieldsMapped}
+                      className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-35 transition-all shadow-sm">
+                      <CheckCircle2 className="w-4 h-4" />{importMode === "completa" ? "Confirmar importação" : "Aplicar hierarquia"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {importStep === "done" && importMode && (
+                <div className="mt-6 text-center py-8">
+                  <div className="w-16 h-16 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+                  </div>
+                  <h3 className="text-[#28071C] font-bold text-lg mb-2">{importMode === "completa" ? "Catálogo importado!" : "Hierarquia aplicada!"}</h3>
+                  <p className="text-[#28071C]/55 text-sm mb-6">Arquivo: <strong>{importFileName}</strong></p>
+                  <button onClick={handleImportReset} className="px-5 py-2.5 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl text-sm font-semibold hover:bg-[#28071C]/5 transition-all">
+                    Nova importação
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── CARD 5: Configuração de Hierarquia de Produtos (editor completo) ── */}
+        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
+          <div className="flex items-center gap-3 mb-2">
+            <Layers className="w-6 h-6 text-[#28071C]" />
+            <h2 className="text-[#28071C] text-xl font-bold">Configuração de Hierarquia de Produtos</h2>
+          </div>
+          <p className="text-[#28071C]/50 text-sm mb-6">
+            Cadastre as divisões, grupos, categorias e subcategorias que estruturam o sortimento da marca.
+            A hierarquia é usada no planejamento e na importação de dados.
+          </p>
+
+          {/* Toggle Divisão */}
+          <div className="mb-5 p-4 bg-[#28071C]/5 rounded-xl border border-[#28071C]/10 flex items-center justify-between">
+            <div>
+              <p className="text-[#28071C] font-semibold text-sm">Usar nível Divisão</p>
+              <p className="text-[#28071C]/50 text-xs mt-0.5">Ex: Feminino, Masculino, Infantil — nível acima do Grupo</p>
+            </div>
+            <button onClick={() => setHierDivisaoAtiva(!hierDivisaoAtiva)}
+              className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${hierDivisaoAtiva ? "bg-[#7598CF]" : "bg-[#28071C]/20"}`}>
+              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${hierDivisaoAtiva ? "translate-x-7" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          {/* Árvore de hierarquia */}
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest">
+                Estrutura cadastrada
+              </p>
+              <button onClick={() => { setHierAddTarget('root'); setHierAddLabel(''); }}
+                className="flex items-center gap-1.5 text-xs text-[#7598CF] font-semibold hover:text-[#28071C] transition-colors">
+                <Plus className="w-3.5 h-3.5" />
+                Nova {hierDivisaoAtiva ? 'Divisão' : 'Grupo'}
+              </button>
+            </div>
+
+            {/* Input de adição na raiz */}
+            {hierAddTarget === 'root' && (
+              <div className="flex gap-2 mb-3">
+                <input autoFocus type="text" value={hierAddLabel} onChange={e => setHierAddLabel(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') hierAddNode(null); if (e.key === 'Escape') setHierAddTarget(null); }}
+                  placeholder={`Nome da ${hierDivisaoAtiva ? 'divisão' : 'grupo'}…`}
+                  className="flex-1 px-3 py-2 border-2 border-[#7598CF]/50 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
+                <button onClick={() => hierAddNode(null)} className="px-4 py-2 bg-[#7598CF] text-white rounded-lg text-sm font-semibold hover:opacity-90">Adicionar</button>
+                <button onClick={() => setHierAddTarget(null)} className="px-3 py-2 border border-[#28071C]/20 text-[#28071C]/50 rounded-lg text-sm hover:bg-gray-50"><X className="w-4 h-4" /></button>
+              </div>
+            )}
+
+            {/* Árvore recursiva */}
+            {hierStruct.length === 0 ? (
+              <div className="text-center py-8 border-2 border-dashed border-[#28071C]/10 rounded-xl text-[#28071C]/40 text-sm">
+                Nenhum item cadastrado. Clique em "Nova {hierDivisaoAtiva ? 'Divisão' : 'Grupo'}" para começar.
+              </div>
+            ) : (
+              <div className="border border-[#28071C]/10 rounded-xl overflow-hidden">
+                {hierStruct.map((node, idx) => (
+                  <HierNodeRow
+                    key={node.id} node={node} depth={0}
+                    expanded={hierExpanded} onToggle={toggleExpand}
+                    editId={hierEditId} editLabel={hierEditLabel}
+                    onEditStart={(id, label) => { setHierEditId(id); setHierEditLabel(label); }}
+                    onEditChange={setHierEditLabel} onEditSave={hierSaveEdit}
+                    onEditCancel={() => setHierEditId(null)}
+                    addTarget={hierAddTarget} addLabel={hierAddLabel}
+                    onAddStart={(id) => { setHierAddTarget(id); setHierAddLabel(''); }}
+                    onAddChange={setHierAddLabel} onAddConfirm={hierAddNode}
+                    onAddCancel={() => setHierAddTarget(null)}
+                    onDelete={hierDeleteNode}
+                    levelLabels={LEVEL_LABELS}
+                    isLast={idx === hierStruct.length - 1}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 pt-4 border-t border-[#28071C]/8">
+            <button onClick={handleSaveHierarquia}
+              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md text-sm">
+              <Save className="w-4 h-4 mr-2" />Salvar Configurações
+            </button>
+            {(hierSavedOk || hierSavedStructOk) && (
+              <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                Salvo!
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* ── CARD 5: Configuração de Lead Times ──────────────────────────────── */}
         <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
           <div className="flex items-center gap-3 mb-6">
             <Clock className="w-6 h-6 text-[#28071C]" />
@@ -545,7 +1299,7 @@ export default function OperationSettings() {
                 { label: "Categoria",    value: selectedCategoria,    set: setSelectedCategoria,    opts: categorias    },
                 { label: "Subcategoria", value: selectedSubcategoria, set: setSelectedSubcategoria, opts: subcategorias },
                 { label: "Nível de Risco",value: selectedNivelRisco, set: setSelectedNivelRisco,   opts: niveisRisco   },
-                { label: "Faixa de Preço",value: selectedFaixaPreco, set: setSelectedFaixaPreco,   opts: faixasPreco   },
+                { label: "Faixa de Preço",value: selectedFaixaPreco, set: setSelectedFaixaPreco,   opts: FAIXAS_PRECO_OPTIONS },
               ].map(({ label, value, set, opts }) => (
                 <div key={label}>
                   <label className="block text-[#28071C]/70 text-xs mb-2">{label}</label>
@@ -607,6 +1361,340 @@ export default function OperationSettings() {
             </table>
           </div>
         </div>
+
+        {/* ── CARD 6 (NEW): Sustentador de Margem ─────────────────────────────── */}
+        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <h2 className="text-[#28071C] text-xl font-bold">Sustentador de Margem</h2>
+              <p className="text-[#28071C]/50 text-sm mt-0.5">Inclusão de Básicos</p>
+            </div>
+            <button
+              onClick={() => setBasicosAtivos(!basicosAtivos)}
+              className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${basicosAtivos ? "bg-[#28071C]" : "bg-[#28071C]/20"}`}
+            >
+              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${basicosAtivos ? "translate-x-7" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          <p className="text-[#28071C]/60 text-sm mb-4">
+            Incluir produtos básicos no Sustentador de Margem
+            <span className={`ml-2 text-xs font-semibold px-2 py-0.5 rounded-full ${basicosAtivos ? "bg-green-100 text-green-700" : "bg-[#28071C]/10 text-[#28071C]/40"}`}>
+              {basicosAtivos ? "Ativo" : "Inativo"}
+            </span>
+          </p>
+
+          {basicosAtivos && (
+            <div className="border-t border-[#28071C]/10 pt-4 space-y-4">
+              <p className="text-[#28071C]/70 text-sm uppercase tracking-wide font-semibold">Origem dos básicos</p>
+              <div className="flex flex-col gap-3">
+                {([
+                  { value: "estoque" as const, label: "Informar produtos do estoque" },
+                  { value: "novos"   as const, label: "Serão produtos novos" },
+                ]).map(opt => (
+                  <label key={opt.value} className="flex items-center gap-3 cursor-pointer">
+                    <input type="radio" name="basicosTipo" value={opt.value}
+                      checked={basicosTipo === opt.value}
+                      onChange={() => setBasicosTipo(opt.value)}
+                      className="accent-[#28071C]" />
+                    <span className="text-[#28071C] text-sm font-medium">{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+
+              {basicosTipo === "estoque" ? (
+                <div>
+                  <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide mb-2">
+                    SKUs ou nomes de produtos (separados por vírgula)
+                  </label>
+                  <textarea
+                    value={basicosSkus}
+                    onChange={e => setBasicosSkus(e.target.value)}
+                    placeholder="Ex: SKU-001, Blusa Branca Básica, SKU-045"
+                    rows={3}
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/20 focus:outline-none focus:ring-2 focus:ring-[#28071C]/40 text-sm resize-none"
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+                  <AlertCircle className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
+                  <p className="text-[#28071C]/70 text-sm">Os básicos serão definidos no plano de sortimento</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 mt-6">
+            <button onClick={handleSaveBasicos}
+              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md">
+              <Save className="w-5 h-5 mr-2" />Salvar Configuração
+            </button>
+            {basicosSavedOk && (
+              <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                Configuração salva!
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Card de importação movido para antes da Hierarquia — ver Card 4 acima */}
+        <div className="hidden">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-3">
+              <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
+              <div>
+                <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
+                <p className="text-[#28071C]/50 text-sm mt-0.5">Carregue dados de produtos ou hierarquia de códigos do seu sistema</p>
+              </div>
+            </div>
+            {importStep !== "select" && (
+              <button onClick={handleImportReset} className="flex items-center gap-1.5 text-[#28071C]/40 hover:text-[#28071C] text-sm transition-colors">
+                <X className="w-4 h-4" />Reiniciar
+              </button>
+            )}
+          </div>
+
+          {/* Step 1 — Seleção do fluxo */}
+          {importStep === "select" && (
+            <div className="mt-6">
+              <p className="text-[#28071C]/60 text-sm mb-4">
+                Selecione o fluxo que melhor descreve sua situação:
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+
+                {/* Opção A — Importação Completa */}
+                <button
+                  onClick={() => { setImportMode("completa"); setImportStep("upload"); }}
+                  className="text-left border-2 border-[#9B8CD8]/30 hover:border-[#9B8CD8] rounded-2xl p-5 transition-all group hover:bg-[#9B8CD8]/4"
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 bg-[#9B8CD8]/15 rounded-lg flex items-center justify-center">
+                      <Upload className="w-4 h-4 text-[#9B8CD8]" />
+                    </div>
+                    <span className="text-xs font-bold text-[#9B8CD8] uppercase tracking-widest">Sem ERP</span>
+                  </div>
+                  <h3 className="text-[#28071C] font-bold text-base mb-2">Importação Completa</h3>
+                  <p className="text-[#28071C]/55 text-sm leading-relaxed">
+                    Todos os dados de produtos são gerenciados em planilha. Faça upload do catálogo completo com código, descrição, preço, custo e hierarquia.
+                  </p>
+                  <div className="flex items-center gap-1 mt-4 text-[#9B8CD8] text-xs font-semibold">
+                    Selecionar este fluxo <ChevronRight className="w-3.5 h-3.5" />
+                  </div>
+                </button>
+
+                {/* Opção B — Complemento de Hierarquia */}
+                <button
+                  onClick={() => { setImportMode("hierarquia"); setImportStep("upload"); }}
+                  className="text-left border-2 border-[#7598CF]/30 hover:border-[#7598CF] rounded-2xl p-5 transition-all group hover:bg-[#7598CF]/4"
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 bg-[#7598CF]/15 rounded-lg flex items-center justify-center">
+                      <Layers className="w-4 h-4 text-[#7598CF]" />
+                    </div>
+                    <span className="text-xs font-bold text-[#7598CF] uppercase tracking-widest">Com ERP</span>
+                  </div>
+                  <h3 className="text-[#28071C] font-bold text-base mb-2">Complemento de Hierarquia</h3>
+                  <p className="text-[#28071C]/55 text-sm leading-relaxed">
+                    O ERP já possui os produtos cadastrados mas não armazena a hierarquia de códigos. Faça upload de uma planilha de hierarquia para enriquecer os dados — o cruzamento é feito pelo código do produto.
+                  </p>
+                  <div className="flex items-center gap-1 mt-4 text-[#7598CF] text-xs font-semibold">
+                    Selecionar este fluxo <ChevronRight className="w-3.5 h-3.5" />
+                  </div>
+                </button>
+
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 — Upload do arquivo */}
+          {importStep === "upload" && importMode && (
+            <div className="mt-6">
+              {/* Contexto do fluxo escolhido */}
+              <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 border ${
+                importMode === "completa"
+                  ? "bg-[#9B8CD8]/8 border-[#9B8CD8]/25"
+                  : "bg-[#7598CF]/8 border-[#7598CF]/25"
+              }`}>
+                <Info className={`w-4 h-4 flex-shrink-0 mt-0.5 ${importMode === "completa" ? "text-[#9B8CD8]" : "text-[#7598CF]"}`} />
+                <div>
+                  <p className="text-[#28071C] text-sm font-semibold mb-0.5">
+                    {importMode === "completa" ? "Importação Completa — catálogo via planilha" : "Complemento de Hierarquia — enriquecimento via join pelo código"}
+                  </p>
+                  <p className="text-[#28071C]/55 text-xs leading-relaxed">
+                    {importMode === "completa"
+                      ? "Faça upload do arquivo com os produtos. Na próxima etapa você indicará qual coluna da planilha corresponde a cada campo do sistema."
+                      : "Faça upload da planilha com a hierarquia de códigos. O sistema cruzará os dados pelo código do produto como chave de join."
+                    }
+                  </p>
+                </div>
+              </div>
+
+              {/* Drop zone */}
+              <div
+                onDragOver={e => { e.preventDefault(); setImportDragging(true); }}
+                onDragLeave={() => setImportDragging(false)}
+                onDrop={handleImportDrop}
+                className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all ${
+                  importDragging
+                    ? "border-[#7598CF] bg-[#7598CF]/8 scale-[1.01]"
+                    : "border-[#28071C]/20 hover:border-[#7598CF]/60 hover:bg-[#7598CF]/4"
+                }`}
+              >
+                <Upload className="w-10 h-10 text-[#28071C]/25 mx-auto mb-3" />
+                <p className="text-[#28071C]/60 text-sm mb-1 font-medium">
+                  Arraste o arquivo aqui ou clique para selecionar
+                </p>
+                <p className="text-[#28071C]/35 text-xs mb-4">Formatos aceitos: .xlsx · .csv</p>
+                <label className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold cursor-pointer hover:bg-[#28071C]/90 transition-colors">
+                  <Upload className="w-4 h-4" />
+                  Selecionar arquivo
+                  <input
+                    type="file"
+                    accept=".xlsx,.csv"
+                    className="sr-only"
+                    onChange={handleImportFileChange}
+                  />
+                </label>
+              </div>
+
+              {/* Dica de modelo */}
+              <div className="mt-4 flex items-center gap-2 text-xs text-[#28071C]/40">
+                <Info className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>
+                  Não tem o arquivo pronto?{" "}
+                  <button className="underline text-[#7598CF] hover:text-[#28071C] transition-colors">
+                    Baixar modelo de planilha {importMode === "completa" ? "(Catálogo completo)" : "(Hierarquia de códigos)"}
+                  </button>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — Mapeamento de colunas */}
+          {importStep === "mapping" && importMode && (
+            <div className="mt-6">
+              {/* Arquivo carregado */}
+              <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-emerald-800 text-sm font-semibold">{importFileName}</p>
+                  <p className="text-emerald-700 text-xs mt-0.5">
+                    {importHeaders.length} colunas detectadas · Mapeie os campos abaixo
+                  </p>
+                </div>
+                <button
+                  onClick={() => setImportStep("upload")}
+                  className="text-emerald-600 hover:text-emerald-800 text-xs underline"
+                >
+                  Trocar arquivo
+                </button>
+              </div>
+
+              {/* Orientação de mapeamento */}
+              {importMode === "hierarquia" && (
+                <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 mb-5">
+                  <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                  <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                    O sistema usará o <strong className="text-[#28071C]">Código do Produto</strong> como chave de join entre os dados do ERP e a hierarquia da planilha. Certifique-se de que os códigos são idênticos nas duas fontes.
+                  </p>
+                </div>
+              )}
+
+              {/* Tabela de mapeamento */}
+              <div className="border border-[#28071C]/10 rounded-2xl overflow-hidden">
+                <div className="grid grid-cols-2 gap-0 bg-[#28071C]/5 px-5 py-2.5">
+                  <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Campo do sistema</span>
+                  <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Coluna na planilha</span>
+                </div>
+                <div className="divide-y divide-[#28071C]/6">
+                  {activeSystemFields.map(field => (
+                    <div key={field.key} className="grid grid-cols-2 gap-4 items-center px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#28071C]/70 text-sm">{field.label}</span>
+                        {field.required && (
+                          <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
+                            Obrigatório
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={columnMapping[field.key] ?? ""}
+                        onChange={e => setColumnMapping(prev => ({ ...prev, [field.key]: e.target.value }))}
+                        className={`bg-white border-2 rounded-lg px-3 py-2 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 transition-colors ${
+                          field.required && !columnMapping[field.key]
+                            ? "border-red-200 focus:border-red-400"
+                            : "border-[#28071C]/15 focus:border-[#7598CF]"
+                        }`}
+                      >
+                        <option value="">— Não mapear —</option>
+                        {importHeaders.map(h => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Validação e CTA */}
+              <div className="flex items-center justify-between mt-5">
+                <div className="text-xs text-[#28071C]/40">
+                  {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length === 0
+                    ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />Todos os campos obrigatórios mapeados</span>
+                    : <span className="text-red-500">
+                        {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length} campo(s) obrigatório(s) sem mapeamento
+                      </span>
+                  }
+                </div>
+                <button
+                  onClick={() => setImportStep("done")}
+                  disabled={!requiredFieldsMapped}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  {importMode === "completa" ? "Confirmar importação" : "Aplicar hierarquia"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4 — Confirmação */}
+          {importStep === "done" && importMode && (
+            <div className="mt-6 text-center py-8">
+              <div className="w-16 h-16 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+              </div>
+              <h3 className="text-[#28071C] font-bold text-lg mb-2">
+                {importMode === "completa" ? "Catálogo importado com sucesso!" : "Hierarquia aplicada com sucesso!"}
+              </h3>
+              <p className="text-[#28071C]/55 text-sm mb-1">
+                Arquivo: <strong>{importFileName}</strong>
+              </p>
+              <p className="text-[#28071C]/40 text-xs mb-6">
+                {importMode === "completa"
+                  ? "Os produtos foram registrados no sistema com as colunas mapeadas."
+                  : "A hierarquia de códigos foi cruzada pelo código do produto e aplicada ao cadastro do ERP."
+                }
+              </p>
+              <div className="flex gap-3 justify-center">
+                <button
+                  onClick={handleImportReset}
+                  className="px-5 py-2.5 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl text-sm font-semibold hover:bg-[#28071C]/5 transition-all"
+                >
+                  Nova importação
+                </button>
+                <button
+                  onClick={() => navigate("/dashboard")}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 transition-all shadow-sm"
+                >
+                  Ir para o Dashboard <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+
       </main>
     </div>
   );

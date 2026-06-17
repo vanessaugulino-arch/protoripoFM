@@ -80,14 +80,8 @@ export default function PlanningGateway() {
 
   const handleReview = () => {
     if (!reviewYear) return
-    const cycle = getPlanCycle(reviewYear)
-    navigate("/planning", {
-      state: {
-        year: reviewYear,
-        mode: "review",
-        focus: cycle?.focus ?? "margem",
-        fieldPriorities: cycle?.fieldPriorities ?? [],
-      },
+    navigate("/planning-setup", {
+      state: { year: reviewYear, mode: "review" },
     })
   }
 
@@ -232,29 +226,23 @@ export default function PlanningGateway() {
   if (!user) return null
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* HEADER */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <p className="text-[#F6F3AA]/70 text-xs uppercase tracking-widest">Módulo 1</p>
-              <p className="text-[#F6F3AA] font-semibold text-lg leading-tight">Planejamento Estratégico — Ano Fiscal</p>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento Estratégico</span>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate("/profile-adjust")}
-              className="flex items-center gap-1.5 text-[#F6F3AA]/80 hover:text-[#F6F3AA] text-sm transition-colors"
-            >
-              <Settings className="w-4 h-4" />
-              <span>Ajustar Perfil</span>
-            </button>
             <div className="flex items-center gap-2 text-[#F6F3AA]">
-              <User className="w-5 h-5" /><span className="text-sm">{user.name}</span>
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/") }}

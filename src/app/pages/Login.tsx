@@ -41,11 +41,16 @@ export default function Login() {
       if (user.email === "admin@thefashionoffice.com.br") {
         navigate("/admin");
       } else {
-        const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
-        if (!import.meta.env.DEV && onboardingDone === "true") {
-          navigate("/dashboard");
+        const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
+        if (!presentationSeen) {
+          navigate("/presentation");
         } else {
-          navigate("/onboarding");
+          const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
+          if (onboardingDone === "true") {
+            navigate("/dashboard");
+          } else {
+            navigate("/onboarding");
+          }
         }
       }
     } else {
@@ -61,7 +66,7 @@ export default function Login() {
       </div>
 
       {/* Login Card */}
-      <div className="w-full max-w-md bg-[#E7E7E6] rounded-3xl shadow-2xl p-8">
+      <div className="w-full max-w-md bg-[#F2F2F2] rounded-3xl shadow-2xl p-8">
         {/* Title */}
         <div className="text-center mb-8">
           <h2 className="text-3xl text-[#28071C] mb-2">
