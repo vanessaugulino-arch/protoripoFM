@@ -72,7 +72,6 @@ function KpiCard({ icon, label, value, subtext, subtextColor, tooltip }: KpiCard
 export default function Tracking() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
-  const [showWelcomeBox, setShowWelcomeBox] = useState(true);
 
   useEffect(() => {
     // Get user from sessionStorage
@@ -148,69 +147,54 @@ export default function Tracking() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
-      {/* Topbar - Extended */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-6 shadow-lg">
-        <div className="max-w-[1600px] mx-auto">
-          {/* Top row - Navigation and User */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center space-x-3">
-              <button
-                onClick={handleBack}
-                className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-              <h1 className="text-[#F6F3AA] text-base font-medium">
-                Fashion Mind | Acompanhamento de Coleção
-              </h1>
-            </div>
-
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 text-[#F6F3AA]">
-                <User className="w-4 h-4" />
-                <span className="text-sm">{user.name}</span>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Welcome Section */}
-          <div className="mb-4">
-            <h2 className="text-[#F6F3AA] text-2xl font-bold mb-3">Bem-vindo, {user.name}!</h2>
-            <p className="text-[#F6F3AA] text-sm mb-4">
-              Estamos a <span className="font-bold">19 semanas</span> da coleção <span className="font-bold">Verão 2026</span>. A performance está em <span className="font-bold">-41.1% abaixo do plano</span>.
-            </p>
-          </div>
-
-          {/* Performance Row */}
-          <div className="flex items-center justify-between">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
+      {/* Topbar */}
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleBack}
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
+            >
+              <ArrowLeft className="w-6 h-6" />
+            </button>
             <div>
-              <h3 className="text-[#F6F3AA] text-lg font-semibold mb-1">Performance de Vendas</h3>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Acompanhamento</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Acompanhamento de Coleção</span>
             </div>
-            <div className="bg-red-500 text-white px-5 py-2 rounded-lg flex items-center space-x-3">
-              <div className="text-center">
-                <span className="text-2xl font-bold block">87%</span>
-                <p className="text-xs">% abaixo do plano</p>
-              </div>
-              <button
-                onClick={() => setShowWelcomeBox(!showWelcomeBox)}
-                className="text-white hover:opacity-80 transition-opacity"
-              >
-                <X className="w-4 h-4" />
-              </button>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={handleLogout}
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-6 py-8">
+        {/* Welcome Banner */}
+        <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] rounded-2xl px-6 py-5 mb-6 flex items-center justify-between shadow-md">
+          <div>
+            <h2 className="text-[#F6F3AA] text-xl font-bold mb-1">Bem-vindo, {user.name}!</h2>
+            <p className="text-[#F6F3AA]/80 text-sm">
+              Estamos a <span className="font-bold text-[#F6F3AA]">19 semanas</span> da coleção <span className="font-bold text-[#F6F3AA]">Verão 2026</span>. A performance está em <span className="font-bold text-[#F6F3AA]">-41.1% abaixo do plano</span>.
+            </p>
+          </div>
+          <div className="bg-red-500 text-white px-5 py-2 rounded-xl flex items-center gap-3">
+            <div className="text-center">
+              <span className="text-2xl font-bold block">87%</span>
+              <p className="text-xs">abaixo do plano</p>
+            </div>
+          </div>
+        </div>
         {/* KPI Cards Row 1 */}
         <div className="grid grid-cols-4 gap-6 mb-6">
           <KpiCard
@@ -251,14 +235,14 @@ export default function Tracking() {
           </h3>
           <ResponsiveContainer width="100%" height={350}>
             <ComposedChart data={salesData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E7E7E6" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#F2F2F2" />
               <XAxis dataKey="week" stroke="#28071C" />
               <YAxis yAxisId="left" stroke="#28071C" />
               <YAxis yAxisId="right" orientation="right" stroke="#28071C" />
               <Tooltip 
                 contentStyle={{ 
                   backgroundColor: 'white', 
-                  border: '1px solid #E7E7E6',
+                  border: '1px solid #F2F2F2',
                   borderRadius: '8px'
                 }}
               />
@@ -327,20 +311,20 @@ export default function Tracking() {
           </h3>
           <ResponsiveContainer width="100%" height={400}>
             <ComposedChart data={productData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E7E7E6" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#F2F2F2" />
               <XAxis dataKey="category" stroke="#28071C" angle={-15} textAnchor="end" height={80} />
               <YAxis yAxisId="left" stroke="#28071C" />
               <YAxis yAxisId="right" orientation="right" stroke="#28071C" />
               <Tooltip 
                 contentStyle={{ 
                   backgroundColor: 'white', 
-                  border: '1px solid #E7E7E6',
+                  border: '1px solid #F2F2F2',
                   borderRadius: '8px'
                 }}
               />
               <Legend />
               <Bar yAxisId="left" dataKey="pedidosProducao" fill="#7598CF" name="Pedidos + Produção (R$)" />
-              <Bar yAxisId="left" dataKey="estoque" fill="#E7E7E6" name="Estoque no Rodapé" />
+              <Bar yAxisId="left" dataKey="estoque" fill="#F2F2F2" name="Estoque no Rodapé" />
               <Line 
                 yAxisId="right" 
                 type="monotone" 

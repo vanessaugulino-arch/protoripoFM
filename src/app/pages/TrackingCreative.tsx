@@ -168,74 +168,60 @@ export default function TrackingCreative() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-6 shadow-lg">
-        <div className="max-w-[1600px] mx-auto">
-          {/* Top row - Navigation and User */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center space-x-3">
-              <button
-                onClick={handleBack}
-                className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-              <h1 className="text-[#F6F3AA] text-base font-medium">
-                Fashion Mind | Acompanhamento de Coleção - Direção Criativa
-              </h1>
-            </div>
-
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 text-[#F6F3AA]">
-                <User className="w-4 h-4" />
-                <span className="text-sm">{user.name}</span>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Welcome Section */}
-          <div className="mb-4">
-            <h2 className="text-[#F6F3AA] text-2xl font-bold mb-3">Bem-vindo, {user.name}!</h2>
-            <p className="text-[#F6F3AA] text-sm mb-4">
-              A coleção está performando{' '}
-              <span className={`font-bold ${performancePositiva ? 'text-green-400' : 'text-red-400'}`}>
-                {Math.abs(parseFloat(performanceGeral))}%{' '}
-                {performancePositiva ? 'acima da meta' : 'abaixo da meta'}
-              </span>
-              , com destaque para o desempenho do grupo{' '}
-              <span className="font-bold">{bestGroup.grupo}</span> que performa{' '}
-              <span className={`font-bold ${bestGroupPositivo ? 'text-green-400' : 'text-red-400'}`}>
-                {Math.abs(parseFloat(bestGroupPerformance))}% {bestGroupPositivo ? 'acima' : 'abaixo'} da meta
-              </span>
-              {' '}- atenção ao estoque de{' '}
-              <span className="font-bold">{highStockLowTurnover.grupo}</span>.
-            </p>
-          </div>
-
-          {/* Performance Indicator */}
-          <div className="flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleBack}
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
+            >
+              <ArrowLeft className="w-6 h-6" />
+            </button>
             <div>
-              <h3 className="text-[#F6F3AA] text-lg font-semibold mb-1">Performance Geral da Coleção</h3>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Direção Criativa</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Acompanhamento de Coleção</span>
             </div>
-            <div className={`${performancePositiva ? 'bg-green-600' : 'bg-red-600'} text-white px-5 py-2 rounded-lg`}>
-              <div className="text-center">
-                <span className="text-2xl font-bold block">{Math.abs(parseFloat(performanceGeral))}%</span>
-                <p className="text-xs">{performancePositiva ? 'acima da meta' : 'abaixo da meta'}</p>
-              </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={handleLogout}
+              className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-6 py-8">
+        {/* Welcome Banner */}
+        <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] rounded-2xl px-6 py-5 mb-6 flex items-center justify-between shadow-md">
+          <div>
+            <h2 className="text-[#F6F3AA] text-xl font-bold mb-1">Bem-vindo, {user.name}!</h2>
+            <p className="text-[#F6F3AA]/80 text-sm">
+              A coleção está performando{' '}
+              <span className={`font-bold ${performancePositiva ? 'text-green-300' : 'text-red-300'}`}>
+                {Math.abs(parseFloat(performanceGeral))}%{' '}
+                {performancePositiva ? 'acima da meta' : 'abaixo da meta'}
+              </span>
+              {' '}— destaque para <span className="font-bold text-[#F6F3AA]">{bestGroup.grupo}</span>.
+              Atenção ao estoque de <span className="font-bold text-[#F6F3AA]">{highStockLowTurnover.grupo}</span>.
+            </p>
+          </div>
+          <div className={`${performancePositiva ? 'bg-green-600' : 'bg-red-600'} text-white px-5 py-2 rounded-xl`}>
+            <div className="text-center">
+              <span className="text-2xl font-bold block">{Math.abs(parseFloat(performanceGeral))}%</span>
+              <p className="text-xs">{performancePositiva ? 'acima da meta' : 'abaixo da meta'}</p>
+            </div>
+          </div>
+        </div>
         {/* KPI Cards Row */}
         <div className="grid grid-cols-4 gap-6 mb-6">
           <div className="bg-white rounded-xl p-6 shadow-sm">
@@ -283,7 +269,7 @@ export default function TrackingCreative() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b-2 border-[#E7E7E6]">
+                <tr className="border-b-2 border-[#F2F2F2]">
                   <th className="text-left py-3 px-4 text-[#28071C]/70 text-sm uppercase tracking-wide">Grupo</th>
                   <th className="text-right py-3 px-4 text-[#28071C]/70 text-sm uppercase tracking-wide">Volume de Receita</th>
                   <th className="text-right py-3 px-4 text-[#28071C]/70 text-sm uppercase tracking-wide">Performance sobre Estoque</th>
@@ -293,7 +279,7 @@ export default function TrackingCreative() {
               </thead>
               <tbody>
                 {groupPerformance.map((item, index) => (
-                  <tr key={index} className="border-b border-[#E7E7E6] hover:bg-[#E7E7E6]/30">
+                  <tr key={index} className="border-b border-[#F2F2F2] hover:bg-[#F2F2F2]/30">
                     <td className="py-4 px-4 text-[#28071C] font-medium">{item.grupo}</td>
                     <td className="py-4 px-4 text-right text-[#28071C]">
                       R$ {item.receita.toLocaleString('pt-BR')}
@@ -319,13 +305,13 @@ export default function TrackingCreative() {
           </h3>
           <ResponsiveContainer width="100%" height={350}>
             <BarChart data={themeData} id="chart-revenue-theme">
-              <CartesianGrid strokeDasharray="3 3" stroke="#E7E7E6" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#F2F2F2" />
               <XAxis dataKey="tema" stroke="#28071C" angle={-15} textAnchor="end" height={100} />
               <YAxis stroke="#28071C" />
               <Tooltip 
                 contentStyle={{ 
                   backgroundColor: 'white', 
-                  border: '1px solid #E7E7E6',
+                  border: '1px solid #F2F2F2',
                   borderRadius: '8px'
                 }}
                 formatter={(value: number) => `R$ ${value.toLocaleString('pt-BR')}`}

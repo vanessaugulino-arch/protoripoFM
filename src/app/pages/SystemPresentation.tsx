@@ -89,7 +89,7 @@ const SLIDES = [
               borderColor: "border-[#28071C]",
               bgLight: "bg-[#28071C]/5",
               desc: "Engenharia de sortimento e mix de produtos",
-              detail: "Decidir: quantos SKUs? Qual distribuição P1/P2/P3? Simule composições com base sólida em números reais.",
+              detail: "Decidir: quantos SKUs? Qual distribuição por faixa de preço? Simule composições com base sólida em números reais.",
             },
           ].map((item, i) => (
             <div key={i} className={`${item.bgLight} border ${item.borderColor} border-opacity-20 rounded-xl p-5`}>
@@ -136,7 +136,7 @@ const SLIDES = [
             {
               perfil: "Tático",
               icon: "📊",
-              desc: "Entendo como o estratégico se divide nos meus canais. Comparo diferentes distribuições e escolho a melhor. Meus ajustes cascateiam com inteligência.",
+              desc: "Entendo como o estratégico se divide nos meus canais. Comparo diferentes distribuições e escolho a melhor. Meus ajustes se desdobram em todos os níveis com inteligência.",
               color: "border-[#9B8CD8] bg-[#9B8CD8]/5",
             },
             {
@@ -159,7 +159,7 @@ const SLIDES = [
         <div className="bg-gradient-to-r from-[#7598CF] to-[#9B8CD8] rounded-2xl p-5 text-white text-center">
           <p className="font-bold text-lg mb-1">Resultado</p>
           <p className="text-white/90 text-sm leading-relaxed">
-            Menos rejeição, mais assertividade — coleções que fecham as metas e um processo até 30% mais rápido.
+            Menos rejeição, mais assertividade — coleções que fecham as metas e um processo até 70% mais rápido.
           </p>
         </div>
       </div>

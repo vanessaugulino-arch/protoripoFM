@@ -307,25 +307,26 @@ export default function CycleValidation() {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
 
       {/* ── Topbar ── */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg h-16 flex items-center">
-        <div className="max-w-[1600px] mx-auto w-full flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <span className="text-[#F6F3AA] text-lg font-light tracking-wide">
-              Fashion Mind <span className="opacity-60 mx-2">|</span> Módulo 4 · Validação de Sazonalidade
-            </span>
-          </div>
-          <div className="flex items-center space-x-4 text-[#F6F3AA]">
-            <div className="flex items-center space-x-2 text-sm">
-              <User className="w-4 h-4" />
-              <span>{user.name}</span>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 4</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Validação de Sazonalidade</span>
             </div>
-            <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="hover:opacity-80 transition-opacity">
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
+            </div>
+            <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <LogOut className="w-5 h-5" />
             </button>
           </div>
@@ -333,7 +334,7 @@ export default function CycleValidation() {
       </header>
 
       {/* ── Main content (offset for fixed topbar) ── */}
-      <main className="max-w-[1600px] mx-auto px-6 pt-20 pb-12 space-y-5">
+      <main className="max-w-[1600px] mx-auto px-6 pt-8 pb-12 space-y-5">
 
         {/* ── Cycle Selector ── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm">

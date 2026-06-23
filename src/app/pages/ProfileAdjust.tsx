@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router"
-import { ArrowLeft, Save, Check } from "lucide-react"
+import { ArrowLeft, Save, Check, User, LogOut } from "lucide-react"
 import {
   SEGMENT_LABELS, ALL_RAW_MATERIALS, RAW_MATERIAL_LABELS,
   ORIGEM_LABELS, ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
@@ -12,9 +12,12 @@ import { ChevronUp, ChevronDown } from "lucide-react"
 const ALL_SEGMENTS = Object.keys(SEGMENT_LABELS) as SegmentId[]
 const ALL_ORIGENS  = Object.keys(ORIGEM_LABELS)  as OrigemPecas[]
 
+interface UserData { name: string; email: string; profile: string }
+
 export default function ProfileAdjust() {
   const navigate = useNavigate()
 
+  const [user,         setUser]         = useState<UserData | null>(null)
   const [segments,     setSegments]     = useState<SegmentId[]>([])
   const [materials,    setMaterials]    = useState<RankedMaterial[]>([])
   const [origem,       setOrigem]       = useState<OrigemPecas>("white_label")
@@ -25,6 +28,7 @@ export default function ProfileAdjust() {
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser")
     if (!stored) { navigate("/"); return }
+    setUser(JSON.parse(stored))
     const profile = getStoredProfile()
     if (profile) {
       setSegments(profile.segments)
@@ -81,18 +85,27 @@ export default function ProfileAdjust() {
   const showTrade = origem === "propria" || origem === "hibrido"
 
   return (
-    <div className="min-h-screen bg-[#E7E7E6]">
+    <div className="min-h-screen bg-[#F2F2F2]">
       {/* HEADER */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
-        <div className="max-w-[900px] mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate(-1)} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <p className="text-[#F6F3AA]/70 text-xs uppercase tracking-widest">Módulo 1</p>
-              <p className="text-[#F6F3AA] font-semibold text-lg leading-tight">Ajuste de Perfil de Negócio</p>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Ajuste de Perfil de Negócio</span>
             </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
+            </div>
+            <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>

@@ -190,6 +190,26 @@ export function cloneModule3Scenario(
 }
 
 /**
+ * Retorna true se houver ao menos um cenário ativo (aplicado) em qualquer temporada do Módulo 3.
+ * Usado pelo Dashboard para liberar o Plano de Sortimento (Módulo 5).
+ */
+export function hasModule3ActiveScenario(): boolean {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(STORAGE_KEY_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const scenarios: Module3Scenario[] = JSON.parse(raw);
+      if (scenarios.some(s => s.isActive)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Aplica um cenário (marca como ativo)
  */
 export function applyModule3Scenario(seasonId: string, scenarioId: string): void {

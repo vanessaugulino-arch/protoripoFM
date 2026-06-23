@@ -12,6 +12,10 @@ import {
   SALES_CHANNELS,
   ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
 } from '../types/onboarding'
+import {
+  MONTHS, DEFAULT_REGRA,
+} from '../../services/temporadaService'
+import { saveRegraDefaultDb } from '../../services/supabase/seasonService'
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -70,11 +74,12 @@ const UPLOAD_FIELDS = [
 
 // ─── Etapas ───────────────────────────────────────────────────────────────────
 
-type StepId = 'segments' | 'business' | 'channels' | 'team' | 'data' | 'complete'
+type StepId = 'segments' | 'business' | 'seasons' | 'channels' | 'team' | 'data' | 'complete'
 
 const STEP_META: { id: StepId; label: string; optional?: boolean }[] = [
   { id: 'segments', label: 'Segmentos' },
   { id: 'business', label: 'Negócio' },
+  { id: 'seasons',  label: 'Coleções' },
   { id: 'channels', label: 'Canais' },
   { id: 'team',     label: 'Equipe',   optional: true },
   { id: 'data',     label: 'Dados',    optional: true },
@@ -218,7 +223,13 @@ export default function Onboarding() {
     (!showImportQuestion || hasImport !== null) &&
     hasExport !== null
 
-  // ── Etapa 3: Canais ─────────────────────────────────────────────────────────
+  // ── Etapa 3: Calendário de Coleções ────────────────────────────────────────
+  const [veraoInicio,   setVeraoInicio]   = useState(DEFAULT_REGRA.verao.mesInicio)
+  const [veraoFim,      setVeraoFim]      = useState(DEFAULT_REGRA.verao.mesFim)
+  const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
+  const [invernoFim,    setInvernoFim]    = useState(DEFAULT_REGRA.inverno.mesFim)
+
+  // ── Etapa 4: Canais ─────────────────────────────────────────────────────────
   const [selectedChannels, setSelectedChannels] = useState<SalesChannelId[]>(
     SALES_CHANNELS.filter(c => c.erpFound).map(c => c.id)
   )
@@ -280,6 +291,16 @@ export default function Onboarding() {
     }
     localStorage.setItem(ONBOARDING_DONE_KEY, 'true')
     localStorage.setItem(ONBOARDING_PROFILE_KEY, JSON.stringify(profile))
+    // Salva a regra padrão de temporadas no Supabase
+    const tenantId = sessionStorage.getItem("activeTenantId") ?? ""
+    if (tenantId) {
+      saveRegraDefaultDb(tenantId, {
+        verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
+        inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
+      }).catch(err =>
+        console.warn("Erro ao salvar regra padrão de temporadas:", err)
+      )
+    }
     navigate('/dashboard')
   }
 
@@ -567,7 +588,148 @@ export default function Onboarding() {
           )}
 
           {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 3 — CANAIS DE VENDA
+              ETAPA 3 — CALENDÁRIO DE TEMPORADAS
+          ────────────────────────────────────────────────────────────────── */}
+          {currentStepId === 'seasons' && (
+            <div>
+              <SectionLabel>Calendário de Temporadas</SectionLabel>
+
+              {/* Texto introdutório completo */}
+              <div className="mb-5 space-y-3">
+                <p className="text-[#28071C]/70 text-sm leading-relaxed">
+                  No Fashion Mind trabalhamos o planejamento pelo <strong className="text-[#28071C]">ano fiscal</strong> e também pelas <strong className="text-[#28071C]">temporadas de moda</strong>.
+                  Trata-se de uma convenção comercial, industrial e criativa que organiza o fluxo de mercadorias — estabelecendo o ciclo em que seus produtos estarão expostos a preço cheio e delimitando o ritmo de vendas, compras e markdowns.
+                </p>
+
+                {/* Os três pilares */}
+                <div className="grid grid-cols-1 gap-2 mt-3">
+                  {[
+                    {
+                      emoji: '🎨',
+                      titulo: 'Pilar Criativo (A Narrativa)',
+                      desc: 'O recorte temporal onde o estilo define um novo tema, uma nova cartela de cores e uma nova proposta de silhuetas. Garante identidade visual e coesão estética a cada lançamento.',
+                      cor: 'border-[#9B8CD8]/30 bg-[#9B8CD8]/4',
+                    },
+                    {
+                      emoji: '⚙️',
+                      titulo: 'Pilar Industrial (A Operação)',
+                      desc: 'O cronograma que dita o ritmo de toda a cadeia de suprimentos. Sincroniza desde a compra de matérias-primas e o desenvolvimento de produtos até a fabricação e a entrega logística nas lojas.',
+                      cor: 'border-[#7598CF]/30 bg-[#7598CF]/4',
+                    },
+                    {
+                      emoji: '💼',
+                      titulo: 'Pilar Comercial (O Varejo)',
+                      desc: 'O ciclo de vida do produto no mercado. Define o período de vendas a preço cheio, planeja a rotatividade das vitrines para atrair o cliente e organiza o fluxo de caixa através do escoamento planejado de estoque.',
+                      cor: 'border-[#28071C]/10 bg-[#28071C]/3',
+                    },
+                  ].map(p => (
+                    <div key={p.titulo} className={`flex items-start gap-3 border rounded-xl px-4 py-3 ${p.cor}`}>
+                      <span className="text-xl flex-shrink-0 mt-0.5">{p.emoji}</span>
+                      <div>
+                        <p className="text-[#28071C] text-xs font-bold mb-0.5">{p.titulo}</p>
+                        <p className="text-[#28071C]/60 text-xs leading-relaxed">{p.desc}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="text-[#28071C]/50 text-xs leading-relaxed mt-2">
+                  O Fashion Mind pré-configura duas temporadas padrão, mas você tem <strong className="text-[#28071C]">autonomia total</strong> para personalizar a estrutura do seu negócio.
+                </p>
+              </div>
+
+              {/* Cards das temporadas — seletores livres */}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                {/* Verão */}
+                <div className="bg-white rounded-2xl border-2 border-[#7598CF]/30 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">☀️</span>
+                    <span className="text-[#28071C] font-bold text-sm">Verão</span>
+                    <span className="ml-auto text-[10px] font-semibold text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
+                      <select value={veraoInicio} onChange={e => setVeraoInicio(e.target.value)}
+                        className="w-full px-3 py-2 border-2 border-[#7598CF]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
+                      <select value={veraoFim} onChange={e => setVeraoFim(e.target.value)}
+                        className="w-full px-3 py-2 border-2 border-[#7598CF]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Inverno */}
+                <div className="bg-white rounded-2xl border-2 border-[#9B8CD8]/30 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">❄️</span>
+                    <span className="text-[#28071C] font-bold text-sm">Inverno</span>
+                    <span className="ml-auto text-[10px] font-semibold text-[#9B8CD8] bg-[#9B8CD8]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
+                      <select value={invernoInicio} onChange={e => setInvernoInicio(e.target.value)}
+                        className="w-full px-3 py-2 border-2 border-[#9B8CD8]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
+                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
+                      <select value={invernoFim} onChange={e => setInvernoFim(e.target.value)}
+                        className="w-full px-3 py-2 border-2 border-[#9B8CD8]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
+                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Aviso sobre mês de início igual */}
+              {veraoInicio === invernoInicio && (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3">
+                  <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <p className="text-amber-800 text-xs">
+                    O mês de início do Verão e do Inverno não podem ser o mesmo. Ajuste um deles.
+                  </p>
+                </div>
+              )}
+
+              {/* Bloco Sell-Through */}
+              <div className="flex items-start gap-3 bg-[#F6F3AA]/40 border border-[#F6F3AA] rounded-xl px-4 py-3 mb-3">
+                <span className="text-base flex-shrink-0 mt-0.5">📊</span>
+                <div>
+                  <p className="text-[#28071C] text-xs font-bold mb-0.5 uppercase tracking-widest">Sell-Through</p>
+                  <p className="text-[#28071C]/70 text-xs leading-relaxed">
+                    Mede a performance e a eficiência de escoamento da sua coleção.<br />
+                    <span className="font-semibold text-[#28071C]">Venda ÷ (Estoque Inicial + Compras do período).</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+                <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                  Essas datas definem o <strong>período de venda a preço cheio</strong> — não a data de entrega. Lead times de produção e pedido são configurados em <strong>Operações</strong>. Durações customizadas são permitidas, inclusive ultrapassando o limite do ano fiscal.
+                </p>
+              </div>
+
+              <NavButtons
+                onBack={goBack}
+                onNext={goNext}
+                nextDisabled={veraoInicio === invernoInicio}
+              />
+            </div>
+          )}
+
+          {/* ──────────────────────────────────────────────────────────────────
+              ETAPA 4 — CANAIS DE VENDA
           ────────────────────────────────────────────────────────────────── */}
           {currentStepId === 'channels' && (
             <div>

@@ -2,15 +2,64 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   LogOut, Settings, TrendingUp, BarChart3, Package, FileText,
-  Layers, Shield, User, Lock, ChevronRight,
+  Layers, Shield, User, Lock, ChevronRight, Globe, Users,
+  MonitorPlay, ClipboardList, SlidersHorizontal, Bug, HelpCircle,
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import { getChannelReviewedYears } from "../../services/channelScenarioService";
+import { hasModule3ActiveScenario } from "../../services/module3ScenarioService";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+
+const DASHBOARD_TOUR: TourStep[] = [
+  {
+    targetId: "tour-dashboard-greeting",
+    title: "Bem-vindo ao Fashion Mind",
+    content: "Esses 5 módulos te levam da meta de receita até o sortimento final, em sequência. Comece pelo Planejamento Estratégico — os próximos se desbloqueiam conforme você avança.",
+  },
+  {
+    targetId: "tour-module-1",
+    title: "Planejamento Estratégico",
+    content: "É aqui que tudo começa: a meta de receita e margem que vai guiar a coleção inteira. Defina quais indicadores guiarão os resultados do ano. Simule, salve e compare cenários lado a lado antes de decidir os números de cada indicador. Essa decisão abre os módulos seguintes.",
+  },
+  {
+    targetId: "tour-module-2",
+    title: "Metas por Canal",
+    content: "Aqui a meta vira números por canal: loja física, e-commerce, atacado. Você vê na hora se a soma das partes ainda fecha com a meta que definiu no módulo anterior em todos os indicadores que você definiu para o ano.",
+  },
+  {
+    targetId: "tour-module-3",
+    title: "Planejamento por Divisão",
+    content: "Cada canal se divide por linha de produto e Coleção. Você define a pirâmide de preço de cada divisão e visualiza o risco antes de aprovar a distribuição.",
+  },
+  {
+    targetId: "tour-module-4",
+    title: "Validação de Ciclo",
+    content: "Aqui você confere o ritmo: a curva de vendas mês a mês por canal, comparada ao período real da coleção. Depois, calibre a entrada de mercadorias — seja por produção ou compra —, garantindo previsibilidade de orçamento e prevenção de rupturas. Qualquer gap de prazo ou volume aparece aqui, antes de comprometer o seu caixa.",
+  },
+  {
+    targetId: "tour-module-5",
+    title: "Plano de Sortimento",
+    content: "Desenvolva a engenharia de sortimento com base nas metas definidas. Detalhe categorias, preços e atributos.",
+  },
+  {
+    targetId: "tour-settings-btn",
+    title: "Configurações de Operação",
+    content: "Gerencie sua estrutura ou complemente os dados do seu sistema. Defina o período de suas coleções, drops, faixas de preço, sinalize básicos e importe dados se necessário.",
+  },
+  {
+    targetId: "tour-user-management",
+    title: "Perfil e Acessos",
+    content: "Aqui você pode gerenciar suas credenciais e definir os níveis de acesso de cada membro da equipe, garantindo a segurança e a governança das suas decisões estratégicas.",
+  },
+];
 
 interface UserData {
   name: string;
   email: string;
   profile: string;
+  system_role?: string;
+  tenant_id?: string;
 }
 
 interface ModuleCard {
@@ -61,7 +110,7 @@ const MODULE_CARDS: ModuleCard[] = [
     cta: "Planejar por divisão",
     route: "/module3-division-planning",
     ceoOnly: true,
-    requiresModules: [1, 2],
+    requiresModules: [2],
   },
   {
     id: 4,
@@ -69,11 +118,11 @@ const MODULE_CARDS: ModuleCard[] = [
     level: "Tático",
     levelColor: "text-[#9B8CD8]",
     icon: Package,
-    description: "Valide a sazonalidade e consolide os módulos anteriores. Identifique gaps antes de iniciar o desenvolvimento.",
+    description: "Ajuste a curva de vendas por canal para definir o orçamento e/ou produção no período da coleção desejada.",
     cta: "Validar ciclo",
     route: "/cycle-validation",
     ceoOnly: true,
-    requiresModules: [1, 2, 3],
+    requiresModules: [2],
   },
   {
     id: 5,
@@ -85,7 +134,7 @@ const MODULE_CARDS: ModuleCard[] = [
     cta: "Acessar sortimento",
     route: "/sortiment-plan",
     ceoOnly: false,
-    requiresModules: [],
+    requiresModules: [3],
   },
   {
     id: 6,
@@ -101,17 +150,28 @@ const MODULE_CARDS: ModuleCard[] = [
   },
 ];
 
-function isModuleUnlocked(card: ModuleCard, plannedYears: number[], reviewedYears: number[]): boolean {
+// Regras de desbloqueio por módulo:
+// Card 1         → sempre liberado (ponto de entrada)
+// isDemoMode     → sem planos salvos: navegação livre com dados mock
+// req 1          → Estratégico aplicado (tem versão salva)
+// req 2          → Metas por Canal aplicadas (ano revisado via channelScenario)
+// req 3          → Planejamento por Divisão aplicado (cenário ativo no M3)
+function isModuleUnlocked(
+  card: ModuleCard,
+  plannedYears: number[],
+  reviewedYears: number[],
+  isDemoMode: boolean,
+): boolean {
+  if (card.id === 1) return true;
+  if (isDemoMode) return true;
   if (card.requiresModules.length === 0) return true;
-  const latestYear = plannedYears.length > 0 ? Math.max(...plannedYears) : null;
-  if (!latestYear) return false;
+
+  const latestYear = Math.max(...plannedYears);
 
   return card.requiresModules.every((req) => {
-    if (req === 1) {
-      const cycle = getPlanCycle(latestYear);
-      return Boolean(cycle?.versions?.length);
-    }
+    if (req === 1) return Boolean(getPlanCycle(latestYear)?.versions?.length);
     if (req === 2) return reviewedYears.includes(latestYear);
+    if (req === 3) return hasModule3ActiveScenario();
     return true;
   });
 }
@@ -119,6 +179,8 @@ function isModuleUnlocked(card: ModuleCard, plannedYears: number[], reviewedYear
 export default function Dashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
+  const [activeTenantName, setActiveTenantName] = useState<string>("");
+  const tour = useTour("dashboard");
 
   const plannedYears = getPlannedYears();
   const reviewedYears = getChannelReviewedYears();
@@ -129,23 +191,28 @@ export default function Dashboard() {
       setUser(JSON.parse(storedUser));
     } else {
       navigate("/");
+      return;
     }
+    setActiveTenantName(sessionStorage.getItem("activeTenantName") ?? "");
   }, [navigate]);
 
   const handleLogout = () => {
-    sessionStorage.removeItem("currentUser");
+    sessionStorage.clear();
     navigate("/");
   };
 
+  const isSupport = user?.system_role === "support";
+  const isClientAdmin = user?.system_role === "client_admin";
+
+  // Suporte e client_admin têm acesso estratégico completo
+  const effectiveProfile = (isSupport || isClientAdmin) ? "CEO" : (user?.profile ?? "");
+
+  // Modo demo: nenhum plano salvo ainda → navegação livre com dados mock
+  const isDemoMode = plannedYears.length === 0;
+
   const handleCardClick = (card: ModuleCard) => {
-    if (card.ceoOnly && user?.profile !== "CEO") {
-      return;
-    }
     if (!card.route) return;
-
-    const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears);
-    if (!unlocked) return;
-
+    if (!isModuleUnlocked(card, plannedYears, reviewedYears, isDemoMode)) return;
     navigate(card.route);
   };
 
@@ -153,27 +220,67 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-[#7598CF] to-[#9B8CD8]">
+      {/* Banner de Suporte */}
+      {isSupport && (
+        <div className="bg-amber-500 px-6 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-950 text-sm font-medium">
+            <Globe className="w-4 h-4" />
+            Modo Suporte — Visualizando:
+            <span className="font-bold">{activeTenantName || "cliente não identificado"}</span>
+          </div>
+          <button
+            onClick={() => navigate("/tenant-selector")}
+            className="text-amber-950 hover:text-amber-900 text-xs underline"
+          >
+            Trocar cliente
+          </button>
+        </div>
+      )}
+
       {/* Top Bar */}
       <header className="bg-[#28071C] px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3">
+          <div id="tour-user-profile" className="flex items-center space-x-3">
             <div className="w-10 h-10 bg-[#7598CF]/30 rounded-full flex items-center justify-center">
               <User className="w-5 h-5 text-[#F6F3AA]" />
             </div>
             <div>
               <p className="text-[#F6F3AA] text-sm font-medium">{user.name}</p>
-              <p className="text-[#F6F3AA]/50 text-xs">{user.profile}</p>
+              <p className="text-[#F6F3AA]/50 text-xs">
+                {isSupport ? "Suporte TFO" : isClientAdmin ? "Administrador" : user.profile}
+              </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Ícone de admin — visível apenas para client_admin */}
+            {isClientAdmin && (
+              <button
+                onClick={() => navigate("/admin")}
+                id="tour-user-management"
+                className="flex items-center gap-2 px-3 py-2 text-[#F6F3AA]/70 hover:text-[#F6F3AA] hover:bg-white/10 rounded-lg transition-all text-sm"
+                title="Gerenciar usuários e permissões"
+              >
+                <Users className="w-4 h-4" />
+                <span className="hidden sm:inline">Gestão de usuários</span>
+              </button>
+            )}
             <button
               onClick={() => navigate("/operation-settings")}
+              id="tour-settings-btn"
               className="flex items-center gap-2 px-3 py-2 text-[#F6F3AA]/70 hover:text-[#F6F3AA] hover:bg-white/10 rounded-lg transition-all text-sm"
               title="Configurações do sistema"
             >
               <Settings className="w-4 h-4" />
               <span className="hidden sm:inline">Configurações</span>
+            </button>
+            <button
+              onClick={tour.reopen}
+              className="p-2 text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-colors"
+              title="Ver tour de apresentação"
+              aria-label="Abrir tour"
+            >
+              <HelpCircle className="w-4 h-4" />
             </button>
             <button
               onClick={handleLogout}
@@ -186,81 +293,83 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-6 py-10">
-        <div className="text-center mb-10">
-          <h1 className="text-3xl text-[#F6F3AA] mb-2">
-            Olá, {user.name}
+      {/* Main Content — pb-44 garante scroll suficiente para o tour centralizar cards inferiores */}
+      <main className="max-w-7xl mx-auto px-6 py-8 pb-44">
+        <div id="tour-dashboard-greeting" className="text-center mb-8">
+          <h1 className="text-2xl font-semibold text-[#F6F3AA] mb-1">
+            Bem-vindo ao Fashion Mind, {user.name}!
           </h1>
-          <p className="text-white/80 text-base">
-            Por onde você quer começar hoje?
+          <p className="text-white/65 text-sm max-w-lg mx-auto leading-relaxed">
+            Inteligência de dados e clareza estratégica para guiar a evolução da sua marca.
           </p>
         </div>
 
-        {/* Module Cards Grid */}
-        <div className="grid grid-cols-3 gap-5 max-w-5xl mx-auto">
+        {/* Module Cards — 3 colunas, tamanho compacto */}
+        <div className="grid grid-cols-3 gap-4 max-w-4xl mx-auto">
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
-            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears);
-            const accessible = (!card.ceoOnly || user.profile === "CEO") && card.route !== null;
-            const isLocked = accessible && !unlocked;
-            const isDisabled = !accessible || !unlocked;
+            const hasRoute = card.route !== null;
+            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, isDemoMode);
+            // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
+            const isLocked = hasRoute && !unlocked;
+            const isDisabled = !hasRoute || !unlocked;
 
             return (
               <button
                 key={card.id}
+                id={`tour-module-${card.id}`}
                 onClick={() => handleCardClick(card)}
                 disabled={isDisabled}
                 className={`
-                  bg-[#F2F2F2] rounded-2xl p-5 text-left flex flex-col gap-3
+                  bg-[#F2F2F2] rounded-xl p-4 text-left flex flex-col gap-2
                   transition-all duration-300 group relative
                   ${isDisabled
-                    ? "opacity-60 cursor-not-allowed"
-                    : "hover:scale-[1.02] hover:shadow-2xl cursor-pointer"
+                    ? "opacity-55 cursor-not-allowed"
+                    : "hover:scale-[1.02] hover:shadow-xl cursor-pointer"
                   }
                 `}
               >
-                {/* Lock overlay for modules awaiting prerequisites */}
+                {/* Lock icon */}
                 {isLocked && (
-                  <div className="absolute top-3 right-3">
-                    <div className="w-6 h-6 bg-[#28071C]/10 rounded-full flex items-center justify-center">
-                      <Lock className="w-3.5 h-3.5 text-[#28071C]/40" />
+                  <div className="absolute top-2.5 right-2.5">
+                    <div className="w-5 h-5 bg-[#28071C]/10 rounded-full flex items-center justify-center">
+                      <Lock className="w-3 h-3 text-[#28071C]/35" />
                     </div>
                   </div>
                 )}
 
-                {/* Icon + level */}
+                {/* Ícone + badge de nível */}
                 <div className="flex items-start justify-between">
-                  <div className="bg-[#28071C] p-3 rounded-xl group-hover:bg-[#28071C]/90 transition-colors">
-                    <IconComponent className="w-6 h-6 text-[#F6F3AA]" />
+                  <div className="bg-[#28071C] p-2 rounded-lg group-hover:bg-[#28071C]/90 transition-colors">
+                    <IconComponent className="w-4 h-4 text-[#F6F3AA]" />
                   </div>
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${card.levelColor} mt-1`}>
+                  <span className={`text-[9px] font-bold uppercase tracking-widest ${card.levelColor} mt-0.5`}>
                     {card.level}
                   </span>
                 </div>
 
-                {/* Title + description */}
-                <div className="flex flex-col gap-1 flex-1">
-                  <h3 className="text-sm text-[#28071C] font-semibold leading-snug">
+                {/* Título + descrição */}
+                <div className="flex flex-col gap-0.5 flex-1">
+                  <h3 className="text-xs font-semibold text-[#28071C] leading-snug">
                     {card.title}
                   </h3>
-                  <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                  <p className="text-[#28071C]/55 text-[11px] leading-relaxed">
                     {card.description}
                   </p>
                 </div>
 
                 {/* CTA */}
-                <div className={`flex items-center gap-1 text-xs font-semibold mt-auto ${
+                <div className={`flex items-center gap-1 text-[11px] font-semibold mt-auto ${
                   isDisabled ? "text-[#28071C]/30" : "text-[#7598CF]"
                 }`}>
-                  {isLocked ? (
+                  {!hasRoute ? (
+                    <span className="text-[#28071C]/30">Em breve</span>
+                  ) : isLocked ? (
                     <span className="text-[#28071C]/40">Conclua os módulos anteriores</span>
-                  ) : !accessible ? (
-                    <span className="text-[#28071C]/30">Acesso restrito</span>
                   ) : (
                     <>
                       {card.cta}
-                      <ChevronRight className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-3 h-3" />
                     </>
                   )}
                 </div>
@@ -268,6 +377,50 @@ export default function Dashboard() {
             );
           })}
         </div>
+
+        {/* Painel de debug — visível apenas para Suporte */}
+        {isSupport && (
+          <div className="max-w-5xl mx-auto mt-10">
+            <div className="bg-amber-500/15 border border-amber-400/30 backdrop-blur-sm rounded-2xl p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Bug className="w-4 h-4 text-amber-300" />
+                <h3 className="text-amber-200 text-sm font-semibold uppercase tracking-widest">
+                  Acesso de Suporte — Fluxo do cliente
+                </h3>
+              </div>
+              <p className="text-amber-200/70 text-xs mb-5">
+                Navegue pelas telas que o cliente vê durante o onboarding para diagnosticar erros.
+                Os dados exibidos são do localStorage do dispositivo atual (não do banco do cliente selecionado).
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <button
+                  onClick={() => navigate("/presentation")}
+                  className="bg-white/10 hover:bg-white/20 transition-colors rounded-xl p-4 text-left group"
+                >
+                  <MonitorPlay className="w-5 h-5 text-amber-300 mb-2" />
+                  <p className="text-white text-sm font-medium">Apresentação</p>
+                  <p className="text-white/50 text-xs mt-0.5">Slides de boas-vindas do sistema</p>
+                </button>
+                <button
+                  onClick={() => navigate("/onboarding")}
+                  className="bg-white/10 hover:bg-white/20 transition-colors rounded-xl p-4 text-left group"
+                >
+                  <ClipboardList className="w-5 h-5 text-amber-300 mb-2" />
+                  <p className="text-white text-sm font-medium">Onboarding</p>
+                  <p className="text-white/50 text-xs mt-0.5">Configuração inicial do perfil da empresa</p>
+                </button>
+                <button
+                  onClick={() => navigate("/profile-adjust")}
+                  className="bg-white/10 hover:bg-white/20 transition-colors rounded-xl p-4 text-left group"
+                >
+                  <SlidersHorizontal className="w-5 h-5 text-amber-300 mb-2" />
+                  <p className="text-white text-sm font-medium">Ajuste de Perfil</p>
+                  <p className="text-white/50 text-xs mt-0.5">Editar segmentos, matérias-primas e canais</p>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Progress hint when no plan exists */}
         {plannedYears.length === 0 && user.profile === "CEO" && (
@@ -280,6 +433,11 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Product Tour */}
+      {tour.isOpen && (
+        <ProductTour steps={DASHBOARD_TOUR} onClose={tour.dismiss} />
+      )}
 
       {/* Powered by tfo */}
       <div className="fixed bottom-3 right-4 flex items-center gap-1.5 opacity-20 pointer-events-none select-none">

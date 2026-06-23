@@ -28,7 +28,7 @@ export function ActionButton({
   const variantClasses = {
     primary: "bg-[#28071C] text-white hover:bg-[#28071C]/90",
     secondary: "bg-[#7598CF] text-white hover:bg-[#7598CF]/90",
-    outline: "bg-white text-[#28071C] border-2 border-[#28071C] hover:bg-[#E7E7E6]",
+    outline: "bg-white text-[#28071C] border-2 border-[#28071C] hover:bg-[#F2F2F2]",
   };
 
   const sizeClasses = {

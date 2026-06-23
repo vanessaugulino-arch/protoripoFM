@@ -252,24 +252,27 @@ export default function SortimentPlan() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={handleBack}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <span className="text-[#F6F3AA] text-xl">Fashion Mind | Plano de Sortimento</span>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 5</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Plano de Sortimento</span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2 text-[#F6F3AA]">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
-              <span>{user.name}</span>
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -292,7 +295,7 @@ export default function SortimentPlan() {
               <select
                 value={selectedCycle}
                 onChange={(e) => setSelectedCycle(e.target.value)}
-                className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
+                className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
               >
                 <option value="Verão 2026">Verão 2026</option>
                 <option value="Inverno 2026">Inverno 2026</option>
@@ -304,7 +307,7 @@ export default function SortimentPlan() {
               <label className="block text-[#28071C]/70 text-sm mb-2 uppercase tracking-wide">
                 Departamento
               </label>
-              <div className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] font-medium">
+              <div className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] font-medium">
                 {selectedDepartment}
               </div>
             </div>
@@ -316,7 +319,7 @@ export default function SortimentPlan() {
           <h2 className="text-[#28071C] text-xl mb-4">Metas Recebidas do Ciclo</h2>
           <div className="grid grid-cols-4 gap-4">
             {/* Receita */}
-            <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+            <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
               <div className="flex items-center space-x-2 mb-2">
                 <DollarSign className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-xs uppercase tracking-wide">Receita</label>
@@ -330,7 +333,7 @@ export default function SortimentPlan() {
             </div>
 
             {/* PMV */}
-            <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+            <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center space-x-2">
                   <DollarSign className="w-4 h-4 text-[#28071C]/70" />
@@ -358,7 +361,7 @@ export default function SortimentPlan() {
                         type="number"
                         value={targets[key]}
                         onChange={(e) => setTargets({ ...targets, [key]: Number(e.target.value) })}
-                        className="w-20 text-right text-[#28071C] bg-[#E7E7E6] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+                        className="w-20 text-right text-[#28071C] bg-[#F2F2F2] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
                       />
                     </div>
                   ))}
@@ -367,7 +370,7 @@ export default function SortimentPlan() {
             </div>
 
             {/* Volume Total */}
-            <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+            <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
               <div className="flex items-center space-x-2 mb-2">
                 <Package className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-xs uppercase tracking-wide">Volume Total</label>
@@ -384,20 +387,20 @@ export default function SortimentPlan() {
                   type="number"
                   value={targets.volumeProducao}
                   onChange={(e) => setTargets({ ...targets, volumeProducao: Number(e.target.value) })}
-                  className="w-20 bg-[#E7E7E6] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+                  className="w-20 bg-[#F2F2F2] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
                 />
                 <span>Compra:</span>
                 <input
                   type="number"
                   value={targets.volumeCompra}
                   onChange={(e) => setTargets({ ...targets, volumeCompra: Number(e.target.value) })}
-                  className="w-20 bg-[#E7E7E6] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+                  className="w-20 bg-[#F2F2F2] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
                 />
               </div>
             </div>
 
             {/* Matriz de Risco */}
-            <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+            <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center space-x-2">
                   <TrendingUp className="w-4 h-4 text-[#28071C]/70" />
@@ -420,7 +423,7 @@ export default function SortimentPlan() {
                       type="number"
                       value={targets[key]}
                       onChange={(e) => setTargets({ ...targets, [key]: Number(e.target.value) })}
-                      className="w-20 text-right text-[#28071C] bg-[#E7E7E6] rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+                      className="w-20 text-right text-[#28071C] bg-[#F2F2F2] rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
                     />
                   </div>
                 ))}
@@ -436,7 +439,7 @@ export default function SortimentPlan() {
                         type="number"
                         value={targets[key]}
                         onChange={(e) => setTargets({ ...targets, [key]: Number(e.target.value) })}
-                        className="w-20 text-right text-[#28071C] bg-[#E7E7E6] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
+                        className="w-20 text-right text-[#28071C] bg-[#F2F2F2] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
                       />
                     </div>
                   ))}
@@ -476,7 +479,7 @@ export default function SortimentPlan() {
                   type="text"
                   value={family.name}
                   onChange={(e) => updateFamilyName(family.id, e.target.value)}
-                  className="text-xl font-bold text-[#28071C] bg-[#E7E7E6] rounded-lg px-4 py-2 border-2 border-transparent hover:border-[#7598CF] focus:border-[#7598CF] focus:outline-none"
+                  className="text-xl font-bold text-[#28071C] bg-[#F2F2F2] rounded-lg px-4 py-2 border-2 border-transparent hover:border-[#7598CF] focus:border-[#7598CF] focus:outline-none"
                   placeholder="Nome da História/Família"
                 />
                 <button
@@ -489,7 +492,7 @@ export default function SortimentPlan() {
 
               <div className="space-y-4">
                 {family.looks.map((look) => (
-                  <div key={look.id} className="bg-[#E7E7E6]/50 rounded-xl p-5">
+                  <div key={look.id} className="bg-[#F2F2F2]/50 rounded-xl p-5">
                     <div className="flex items-center justify-between mb-4">
                       <input
                         type="text"
@@ -533,7 +536,7 @@ export default function SortimentPlan() {
                               <tr
                                 key={variant.id}
                                 className={`border-b border-[#28071C]/10 ${
-                                  index % 2 === 0 ? "bg-white" : "bg-[#E7E7E6]/20"
+                                  index % 2 === 0 ? "bg-white" : "bg-[#F2F2F2]/20"
                                 }`}
                               >
                                 <td className="py-3 px-4">
@@ -542,7 +545,7 @@ export default function SortimentPlan() {
                                     onChange={(e) =>
                                       updateVariant(family.id, look.id, variant.id, "category", e.target.value)
                                     }
-                                    className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                                    className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                                   >
                                     <option value="Selecione">Selecione</option>
                                     <option value="Blusas">Blusas</option>
@@ -559,7 +562,7 @@ export default function SortimentPlan() {
                                     onChange={(e) =>
                                       updateVariant(family.id, look.id, variant.id, "subcategory", e.target.value)
                                     }
-                                    className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                                    className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                                   >
                                     <option value="">Selecione</option>
                                     {variant.category === "Blusas" && (
@@ -592,7 +595,7 @@ export default function SortimentPlan() {
                                     onChange={(e) =>
                                       updateVariant(family.id, look.id, variant.id, "skuQuantity", parseInt(e.target.value) || 0)
                                     }
-                                    className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                                    className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                                     min="0"
                                   />
                                 </td>
@@ -603,7 +606,7 @@ export default function SortimentPlan() {
                                     onChange={(e) =>
                                       updateVariant(family.id, look.id, variant.id, "salesVolume", parseInt(e.target.value) || 0)
                                     }
-                                    className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                                    className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                                     min="0"
                                   />
                                 </td>

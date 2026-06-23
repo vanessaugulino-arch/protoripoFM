@@ -314,7 +314,7 @@ export default function CycleClosing() {
         </div>
 
         {/* Legendas e Ajuda */}
-        <div className="mt-6 bg-white rounded-lg p-4 border border-[#E7E7E6]">
+        <div className="mt-6 bg-white rounded-lg p-4 border border-[#F2F2F2]">
           <h4 className="text-[#28071C] font-semibold text-sm mb-3">
             📊 Como Funciona o Plano de Markdown
           </h4>

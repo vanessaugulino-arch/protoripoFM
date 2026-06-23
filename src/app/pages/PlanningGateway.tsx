@@ -3,10 +3,30 @@ import { useNavigate } from "react-router"
 import {
   ArrowLeft, LogOut, User, ChevronRight, RotateCcw,
   PlusCircle, Settings, TrendingUp, TrendingDown, Minus,
-  Calendar, CheckCircle2, AlertCircle, Target, Info,
+  Calendar, CheckCircle2, AlertCircle, Target, Info, HelpCircle,
 } from "lucide-react"
 import { isOnboardingComplete } from "../types/onboarding"
 import { getPlanCycle, getPlannedYears } from "../types/planCycle"
+import { ProductTour, type TourStep } from "../components/ProductTour"
+import { useTour } from "../hooks/useTour"
+
+const PLANNING_GATEWAY_TOUR: TourStep[] = [
+  {
+    targetId: "tour-pg-title",
+    title: "Módulo 1 — Planejamento Estratégico",
+    content: "Aqui você define a meta macro do ciclo: receita, margem e OTB. Os outros módulos partem desses números.",
+  },
+  {
+    targetId: "tour-pg-acc",
+    title: "Acompanhamento do Ano em Curso",
+    content: "Compare os indicadores acumulados (ACC) com a referência histórica. Isso fundamenta a meta que você vai definir ou revisar.",
+  },
+  {
+    targetId: "tour-pg-actions",
+    title: "Ações do Ciclo",
+    content: "Revise um plano existente ou inicie um novo ciclo. Em cada ação você simula cenários, salva e compara antes de aplicar formalmente.",
+  },
+]
 import {
   computeCycleState, formatYearProgress, yearProgressRatio, prorated,
 } from "../utils/cycleManager"
@@ -57,6 +77,7 @@ export default function PlanningGateway() {
   const navigate = useNavigate()
   const [user, setUser] = useState<UserData | null>(null)
   const [reviewYear, setReviewYear] = useState<number | null>(null)
+  const tour = useTour("planning-gateway")
 
   const cycleState = useMemo(() => computeCycleState(), [])
   const progressRatio = yearProgressRatio(cycleState.monthsElapsed)
@@ -68,7 +89,8 @@ export default function PlanningGateway() {
     if (stored) {
       const u = JSON.parse(stored)
       setUser(u)
-      if (u.profile !== "CEO") navigate("/dashboard")
+      const hasAccess = u.profile === "CEO" || u.system_role === "support" || u.system_role === "client_admin"
+      if (!hasAccess) navigate("/dashboard")
     } else navigate("/")
   }, [navigate])
 
@@ -234,7 +256,7 @@ export default function PlanningGateway() {
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
+            <div id="tour-pg-title">
               <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento Estratégico</span>
             </div>
@@ -244,6 +266,13 @@ export default function PlanningGateway() {
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={tour.reopen}
+              className="text-[#F6F3AA]/60 hover:text-[#F6F3AA] transition-opacity"
+              title="Ver tour de apresentação"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
             <button
               onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/") }}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
@@ -256,8 +285,15 @@ export default function PlanningGateway() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
 
+        {/* ─── FRASE DE CONTEXTO ───────────────────────────────────────────── */}
+        <div className="bg-gradient-to-r from-[#28071C]/5 to-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-6 py-4 text-center">
+          <p className="text-[#28071C] font-semibold text-base leading-snug">
+            Defina a <span className="text-[#7598CF]">meta macro do ciclo</span> — receita, margem e OTB — e mantenha todos os módulos alinhados a um único norte estratégico.
+          </p>
+        </div>
+
         {/* ─── ACC SECTION ─────────────────────────────────────────────────── */}
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+        <div id="tour-pg-acc" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-[#28071C]/8">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -451,7 +487,7 @@ export default function PlanningGateway() {
         </div>
 
         {/* ─── ACTION CARDS ────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-6">
+        <div id="tour-pg-actions" className="grid grid-cols-2 gap-6">
 
           {/* REVISAR PLANO EXISTENTE OU PROJEÇÃO */}
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
@@ -680,6 +716,10 @@ export default function PlanningGateway() {
           </div>
         )}
       </main>
+
+      {tour.isOpen && (
+        <ProductTour steps={PLANNING_GATEWAY_TOUR} onClose={tour.dismiss} />
+      )}
     </div>
   )
 }

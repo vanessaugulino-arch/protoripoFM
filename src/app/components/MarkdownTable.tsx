@@ -24,7 +24,7 @@ export function MarkdownTable({ products, onProductUpdate }: MarkdownTableProps)
 
   if (products.length === 0) {
     return (
-      <div className="bg-white rounded-xl p-12 text-center shadow-sm border border-[#E7E7E6]">
+      <div className="bg-white rounded-xl p-12 text-center shadow-sm border border-[#F2F2F2]">
         <p className="text-[#28071C]/60 text-lg">
           Nenhum produto encontrado com os filtros aplicados
         </p>
@@ -33,7 +33,7 @@ export function MarkdownTable({ products, onProductUpdate }: MarkdownTableProps)
   }
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-[#E7E7E6] overflow-hidden">
+    <div className="bg-white rounded-xl shadow-sm border border-[#F2F2F2] overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-[#7598CF] text-[#F6F3AA]">
@@ -73,11 +73,11 @@ export function MarkdownTable({ products, onProductUpdate }: MarkdownTableProps)
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-[#E7E7E6]">
+          <tbody className="divide-y divide-[#F2F2F2]">
             {products.map((product) => (
               <tr
                 key={product.id}
-                className="hover:bg-[#E7E7E6]/30 transition-colors"
+                className="hover:bg-[#F2F2F2]/30 transition-colors"
               >
                 {/* Foto */}
                 <td className="px-4 py-3">
@@ -228,7 +228,7 @@ export function MarkdownTable({ products, onProductUpdate }: MarkdownTableProps)
       </div>
 
       {/* Footer Summary */}
-      <div className="bg-[#E7E7E6] px-4 py-3 border-t-2 border-[#7598CF]">
+      <div className="bg-[#F2F2F2] px-4 py-3 border-t-2 border-[#7598CF]">
         <div className="flex justify-between items-center text-sm">
           <p className="text-[#28071C] font-semibold">
             Total: {products.length} produto(s) selecionado(s) para markdown

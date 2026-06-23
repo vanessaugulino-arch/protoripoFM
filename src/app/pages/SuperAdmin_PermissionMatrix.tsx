@@ -330,26 +330,27 @@ export default function SuperAdmin_PermissionMatrix() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={handleBack}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <h1 className="text-[#F6F3AA] text-xl">
-              Fashion Mind | Matriz de Perfis e Permissões RBAC
-            </h1>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Super Admin</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Matriz de Permissões</span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2 text-[#F6F3AA]">
-              <Shield className="w-5 h-5" />
-              <span>{user.name} - Super Admin</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -396,7 +397,7 @@ export default function SuperAdmin_PermissionMatrix() {
           <select
             value={selectedUser}
             onChange={(e) => handleUserSelect(e.target.value)}
-            className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+            className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
           >
             <option value="">Selecione um usuário...</option>
             {clientUsers.map((u) => (
@@ -485,7 +486,7 @@ export default function SuperAdmin_PermissionMatrix() {
                         return (
                           <div
                             key={module.id}
-                            className="flex items-center justify-between p-4 bg-[#E7E7E6]/30 rounded-lg hover:bg-[#E7E7E6]/50 transition-colors"
+                            className="flex items-center justify-between p-4 bg-[#F2F2F2]/30 rounded-lg hover:bg-[#F2F2F2]/50 transition-colors"
                           >
                             <div className="flex-1">
                               <div className="text-[#28071C] mb-1">

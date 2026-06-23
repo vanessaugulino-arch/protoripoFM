@@ -150,26 +150,27 @@ export default function SuperAdmin_ClientManagement() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={handleBack}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <h1 className="text-[#F6F3AA] text-xl">
-              Fashion Mind | Gestão de Clientes (Tenants)
-            </h1>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Super Admin</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Gestão de Clientes</span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2 text-[#F6F3AA]">
-              <Shield className="w-5 h-5" />
-              <span>{user.name} - Super Admin</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
+              <User className="w-5 h-5" />
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -213,7 +214,7 @@ export default function SuperAdmin_ClientManagement() {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar por nome da marca ou CNPJ..."
-              className="w-full bg-[#E7E7E6] rounded-lg pl-12 pr-4 py-3 text-[#28071C] placeholder:text-[#28071C]/40 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+              className="w-full bg-[#F2F2F2] rounded-lg pl-12 pr-4 py-3 text-[#28071C] placeholder:text-[#28071C]/40 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
             />
           </div>
         </div>
@@ -301,7 +302,7 @@ export default function SuperAdmin_ClientManagement() {
                   <tr
                     key={client.id}
                     className={`border-b border-[#28071C]/10 ${
-                      index % 2 === 0 ? "bg-white" : "bg-[#E7E7E6]/20"
+                      index % 2 === 0 ? "bg-white" : "bg-[#F2F2F2]/20"
                     }`}
                   >
                     <td className="py-4 px-4">
@@ -420,7 +421,7 @@ export default function SuperAdmin_ClientManagement() {
                     setNewClient({ ...newClient, brandName: e.target.value })
                   }
                   placeholder="Ex: Fashion Brand"
-                  className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                  className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                 />
               </div>
 
@@ -435,7 +436,7 @@ export default function SuperAdmin_ClientManagement() {
                     setNewClient({ ...newClient, cnpj: e.target.value })
                   }
                   placeholder="00.000.000/0000-00"
-                  className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                  className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                 />
               </div>
 
@@ -448,7 +449,7 @@ export default function SuperAdmin_ClientManagement() {
                   onChange={(e) =>
                     setNewClient({ ...newClient, plan: e.target.value })
                   }
-                  className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                  className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                 >
                   <option value="Starter">Starter</option>
                   <option value="Professional">Professional</option>
@@ -468,7 +469,7 @@ export default function SuperAdmin_ClientManagement() {
                       status: e.target.value as "active" | "inactive",
                     })
                   }
-                  className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                  className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                 >
                   <option value="active">Ativo</option>
                   <option value="inactive">Inativo</option>

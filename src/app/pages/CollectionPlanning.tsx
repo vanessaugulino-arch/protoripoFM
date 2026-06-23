@@ -27,6 +27,7 @@ interface Theme {
   name: string;
   participation: number;
   looksQuantity: number;
+  colors: ThemeColor[];
 }
 
 interface ThemeColor {
@@ -52,13 +53,6 @@ interface Category {
   subcategories: Subcategory[];
 }
 
-interface SKUPlanItem {
-  model: string;
-  theme: string;
-  colors: string[];
-  priceRange: string;
-  quantity: number;
-}
 
 export default function CollectionPlanning() {
   const navigate = useNavigate();
@@ -70,7 +64,7 @@ export default function CollectionPlanning() {
 
   // Temas e looks
   const [themes, setThemes] = useState<Theme[]>([
-    { id: "1", name: "", participation: 0, looksQuantity: 0 }
+    { id: "1", name: "", participation: 0, looksQuantity: 0, colors: [] }
   ]);
 
   // Metas da Direção Criativa (vindo da tela anterior)
@@ -104,7 +98,6 @@ export default function CollectionPlanning() {
     }
   ]);
 
-  const [skuPlan, setSkuPlan] = useState<SKUPlanItem[]>([]);
 
   useEffect(() => {
     const storedUser = sessionStorage.getItem("currentUser");
@@ -138,7 +131,7 @@ export default function CollectionPlanning() {
 
   const addTheme = () => {
     if (themes.length < 4) {
-      setThemes([...themes, { id: Date.now().toString(), name: "", participation: 0, looksQuantity: 0 }]);
+      setThemes([...themes, { id: Date.now().toString(), name: "", participation: 0, looksQuantity: 0, colors: [] }]);
     }
   };
 
@@ -235,26 +228,27 @@ export default function CollectionPlanning() {
   // Tela 1: Cadastro de Temas e Looks
   if (!hasThemes) {
     return (
-      <div className="min-h-screen w-full bg-[#E7E7E6]">
+      <div className="min-h-screen w-full bg-[#F2F2F2]">
         {/* Topbar */}
-        <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+        <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
           <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-4">
               <button
                 onClick={handleBack}
                 className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
               >
                 <ArrowLeft className="w-6 h-6" />
               </button>
-              <h1 className="text-[#F6F3AA] text-xl">
-                Fashion Mind | Definição de Temas e Looks
-              </h1>
+              <div>
+                <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Coleção</span>
+                <span className="text-[#F6F3AA]/70 text-sm ml-3">Definição de Temas e Looks</span>
+              </div>
             </div>
 
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 text-[#F6F3AA]">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 text-[#F6F3AA]">
                 <User className="w-5 h-5" />
-                <span>{user.name}</span>
+                <span className="text-sm">{user.name}</span>
               </div>
               <button
                 onClick={handleLogout}
@@ -276,7 +270,7 @@ export default function CollectionPlanning() {
             <select
               value={selectedCycle}
               onChange={(e) => setSelectedCycle(e.target.value)}
-              className="w-full bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
+              className="w-full bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
             >
               <option>Verão 2026</option>
               <option>Inverno 2026</option>
@@ -311,7 +305,7 @@ export default function CollectionPlanning() {
                       value={theme.name}
                       onChange={(e) => updateTheme(theme.id, 'name', e.target.value)}
                       placeholder="Ex: Tropical, Minimalista, Boho..."
-                      className="w-full bg-[#E7E7E6] rounded-lg px-4 py-2 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                      className="w-full bg-[#F2F2F2] rounded-lg px-4 py-2 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                     />
                   </div>
                   <div className="w-32">
@@ -322,7 +316,7 @@ export default function CollectionPlanning() {
                       type="number"
                       value={theme.participation}
                       onChange={(e) => updateTheme(theme.id, 'participation', parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#E7E7E6] rounded-lg px-4 py-2 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                      className="w-full bg-[#F2F2F2] rounded-lg px-4 py-2 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                     />
                   </div>
                   {themes.length > 1 && (
@@ -351,7 +345,7 @@ export default function CollectionPlanning() {
 
             <div className="space-y-4">
               {themes.filter(t => t.name).map((theme) => (
-                <div key={theme.id} className="border-l-4 border-[#7598CF] pl-6 py-4 bg-[#E7E7E6]/30 rounded-r-lg">
+                <div key={theme.id} className="border-l-4 border-[#7598CF] pl-6 py-4 bg-[#F2F2F2]/30 rounded-r-lg">
                   <div className="flex items-center justify-between">
                     <h3 className="text-[#28071C] text-lg mb-2">{theme.name}</h3>
                     <div className="flex items-center gap-3">
@@ -418,7 +412,7 @@ export default function CollectionPlanning() {
                   ) : (
                     <div className="space-y-3">
                       {theme.colors.map((color) => (
-                        <div key={color.id} className="flex items-center gap-3 bg-[#E7E7E6]/50 rounded-lg p-3">
+                        <div key={color.id} className="flex items-center gap-3 bg-[#F2F2F2]/50 rounded-lg p-3">
                           <input
                             type="text"
                             value={color.name}
@@ -484,33 +478,34 @@ export default function CollectionPlanning() {
 
   // Tela 2: Planejamento de Coleção
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={handleBack}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <h1 className="text-[#F6F3AA] text-xl">
-              Fashion Mind | Planejamento de Coleção
-            </h1>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Coleção</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento de Coleção</span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={() => setHasThemes(false)}
-              className="flex items-center px-4 py-2 bg-white/30 text-[#F6F3AA] rounded-lg hover:bg-white/50 transition-all"
+              className="flex items-center px-4 py-2 bg-white/20 text-[#F6F3AA] rounded-lg hover:bg-white/30 transition-all text-sm"
             >
               <Edit3 className="w-4 h-4 mr-2" />
               Revisar Temas
             </button>
-            <div className="flex items-center space-x-2 text-[#F6F3AA]">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
-              <span>{user.name}</span>
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -685,7 +680,7 @@ export default function CollectionPlanning() {
                           type="number"
                           value={sub.participation}
                           onChange={(e) => updateSubcategory(category.id, sub.id, 'participation', parseFloat(e.target.value) || 0)}
-                          className="w-20 bg-[#E7E7E6] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-20 bg-[#F2F2F2] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -693,7 +688,7 @@ export default function CollectionPlanning() {
                           type="number"
                           value={sub.avgPrice}
                           onChange={(e) => updateSubcategory(category.id, sub.id, 'avgPrice', parseFloat(e.target.value) || 0)}
-                          className="w-24 bg-[#E7E7E6] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-24 bg-[#F2F2F2] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -701,7 +696,7 @@ export default function CollectionPlanning() {
                           type="number"
                           value={sub.volume}
                           onChange={(e) => updateSubcategory(category.id, sub.id, 'volume', parseFloat(e.target.value) || 0)}
-                          className="w-24 bg-[#E7E7E6] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-24 bg-[#F2F2F2] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -709,7 +704,7 @@ export default function CollectionPlanning() {
                           type="number"
                           value={sub.margin}
                           onChange={(e) => updateSubcategory(category.id, sub.id, 'margin', parseFloat(e.target.value) || 0)}
-                          className="w-20 bg-[#E7E7E6] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-20 bg-[#F2F2F2] rounded px-3 py-1 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -776,7 +771,7 @@ export default function CollectionPlanning() {
 
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="bg-[#E7E7E6]">
+                      <tr className="bg-[#F2F2F2]">
                         <th className="text-left text-[#28071C]/70 py-2 px-3">Modelo</th>
                         <th className="text-left text-[#28071C]/70 py-2 px-3">Tema</th>
                         <th className="text-left text-[#28071C]/70 py-2 px-3">Cores</th>

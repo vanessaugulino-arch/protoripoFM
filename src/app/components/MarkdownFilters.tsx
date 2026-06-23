@@ -84,7 +84,7 @@ export function MarkdownFilters({
     activeFilters.searchTerm;
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm border border-[#E7E7E6] mb-6">
+    <div className="bg-white rounded-xl p-4 shadow-sm border border-[#F2F2F2] mb-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-[#28071C] font-semibold text-sm">
           Filtros Drill-down
@@ -113,7 +113,7 @@ export function MarkdownFilters({
               value={searchTerm}
               onChange={(e) => handleSearchChange(e.target.value)}
               placeholder="Digite o nome..."
-              className="w-full pl-10 pr-3 py-2 border border-[#E7E7E6] rounded-lg text-sm focus:border-[#7598CF] focus:outline-none"
+              className="w-full pl-10 pr-3 py-2 border border-[#F2F2F2] rounded-lg text-sm focus:border-[#7598CF] focus:outline-none"
             />
           </div>
         </div>
@@ -127,7 +127,7 @@ export function MarkdownFilters({
             <select
               value={activeFilters.categoria || ""}
               onChange={(e) => handleCategoriaChange(e.target.value)}
-              className="w-full px-3 py-2 border border-[#E7E7E6] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none"
+              className="w-full px-3 py-2 border border-[#F2F2F2] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none"
             >
               <option value="">Todas</option>
               {uniqueValues.categorias.map((cat) => (
@@ -150,7 +150,7 @@ export function MarkdownFilters({
               value={activeFilters.subcategoria || ""}
               onChange={(e) => handleSubcategoriaChange(e.target.value)}
               disabled={!activeFilters.categoria}
-              className="w-full px-3 py-2 border border-[#E7E7E6] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none disabled:bg-gray-50 disabled:cursor-not-allowed"
+              className="w-full px-3 py-2 border border-[#F2F2F2] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none disabled:bg-gray-50 disabled:cursor-not-allowed"
             >
               <option value="">Todas</option>
               {uniqueValues.subcategorias.map((subcat) => (
@@ -172,7 +172,7 @@ export function MarkdownFilters({
             <select
               value={activeFilters.temaColecao || ""}
               onChange={(e) => handleTemaChange(e.target.value)}
-              className="w-full px-3 py-2 border border-[#E7E7E6] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none"
+              className="w-full px-3 py-2 border border-[#F2F2F2] rounded-lg text-sm appearance-none focus:border-[#7598CF] focus:outline-none"
             >
               <option value="">Todos</option>
               {uniqueValues.temas.map((tema) => (

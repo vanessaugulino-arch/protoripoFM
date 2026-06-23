@@ -45,7 +45,7 @@ export function MarkdownControlPanel({ summary }: MarkdownControlPanelProps) {
 
       <div className="grid grid-cols-4 gap-4">
         {/* Card 1: Utilização da Verba */}
-        <div className="bg-[#E7E7E6] rounded-lg p-4">
+        <div className="bg-[#F2F2F2] rounded-lg p-4">
           <div className="flex items-center space-x-2 mb-2">
             <DollarSign className="w-5 h-5 text-[#28071C]/70" />
             <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">
@@ -72,7 +72,7 @@ export function MarkdownControlPanel({ summary }: MarkdownControlPanelProps) {
         </div>
 
         {/* Card 2: Margem Final Estimada */}
-        <div className="bg-[#E7E7E6] rounded-lg p-4">
+        <div className="bg-[#F2F2F2] rounded-lg p-4">
           <div className="flex items-center space-x-2 mb-2">
             <TrendingDown className="w-5 h-5 text-[#28071C]/70" />
             <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">
@@ -93,7 +93,7 @@ export function MarkdownControlPanel({ summary }: MarkdownControlPanelProps) {
         </div>
 
         {/* Card 3: Venda Estimada */}
-        <div className="bg-[#E7E7E6] rounded-lg p-4">
+        <div className="bg-[#F2F2F2] rounded-lg p-4">
           <div className="flex items-center space-x-2 mb-2">
             <TrendingUp className="w-5 h-5 text-[#28071C]/70" />
             <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">
@@ -115,7 +115,7 @@ export function MarkdownControlPanel({ summary }: MarkdownControlPanelProps) {
         </div>
 
         {/* Card 4: Estoque Final Previsto */}
-        <div className="bg-[#E7E7E6] rounded-lg p-4">
+        <div className="bg-[#F2F2F2] rounded-lg p-4">
           <div className="flex items-center space-x-2 mb-2">
             <Package className="w-5 h-5 text-[#28071C]/70" />
             <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">

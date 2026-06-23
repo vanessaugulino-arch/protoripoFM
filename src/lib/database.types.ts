@@ -1226,6 +1226,61 @@ export type Database = {
           },
         ]
       }
+      user_permission_overrides: {
+        Row: {
+          id: string
+          user_id: string
+          module_id: string
+          tenant_id: string
+          can_view: boolean
+          can_edit: boolean
+          can_approve: boolean
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          module_id: string
+          tenant_id: string
+          can_view?: boolean
+          can_edit?: boolean
+          can_approve?: boolean
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          module_id?: string
+          tenant_id?: string
+          can_view?: boolean
+          can_edit?: boolean
+          can_approve?: boolean
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "upo_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "upo_module_id_fkey"
+            columns: ["module_id"]
+            isOneToOne: false
+            referencedRelation: "modules"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "upo_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       users: {
         Row: {
           created_at: string
@@ -1234,6 +1289,7 @@ export type Database = {
           name: string
           role_id: string | null
           status: string
+          system_role: string
           tenant_id: string
           updated_at: string
         }
@@ -1244,6 +1300,7 @@ export type Database = {
           name: string
           role_id?: string | null
           status?: string
+          system_role?: string
           tenant_id: string
           updated_at?: string
         }
@@ -1254,6 +1311,7 @@ export type Database = {
           name?: string
           role_id?: string | null
           status?: string
+          system_role?: string
           tenant_id?: string
           updated_at?: string
         }

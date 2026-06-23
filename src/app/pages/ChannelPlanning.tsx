@@ -2,8 +2,33 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
-  Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown,
+  Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown, HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+
+const CHANNEL_PLANNING_TOUR: TourStep[] = [
+  {
+    targetId: "tour-cp-title",
+    title: "Módulo 2 — Metas por Canal",
+    content: "Distribua a meta macro do ciclo entre seus canais de venda. Atacado, Varejo e E-commerce precisam fechar 100% da receita total definida no Módulo 1.",
+  },
+  {
+    targetId: "tour-cp-orientation",
+    title: "Ambiente de Simulação",
+    content: "Você está num ambiente seguro: altere participações e drivers sem impactar nada até escolher aplicar. Simule cenários pessimista, realista e otimista para cada canal antes de decidir.",
+  },
+  {
+    targetId: "tour-cp-channels",
+    title: "Distribuição por Canal",
+    content: "Cada coluna é um canal. Ajuste o % de participação e os drivers (margem, PMV, giro, cobertura) — os totais consolidados atualizam em tempo real para você ver o impacto de cada decisão.",
+  },
+  {
+    targetId: "tour-cp-title",
+    title: "Salve, Compare e Aplique",
+    content: "Quando estiver satisfeito com um cenário, salve-o. Crie quantos quiser. Depois compare lado a lado e aplique o vencedor — só então o plano por canal fica registrado formalmente.",
+  },
+];
 import { exportToPDF } from "../../utils/exportPDF";
 import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
@@ -171,13 +196,15 @@ const INIT_PERCENTS: Record<ChannelId, number> = { atacado: 40, varejo: 35, ecom
 export default function ChannelPlanning() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
+  const tour = useTour("channel-planning");
 
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
     if (stored) {
       const u = JSON.parse(stored);
       setUser(u);
-      if (u.profile !== "CEO") navigate("/dashboard");
+      const hasAccess = u.profile === "CEO" || u.system_role === "support" || u.system_role === "client_admin";
+      if (!hasAccess) navigate("/dashboard");
     } else navigate("/");
   }, [navigate]);
 
@@ -514,7 +541,7 @@ export default function ChannelPlanning() {
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
+            <div id="tour-cp-title">
               <p className="text-[#F6F3AA]/70 text-xs uppercase tracking-widest">Módulo 2</p>
               <p className="text-[#F6F3AA] font-semibold text-lg">Planejamento de Metas por Canal</p>
             </div>
@@ -528,6 +555,9 @@ export default function ChannelPlanning() {
             <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" /><span className="text-sm">{user.name}</span>
             </div>
+            <button onClick={tour.reopen} className="text-[#F6F3AA]/60 hover:text-[#F6F3AA] transition-opacity" title="Ver tour de apresentação">
+              <HelpCircle className="w-5 h-5" />
+            </button>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }}
               className="text-[#F6F3AA] hover:opacity-80"><LogOut className="w-5 h-5" /></button>
           </div>
@@ -537,7 +567,7 @@ export default function ChannelPlanning() {
       <main className="max-w-[1600px] mx-auto px-6 py-5">
 
         {/* ── Orientation + year selector ───────────────────────────────────── */}
-        <div className="bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-5 py-4 mb-4">
+        <div id="tour-cp-orientation" className="bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-5 py-4 mb-4">
           <div className="flex items-start gap-3 mb-3">
             <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
             <p className="text-sm text-[#28071C]/70 leading-relaxed">
@@ -566,7 +596,7 @@ export default function ChannelPlanning() {
         </div>
 
         {/* ── STICKY: Participation + Banner (AJUSTE 3) ─────────────────────── */}
-        <div className="sticky top-[72px] z-30 space-y-3 mb-5">
+        <div id="tour-cp-channels" className="sticky top-[72px] z-30 space-y-3 mb-5">
 
           {/* Participation cards */}
           <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-md border-t-4 border-[#7598CF] overflow-hidden">
@@ -996,6 +1026,10 @@ export default function ChannelPlanning() {
             )}
           </div>
         </div>
+      )}
+
+      {tour.isOpen && (
+        <ProductTour steps={CHANNEL_PLANNING_TOUR} onClose={tour.dismiss} />
       )}
     </div>
   );

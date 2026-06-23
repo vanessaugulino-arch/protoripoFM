@@ -57,7 +57,7 @@ export function ApprovalModal({
               <h3 className="text-[#28071C] text-lg font-semibold mb-4">
                 Resumo do Planejamento
               </h3>
-              <div className="bg-[#E7E7E6] rounded-lg p-4 space-y-3">
+              <div className="bg-[#F2F2F2] rounded-lg p-4 space-y-3">
                 {summaryData.map((item, index) => (
                   <div key={index} className="flex justify-between items-center">
                     <span className="text-[#28071C]/70 text-sm">{item.label}</span>
@@ -77,7 +77,7 @@ export function ApprovalModal({
               value={observations}
               onChange={(e) => setObservations(e.target.value)}
               placeholder="Adicione observações sobre este planejamento..."
-              className="w-full px-4 py-3 border-2 border-[#E7E7E6] rounded-lg focus:border-[#7598CF] focus:outline-none resize-none"
+              className="w-full px-4 py-3 border-2 border-[#F2F2F2] rounded-lg focus:border-[#7598CF] focus:outline-none resize-none"
               rows={6}
             />
           </div>

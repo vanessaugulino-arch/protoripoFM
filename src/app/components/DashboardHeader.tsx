@@ -1,4 +1,4 @@
-import { ArrowLeft, LogOut, User } from "lucide-react";
+import { ArrowLeft, LogOut, User, Users, Globe } from "lucide-react";
 import { useNavigate } from "react-router";
 
 interface DashboardHeaderProps {
@@ -9,7 +9,8 @@ interface DashboardHeaderProps {
   showBackButton?: boolean;
   onBack?: () => void;
   onLogout: () => void;
-  children?: React.ReactNode; // Para conteúdo adicional no header (ex: performance indicators)
+  children?: React.ReactNode;
+  systemRole?: string;
 }
 
 export function DashboardHeader({
@@ -21,8 +22,12 @@ export function DashboardHeader({
   onBack,
   onLogout,
   children,
+  systemRole,
 }: DashboardHeaderProps) {
   const navigate = useNavigate();
+  const activeTenantName = sessionStorage.getItem("activeTenantName") ?? "";
+  const isSupport = systemRole === "support";
+  const isClientAdmin = systemRole === "client_admin";
 
   const handleBack = () => {
     if (onBack) {
@@ -34,6 +39,22 @@ export function DashboardHeader({
 
   return (
     <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-6 shadow-lg">
+      {/* Banner de Suporte */}
+      {isSupport && (
+        <div className="bg-amber-500/90 -mx-6 -mt-6 mb-4 px-6 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-950 text-xs font-medium">
+            <Globe className="w-3.5 h-3.5" />
+            Modo Suporte — {activeTenantName}
+          </div>
+          <button
+            onClick={() => navigate("/tenant-selector")}
+            className="text-amber-950 text-xs underline hover:opacity-80"
+          >
+            Trocar cliente
+          </button>
+        </div>
+      )}
+
       <div className="max-w-[1600px] mx-auto">
         {/* Top row - Navigation and User */}
         <div className="flex items-center justify-between mb-6">
@@ -53,6 +74,17 @@ export function DashboardHeader({
           </div>
 
           <div className="flex items-center space-x-4">
+            {/* Botão de admin — visível apenas para client_admin */}
+            {isClientAdmin && (
+              <button
+                onClick={() => navigate("/admin")}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-[#F6F3AA] rounded-lg transition-colors text-xs"
+                title="Gerenciar usuários e permissões"
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Gestão de usuários</span>
+              </button>
+            )}
             <div className="flex items-center space-x-2 text-[#F6F3AA]">
               <User className="w-4 h-4" />
               <div className="text-right">

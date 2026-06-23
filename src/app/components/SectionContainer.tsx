@@ -67,7 +67,7 @@ export function SectionContainer({
     return null;
   }
 
-  const editableClass = canEdit() ? "border-2 border-[#7598CF]" : "border border-[#E7E7E6]";
+  const editableClass = canEdit() ? "border-2 border-[#7598CF]" : "border border-[#F2F2F2]";
   const approvedClass = isApproved ? "bg-green-50" : "";
 
   return (
@@ -79,7 +79,7 @@ export function SectionContainer({
       data-approved={isApproved}
     >
       {/* Badge indicando dono da seção */}
-      <div className="absolute -top-3 left-4 bg-white px-3 py-1 rounded-full border border-[#E7E7E6] text-xs font-semibold text-[#28071C]">
+      <div className="absolute -top-3 left-4 bg-white px-3 py-1 rounded-full border border-[#F2F2F2] text-xs font-semibold text-[#28071C]">
         {sectionOwnerProfile}
       </div>
 

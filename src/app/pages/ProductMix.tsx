@@ -230,26 +230,27 @@ export default function ProductMix() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-[#E7E7E6]">
+    <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Topbar */}
-      <header className="bg-gradient-to-r from-[#7598CF] to-[#B8A8E0] px-6 py-4 shadow-lg">
+      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-4">
             <button
               onClick={handleBack}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <h1 className="text-[#F6F3AA] text-xl">
-              Fashion Mind | Estrutura do Mix de Produtos
-            </h1>
+            <div>
+              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Mix de Produtos</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-3">Estrutura do Mix de Produtos</span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2 text-[#F6F3AA]">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
-              <span>{user.name}</span>
+              <span className="text-sm">{user.name}</span>
             </div>
             <button
               onClick={handleLogout}
@@ -271,7 +272,7 @@ export default function ProductMix() {
           <select
             value={selectedCycle}
             onChange={(e) => setSelectedCycle(e.target.value)}
-            className="w-full max-w-md bg-[#E7E7E6] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
+            className="w-full max-w-md bg-[#F2F2F2] rounded-lg px-4 py-3 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer"
           >
             <option>Verão 2026</option>
             <option>Inverno 2026</option>
@@ -309,7 +310,7 @@ export default function ProductMix() {
           {/* Indicadores da Visão Geral */}
           <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
                   <Percent className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -333,7 +334,7 @@ export default function ProductMix() {
                 )}
               </div>
 
-              <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
                   <Package className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -375,7 +376,7 @@ export default function ProductMix() {
                     <tr
                       key={category.id}
                       className={`border-b border-[#28071C]/10 ${
-                        index % 2 === 0 ? "bg-white" : "bg-[#E7E7E6]/20"
+                        index % 2 === 0 ? "bg-white" : "bg-[#F2F2F2]/20"
                       }`}
                     >
                       <td className="py-3 px-4">
@@ -384,7 +385,7 @@ export default function ProductMix() {
                           onChange={(e) =>
                             updateCategoryOverview(category.id, "categoriaPrincipal", e.target.value)
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         >
                           {categorias.map((cat) => (
                             <option key={cat} value={cat}>
@@ -406,7 +407,7 @@ export default function ProductMix() {
                                 parseFloat(e.target.value) || 0
                               )
                             }
-                            className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                            className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                           />
                           <span className="ml-2 text-[#28071C]/70 text-sm">%</span>
                         </div>
@@ -422,7 +423,7 @@ export default function ProductMix() {
                               parseInt(e.target.value) || 0
                             )
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -433,7 +434,7 @@ export default function ProductMix() {
                           }
                           placeholder="Ex: Foco em vendas, estratégia de marca..."
                           rows={2}
-                          className="w-full bg-[#E7E7E6] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 resize-none"
+                          className="w-full bg-[#F2F2F2] rounded px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 resize-none"
                         />
                       </td>
                       <td className="py-3 px-4">
@@ -492,7 +493,7 @@ export default function ProductMix() {
           {/* Indicadores dos Itens */}
           <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
                   <Package className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -504,7 +505,7 @@ export default function ProductMix() {
                 </div>
               </div>
 
-              <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
                   <DollarSign className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -516,7 +517,7 @@ export default function ProductMix() {
                 </div>
               </div>
 
-              <div className="bg-[#E7E7E6]/50 rounded-lg p-4">
+              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
                   <Percent className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -570,7 +571,7 @@ export default function ProductMix() {
                     <tr
                       key={product.id}
                       className={`border-b border-[#28071C]/10 ${
-                        index % 2 === 0 ? "bg-white" : "bg-[#E7E7E6]/20"
+                        index % 2 === 0 ? "bg-white" : "bg-[#F2F2F2]/20"
                       }`}
                     >
                       <td className="py-3 px-3">
@@ -581,7 +582,7 @@ export default function ProductMix() {
                             updateProduct(product.id, "nomeItem", e.target.value)
                           }
                           placeholder="Ex: Vestido Floral Midi"
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-3">
@@ -590,7 +591,7 @@ export default function ProductMix() {
                           onChange={(e) =>
                             updateProduct(product.id, "categoria", e.target.value)
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         >
                           {categorias.map((cat) => (
                             <option key={cat} value={cat}>
@@ -611,7 +612,7 @@ export default function ProductMix() {
                             )
                           }
                           placeholder="Ex: Curtos, Longos..."
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-3">
@@ -628,7 +629,7 @@ export default function ProductMix() {
                                 parseFloat(e.target.value) || 0
                               )
                             }
-                            className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                            className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                           />
                         </div>
                       </td>
@@ -644,7 +645,7 @@ export default function ProductMix() {
                               parseFloat(e.target.value) || 0
                             )
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         />
                       </td>
                       <td className="py-3 px-3">
@@ -665,7 +666,7 @@ export default function ProductMix() {
                           onChange={(e) =>
                             updateProduct(product.id, "faixaPreco", e.target.value)
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         >
                           {faixasPreco.map((faixa) => (
                             <option key={faixa} value={faixa}>
@@ -680,7 +681,7 @@ export default function ProductMix() {
                           onChange={(e) =>
                             updateProduct(product.id, "status", e.target.value)
                           }
-                          className="w-full bg-[#E7E7E6] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
+                          className="w-full bg-[#F2F2F2] rounded px-2 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
                         >
                           {statusOptions.map((status) => (
                             <option key={status} value={status}>

@@ -37,7 +37,38 @@ import {
   X,
   Play,
   FileDown,
+  HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+
+const MODULE3_TOUR: TourStep[] = [
+  {
+    targetId: "tour-m3-season",
+    title: "Selecione a Temporada",
+    content: "Escolha a temporada que deseja planejar e uma referência histórica para comparação. O sistema carrega automaticamente as metas macro do Módulo 1 como base para esta divisão.",
+  },
+  {
+    targetId: "tour-m3-participation",
+    title: "Distribuição de Participação",
+    content: "Defina quanto cada divisão representa do total de receita. A soma deve chegar a 100% — o sistema valida em tempo real e mostra o valor em R$ de cada fatia assim que a meta macro estiver definida.",
+  },
+  {
+    targetId: "tour-m3-divisions",
+    title: "Bloco por Divisão",
+    content: "Cada divisão tem seu próprio planejamento: indicadores comerciais (margem, sell-through, giro), mix de preço, cobertura de estoque e matriz de risco. Expanda cada bloco para detalhar.",
+  },
+  {
+    targetId: "tour-m3-consolidated",
+    title: "Consolidado de Metas Macro",
+    content: "O painel consolidado compara o que você definiu nas divisões com as metas macro do Módulo 1. Verde = meta atingida; vermelho = reajuste necessário antes de fechar o plano.",
+  },
+  {
+    targetId: "tour-m3-scenarios",
+    title: "Simule, Salve e Compare Cenários",
+    content: "Ajuste as participações e indicadores por divisão, salve como cenário e crie quantas versões quiser — conservadora, moderada, agressiva. Compare lado a lado e aplique o cenário que melhor equilibra risco e meta antes de confirmar o plano.",
+  },
+];
 import { exportToPDF } from "../../utils/exportPDF";
 import {
   BusinessDivisionId,
@@ -115,17 +146,31 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
   let gmroi = 3.5;
 
   if (plannedYears.length > 0) {
-    const latestYear = Math.max(...plannedYears);
-    const cycle = getPlanCycle(latestYear);
-    const values = cycle?.versions?.[0]?.values ?? {};
-    annualRevenue = (values.receitaBruta as number) ?? 0;
-    margin = (values.margemBruta as number) ?? 48;
-    gmroi = (values.gmroi as number) ?? 3.5;
+    // Tenta o ano fiscal da temporada primeiro; se não houver, usa o mais recente
+    const candidateYears = temporada.anoFiscal
+      ? [temporada.anoFiscal, ...plannedYears.filter(y => y !== temporada.anoFiscal)]
+      : [...plannedYears];
+
+    for (const year of candidateYears) {
+      const cycle = getPlanCycle(year);
+      // Procura em todas as versões, não só a [0]
+      const version = cycle?.versions?.find(v =>
+        (v.values?.receitaBruta as number | undefined) != null &&
+        (v.values.receitaBruta as number) > 0
+      );
+      if (version) {
+        const values = version.values;
+        annualRevenue = (values.receitaBruta as number) ?? 0;
+        margin        = (values.margemBruta  as number) ?? 48;
+        gmroi         = (values.gmroi        as number) ?? 3.5;
+        break;
+      }
+    }
   }
 
   return {
     seasonId: String(temporada.id),
-    revenue: (monthCount / 12) * annualRevenue,
+    revenue: annualRevenue > 0 ? (monthCount / 12) * annualRevenue : 0,
     margin,
     sellThrough: 75,
     gmroi,
@@ -136,6 +181,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
 
 export default function Module3DivisionPlanning() {
   const navigate = useNavigate();
+  const tour     = useTour("module3-division");
   const [user, setUser] = useState<UserData | null>(null);
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
@@ -154,9 +200,8 @@ export default function Module3DivisionPlanning() {
     if (storedUser) {
       const userData = JSON.parse(storedUser);
       setUser(userData);
-      if (userData.profile !== "CEO") {
-        navigate("/dashboard");
-      }
+      const hasAccess = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
+      if (!hasAccess) navigate("/dashboard");
     } else {
       navigate("/");
     }
@@ -337,6 +382,13 @@ export default function Module3DivisionPlanning() {
               <span className="text-sm">{user.name}</span>
             </div>
             <button
+              onClick={tour.reopen}
+              className="p-2 text-[#F6F3AA]/60 hover:text-[#F6F3AA] transition-colors"
+              title="Ver tour de apresentação"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
+            <button
               onClick={handleLogout}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
             >
@@ -352,7 +404,7 @@ export default function Module3DivisionPlanning() {
         {/* PARTE A — SELEÇÃO DE TEMPORADA E REFERÊNCIA                       */}
         {/* ══════════════════════════════════════════════════════════════════ */}
 
-        <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
+        <div id="tour-m3-season" className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
           <h2 className="text-[#28071C] text-lg font-bold mb-4">Temporada de Planejamento</h2>
 
           <div className="grid grid-cols-2 gap-6 mb-4">
@@ -449,17 +501,22 @@ export default function Module3DivisionPlanning() {
             <div className="sticky top-[72px] z-30 space-y-1.5">
 
               {/* C — Distribuição de Participação */}
-              <div className="bg-white/95 backdrop-blur-md rounded-xl px-4 py-2.5 shadow-md border-t-4 border-[#7598CF]">
+              <div id="tour-m3-participation" className="bg-white/95 backdrop-blur-md rounded-xl px-4 py-2.5 shadow-md border-t-4 border-[#7598CF]">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-1.5">
                     <Layers className="w-4 h-4 text-[#28071C]" />
                     <h2 className="text-[12px] font-bold text-[#28071C]">Distribuição de Participação por Divisão</h2>
                   </div>
-                  <div className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                  <div className={`flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full ${
                     participationValid ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
                   }`}>
                     {participationValid ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
                     Total: {totalParticipation.toFixed(1)}%
+                    {macroTargets.revenue > 0 && (
+                      <span className="ml-1 pl-1.5 border-l border-current/30 font-semibold">
+                        {fmtRevenueLabel(macroTargets.revenue)}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
@@ -487,9 +544,15 @@ export default function Module3DivisionPlanning() {
                             style={{ width: `${Math.min(block.participation, 100)}%` }}
                           />
                         </div>
-                        <div className="text-[10px] font-semibold text-[#28071C]/60 mt-1">
-                          {fmtRevenueLabel((block.participation / 100) * macroTargets.revenue)}
-                        </div>
+                        {macroTargets.revenue > 0 ? (
+                          <div className="text-[10px] font-bold text-[#28071C]/70 mt-1">
+                            {fmtRevenueLabel((block.participation / 100) * macroTargets.revenue)}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[#28071C]/30 mt-1 italic">
+                            Meta não definida
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -497,7 +560,7 @@ export default function Module3DivisionPlanning() {
               </div>
 
               {/* E — Consolidado de Metas Macro (sticky, compacto) */}
-              <div className={`rounded-xl px-4 py-2.5 shadow-sm border-t-4 ${
+              <div id="tour-m3-consolidated" className={`rounded-xl px-4 py-2.5 shadow-sm border-t-4 ${
                 meetsTarget ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"
               }`}>
                 <div className="flex items-center gap-3">
@@ -565,7 +628,7 @@ export default function Module3DivisionPlanning() {
             {/* PARTE D — BLOCOS POR DIVISÃO (4 colunas, cards empilhados)    */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div id="module3-export-content" className="grid grid-cols-4 gap-3">
+            <div id="tour-m3-divisions" className="grid grid-cols-4 gap-3">
               {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => (
                 <DivisionBlockCard
                   key={divId}
@@ -584,7 +647,7 @@ export default function Module3DivisionPlanning() {
             {/* PARTE F — CENÁRIOS                                            */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
+            <div id="tour-m3-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
               <div className="flex items-center justify-between mb-5">
                 <div className="flex items-center gap-3">
                   <BarChart3 className="w-5 h-5 text-[#28071C]" />
@@ -734,6 +797,11 @@ export default function Module3DivisionPlanning() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── PRODUCT TOUR ─────────────────────────────────────────────────── */}
+      {tour.isOpen && (
+        <ProductTour steps={MODULE3_TOUR} onClose={tour.dismiss} />
       )}
     </div>
   );

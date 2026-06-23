@@ -7,8 +7,10 @@ import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
   Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
-  ToggleLeft, ToggleRight, FileDown,
+  ToggleLeft, ToggleRight, FileDown, HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
 import { exportToPDF } from '../../utils/exportPDF';
 import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
@@ -17,6 +19,34 @@ import {
   addVersionToCycle,
 } from '../types/planCycle'
 import type { PlanFieldPriority, StrategicFocus, PlanMode } from '../types/planCycle'
+
+const PLANNING_TOUR: TourStep[] = [
+  {
+    targetId: "tour-plan-indicators",
+    title: "Coluna de Indicadores",
+    content: "Aqui ficam as metas editáveis do ciclo. Altere qualquer valor e o painel central atualiza instantaneamente — você está em modo simulação, sem compromisso com nenhum número ainda.",
+  },
+  {
+    targetId: "tour-plan-central",
+    title: "Painel Central — Impacto em Tempo Real",
+    content: "Cada ajuste nos indicadores reflete aqui de imediato. Compare o valor que você está construindo com o histórico selecionado e veja o delta de cada decisão antes de confirmar.",
+  },
+  {
+    targetId: "tour-plan-scenarios",
+    title: "Salve e Compare Cenários",
+    content: "Clique em 'Salvar cenário' para registrar o momento atual. Crie quantos cenários quiser — conservador, moderado, agressivo — depois abra a comparação lado a lado e escolha o melhor antes de aplicar.",
+  },
+  {
+    targetId: "tour-plan-compare",
+    title: "Comparativo de Cenários",
+    content: "O botão 'Comparar' exibe uma tabela com todos os cenários salvos. Analise as diferenças de receita, margem e OTB de uma vez e aplique o cenário vencedor com um clique.",
+  },
+  {
+    targetId: "tour-plan-macro",
+    title: "Contexto Macroeconômico",
+    content: "A barra superior reúne indicadores setoriais (IPCA, Selic, PMC) e dados do seu segmento de moda. Use esses dados para calibrar o quanto você pode crescer acima do mercado.",
+  },
+];
 
 interface UserData { name: string; email: string; profile: string }
 interface LocationState {
@@ -136,6 +166,7 @@ export default function Planning() {
   const navigate   = useNavigate()
   const location   = useLocation()
   const routeState = (location.state ?? null) as LocationState | null
+  const tour       = useTour("planning-main")
 
   const [user,               setUser]               = useState<UserData | null>(null)
   const [isAccordionOpen,    setIsAccordionOpen]    = useState(false)
@@ -417,6 +448,13 @@ export default function Planning() {
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={tour.reopen}
+              className="p-2 text-[#F6F3AA]/60 hover:text-[#F6F3AA] transition-colors"
+              title="Ver tour de apresentação"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/") }}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <LogOut className="w-5 h-5" />
@@ -426,7 +464,7 @@ export default function Planning() {
       </header>
 
       {/* ── STICKY MACRO BAR ───────────────────────────────────────────────── */}
-      <div className="sticky top-0 z-30 bg-white/90 backdrop-blur-md shadow-sm border-b border-[#28071C]/8">
+      <div id="tour-plan-macro" className="sticky top-0 z-30 bg-white/90 backdrop-blur-md shadow-sm border-b border-[#28071C]/8">
         <button
           onClick={() => setIsAccordionOpen(!isAccordionOpen)}
           className="w-full flex items-center justify-between px-6 py-2.5 hover:bg-[#7598CF]/5 transition-colors"
@@ -525,7 +563,7 @@ export default function Planning() {
         {/* ═══════════════════════════════════════════════════════════════════
             COLUNA 1 — Indicadores Selecionados para Planejamento
             ═══════════════════════════════════════════════════════════════════ */}
-        <div className="w-[380px] flex-shrink-0 sticky top-[52px] max-h-[calc(100vh-68px)] overflow-y-auto pb-4">
+        <div id="tour-plan-indicators" className="w-[380px] flex-shrink-0 sticky top-[52px] max-h-[calc(100vh-68px)] overflow-y-auto pb-4">
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
 
             <div className="px-5 py-4 border-b border-[#28071C]/8 bg-gradient-to-r from-[#28071C]/4 to-transparent">
@@ -703,7 +741,7 @@ export default function Planning() {
             ═══════════════════════════════════════════════════════════════════ */}
         <div className="flex-1 min-w-0 flex flex-col gap-5">
 
-          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+          <div id="tour-plan-central" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-[#28071C]/8 flex items-center justify-between">
               <div>
                 <h3 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">
@@ -760,7 +798,7 @@ export default function Planning() {
 
           {/* Cenários Salvos */}
           {scenarios.length > 0 && (
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+            <div id="tour-plan-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-[#28071C]/8">
                 <h3 className="text-[#28071C] font-semibold text-base">Cenários Salvos</h3>
                 <p className="text-[#28071C]/40 text-xs mt-0.5">Clique em um cenário para carregá-lo e depois aplicar as metas</p>
@@ -869,6 +907,7 @@ export default function Planning() {
 
               {/* Comparar cenários — habilitado a partir do 2º cenário */}
               <button
+                id="tour-plan-compare"
                 onClick={() => setCompareOpen(true)}
                 disabled={scenarios.length < 2}
                 title={scenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : "Comparar cenários salvos"}
@@ -981,6 +1020,11 @@ export default function Planning() {
       )}
 
       {/* ── COMPARE MODAL ──────────────────────────────────────────────────── */}
+      {/* ── PRODUCT TOUR ───────────────────────────────────────────────────── */}
+      {tour.isOpen && (
+        <ProductTour steps={PLANNING_TOUR} onClose={tour.dismiss} />
+      )}
+
       {compareOpen && scenarios.length >= 2 && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-6">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-[900px] max-h-[80vh] overflow-hidden flex flex-col">

@@ -1,22 +1,18 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
+import { signIn, getUserProfile } from "../../services/supabase/authService";
+import type { SystemRole } from "../../services/supabase/adminService";
 
-// Test users database
-const testUsers = [
-  {
-    name: "Beta",
-    email: "contato@thefashionoffice.com.br",
-    password: "AppFM-2026",
-    profile: "CEO",
-  },
-  {
-    name: "Admin",
-    email: "admin@thefashionoffice.com.br",
-    password: "admin",
-    profile: "Super Admin",
-  },
-];
+export interface CurrentUser {
+  id: string;
+  name: string;
+  email: string;
+  system_role: SystemRole;
+  tenant_id: string;
+  tenant_name: string;
+  role_id: string | null;
+}
 
 export default function Login() {
   const navigate = useNavigate();
@@ -25,36 +21,78 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setLoading(true);
 
-    // Validate user credentials
-    const user = testUsers.find(
-      (u) => u.email === email && u.password === password
-    );
+    try {
+      const { session } = await signIn(email, password);
+      if (!session?.user) throw new Error("Sessão inválida após autenticação.");
 
-    if (user) {
-      sessionStorage.setItem("currentUser", JSON.stringify(user));
+      const profile = await getUserProfile(session.user.id);
+      if (!profile) throw new Error("Perfil de usuário não encontrado. Contate o administrador.");
 
-      if (user.email === "admin@thefashionoffice.com.br") {
-        navigate("/admin");
-      } else {
+      const currentUser: CurrentUser = {
+        id: profile.id,
+        name: profile.name,
+        email: profile.email,
+        system_role: (profile.system_role as SystemRole) ?? "invited_user",
+        tenant_id: profile.tenant_id,
+        tenant_name: (profile as any).tenants?.name ?? "",
+        role_id: profile.role_id ?? null,
+      };
+
+      sessionStorage.setItem("currentUser", JSON.stringify(currentUser));
+
+      if (currentUser.system_role === "support") {
+        navigate("/tenant-selector");
+        return;
+      }
+
+      if (currentUser.system_role === "client_admin") {
+        sessionStorage.setItem("activeTenantId", currentUser.tenant_id);
+        sessionStorage.setItem("activeTenantName", currentUser.tenant_name);
+        // Mesmo fluxo do usuário convidado: apresentação → onboarding → dashboard
         const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
         if (!presentationSeen) {
           navigate("/presentation");
         } else {
           const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
-          if (onboardingDone === "true") {
-            navigate("/dashboard");
-          } else {
-            navigate("/onboarding");
-          }
+          if (onboardingDone === "true") navigate("/dashboard");
+          else navigate("/onboarding");
+        }
+        return;
+      }
+
+      // Usuário convidado: fluxo normal de apresentação/onboarding
+      const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
+      if (!presentationSeen) {
+        navigate("/presentation");
+      } else {
+        const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
+        if (onboardingDone === "true") {
+          navigate("/dashboard");
+        } else {
+          navigate("/onboarding");
         }
       }
-    } else {
-      setError("E-mail ou senha incorretos");
+    } catch (err: any) {
+      const msg: string = err?.message ?? "";
+      if (
+        msg.includes("Invalid login credentials") ||
+        msg.includes("invalid_credentials")
+      ) {
+        setError("E-mail ou senha incorretos.");
+      } else if (msg.includes("Email not confirmed")) {
+        setError("E-mail ainda não confirmado. Verifique sua caixa de entrada.");
+      } else {
+        setError(msg || "Erro ao entrar. Tente novamente.");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -79,98 +117,84 @@ export default function Login() {
 
         {/* Login Form */}
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Email Input */}
-          <div className="space-y-2">
-            <label htmlFor="email" className="block text-[#28071C] text-sm">
-              E-mail corporativo
+          {/* Email Field */}
+          <div>
+            <label className="block text-[#28071C] text-sm font-medium mb-2">
+              E-mail
             </label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[#28071C]/50" />
+              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-[#28071C]/40">
+                <Mail className="w-5 h-5" />
+              </div>
               <input
-                id="email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-white rounded-lg text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#28071C]/30 border-0"
-                placeholder="voce@marca.com.br"
                 required
+                className="w-full bg-white border-2 border-[#28071C]/10 text-[#28071C] pl-12 pr-4 py-3 rounded-xl focus:outline-none focus:border-[#7598CF] transition-colors"
+                placeholder="seu@email.com.br"
+                autoComplete="email"
               />
             </div>
           </div>
 
-          {/* Password Input */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label htmlFor="password" className="block text-[#28071C] text-sm">
-                Senha
-              </label>
-              <button
-                type="button"
-                className="text-sm text-[#28071C]/70 hover:text-[#28071C]"
-              >
-                Esqueceu a senha?
-              </button>
-            </div>
+          {/* Password Field */}
+          <div>
+            <label className="block text-[#28071C] text-sm font-medium mb-2">
+              Senha
+            </label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[#28071C]/50" />
+              <div className="absolute left-4 top-1/2 -translate-y-1/2 text-[#28071C]/40">
+                <Lock className="w-5 h-5" />
+              </div>
               <input
-                id="password"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-10 pr-12 py-3 bg-white rounded-lg text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#28071C]/30 border-0"
-                placeholder="•••••••"
                 required
+                className="w-full bg-white border-2 border-[#28071C]/10 text-[#28071C] pl-12 pr-12 py-3 rounded-xl focus:outline-none focus:border-[#7598CF] transition-colors"
+                placeholder="••••••••"
+                autoComplete="current-password"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#28071C]/50 hover:text-[#28071C] transition-colors"
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors"
               >
-                {showPassword ? (
-                  <EyeOff className="w-5 h-5" />
-                ) : (
-                  <Eye className="w-5 h-5" />
-                )}
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
               </button>
             </div>
           </div>
 
-          {/* Error Message */}
-          {error && (
-            <div className="text-red-600 text-sm text-center">{error}</div>
-          )}
-
           {/* Remember Me */}
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="remember"
-              checked={rememberMe}
-              onChange={(e) => setRememberMe(e.target.checked)}
-              className="w-4 h-4 border-2 border-[#28071C] rounded accent-[#28071C] cursor-pointer"
-            />
-            <label htmlFor="remember" className="text-sm text-[#28071C] cursor-pointer">
-              Lembrar de mim
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-2 border-[#28071C]/20 text-[#7598CF]"
+              />
+              <span className="text-[#28071C]/70 text-sm">Lembrar de mim</span>
             </label>
           </div>
+
+          {/* Error Message */}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+              {error}
+            </div>
+          )}
 
           {/* Submit Button */}
           <button
             type="submit"
-            className="w-full py-3.5 bg-[#28071C] text-white rounded-xl hover:bg-[#28071C]/90 transition-all duration-200 shadow-lg hover:shadow-xl mt-6"
+            disabled={loading}
+            className="w-full bg-gradient-to-r from-[#28071C] to-[#7598CF] text-[#F6F3AA] font-semibold py-3 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Entrar
+            {loading ? "Entrando..." : "Entrar"}
           </button>
         </form>
-      </div>
-
-      {/* Credenciais de Teste */}
-      
-
-      {/* Footer */}
-      <div className="text-center mt-6">
-        <p className="text-white/70 text-[#f6f3aab3] text-[13px]">© 2026 The Fashion Office. Todos os direitos reservados.</p>
       </div>
     </div>
   );

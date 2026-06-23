@@ -21,29 +21,83 @@ import {
   Info,
   Plus,
   ChevronDown,
+  HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+import {
+  type Temporada,
+  type TemporadaRegraDefault,
+  MONTHS as MONTHS_SVC,
+  isTemporadaPast,
+} from "../../services/temporadaService";
+import {
+  listSeasonsDb,
+  insertSeasonDb,
+  updateSeasonDb,
+  deleteSeasonDb,
+  getRegraDefaultDb,
+  saveRegraDefaultDb,
+} from "../../services/supabase/seasonService";
+
+const OPERATION_SETTINGS_TOUR: TourStep[] = [
+  {
+    targetId: "tour-op-intro",
+    title: "Configurações de Operação",
+    content: "Esta tela centraliza os parâmetros que estruturam as análises e a automação do Fashion Mind. Aqui você estabelece as regras de negócio da empresa antes de iniciar o planejamento.",
+  },
+  {
+    targetId: "tour-op-temporadas",
+    title: "Temporadas de Coleções",
+    content: "Defina os períodos fixos de cada temporada da marca. Uma vez criada, a temporada não pode ser alterada — ela serve como âncora temporal para toda a curva de vendas.",
+  },
+  {
+    targetId: "tour-op-colecoes",
+    title: "Coleções e Drops",
+    content: "Dentro de cada temporada, cadastre os drops e coleções com suas datas exatas. As datas podem ser ajustadas a qualquer momento para refletir reagendamentos de produção.",
+  },
+  {
+    targetId: "tour-op-faixas",
+    title: "Faixas de Preço por Categoria",
+    content: "Estabeleça os intervalos de preço por grupo e categoria. Essas faixas alimentam a pirâmide de preços no planejamento por divisão.",
+  },
+  {
+    targetId: "tour-op-importacao",
+    title: "Importação de Planilhas",
+    content: "Caso não possua integração total com o ERP, importe o catálogo completo via planilha ou apenas os dados de hierarquia mercadológica, cruzados pelo código SKU do produto.",
+  },
+  {
+    targetId: "tour-op-hierarquia",
+    title: "Hierarquia de Produtos",
+    content: "Cadastre a árvore de divisões, grupos, categorias e subcategorias da marca. Essa estrutura é usada em todo o planejamento e na importação de dados.",
+  },
+  {
+    targetId: "tour-op-leadtimes",
+    title: "Lead Times de Suprimento",
+    content: "Configure os prazos de suprimento por grupo, categoria e nível de risco — seja por produção ou pedido. O sistema usa esses lead times para calcular datas de entrada de mercadoria e alertar gaps de prazo.",
+  },
+  {
+    targetId: "tour-op-basicos",
+    title: "Sustentador de Margem",
+    content: "Sinalize os produtos básicos que sustentam a margem da marca. Podem vir do estoque existente ou ser definidos no plano de sortimento.",
+  },
+];
 
 interface UserData {
   name: string;
   email: string;
   profile: string;
+  system_role?: string;
+  tenant_id: string;
 }
 
-// ─── Temporadas ───────────────────────────────────────────────────────────────
-// Imutáveis após criação — nome e datas não podem ser alterados
-interface Temporada {
-  id: number;
-  nome: string;
-  mesInicio: string;
-  mesFim: string;
-  criadaEm: string;
-}
+// Temporada interface e helpers importados de temporadaService
 
 // ─── Coleções / Drops ─────────────────────────────────────────────────────────
 // Podem ser editadas a qualquer momento
 interface Colecao {
   id: number;
-  temporadaId: number;
+  temporadaId: string; // uuid da season no Supabase
   nome: string;
   dataInicio: string; // YYYY-MM-DD
   dataFim: string;    // YYYY-MM-DD
@@ -76,10 +130,8 @@ interface LeadTimeRule {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const months = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
+// months re-exportado do serviço para uso nos formulários locais
+const months = MONTHS_SVC;
 const grupos               = ["Vestuário", "Acessórios", "Calçados", "Joias"];
 const categorias           = ["Blusas", "Vestidos", "Calças", "Saias", "Jaquetas"];
 const SUBCATEGORIAS_DEFAULT = ["Casual", "Formal", "Esportivo", "Festa"];
@@ -121,13 +173,7 @@ const SYSTEM_FIELDS_HIERARQUIA: SystemField[] = [
   { key: "hierLevel4", label: "Nível Hierárquico 4",               required: false },
 ];
 
-const TEMPORADAS_KEY = "fashionmind_temporadas";
-const COLECOES_KEY   = "fashionmind_colecoes";
-
-const DEFAULT_TEMPORADAS: Temporada[] = [
-  { id: 1, nome: "Verão 2027",   mesInicio: "Outubro", mesFim: "Março",    criadaEm: new Date().toISOString() },
-  { id: 2, nome: "Inverno 2027", mesInicio: "Abril",   mesFim: "Setembro", criadaEm: new Date().toISOString() },
-];
+const COLECOES_KEY = "fashionmind_colecoes";
 
 // ─── Componente recursivo da árvore de hierarquia ────────────────────────────
 function HierNodeRow({
@@ -267,18 +313,31 @@ function dateInTemporada(dateStr: string, t: Temporada): boolean {
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function OperationSettings() {
   const navigate = useNavigate();
+  const tour = useTour("operation-settings");
   const [user, setUser] = useState<UserData | null>(null);
 
   // ── Temporadas ──────────────────────────────────────────────────────────────
-  const [temporadas, setTemporadas] = useState<Temporada[]>(() => {
-    try {
-      const raw = localStorage.getItem(TEMPORADAS_KEY);
-      return raw ? JSON.parse(raw) : DEFAULT_TEMPORADAS;
-    } catch { return DEFAULT_TEMPORADAS; }
-  });
+  const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [temporadaNome,    setTemporadaNome]    = useState("");
   const [temporadaInicio,  setTemporadaInicio]  = useState("Janeiro");
   const [temporadaFim,     setTemporadaFim]     = useState("Dezembro");
+
+  // ── Modal de impacto (editar/excluir temporada automática) ──────────────────
+  type ModalAction = "delete" | "edit";
+  interface TemporadaModal {
+    action: ModalAction;
+    temporada: Temporada;
+    editNome: string;
+    editMesInicio: string;
+    editMesFim: string;
+    hasLinkedColecoes: boolean;
+  }
+  const [modal, setModal] = useState<TemporadaModal | null>(null);
+  // Estado de edição inline para temporadas auto-geradas
+  const [editingAutoId,     setEditingAutoId]     = useState<string | null>(null);
+  const [editingAutoNome,   setEditingAutoNome]   = useState("");
+  const [editingAutoInicio, setEditingAutoInicio] = useState("");
+  const [editingAutoFim,    setEditingAutoFim]    = useState("");
 
   // ── Coleções / Drops ─────────────────────────────────────────────────────────
   const [colecoes, setColecoes] = useState<Colecao[]>(() => {
@@ -287,7 +346,7 @@ export default function OperationSettings() {
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   });
-  const [selectedTemporadaId, setSelectedTemporadaId] = useState<number | "">("");
+  const [selectedTemporadaId, setSelectedTemporadaId] = useState<string | "">("");
   const [colNome,     setColNome]     = useState("");
   const [colInicio,   setColInicio]   = useState("");
   const [colFim,      setColFim]      = useState("");
@@ -421,54 +480,170 @@ export default function OperationSettings() {
     if (stored) {
       const u = JSON.parse(stored);
       setUser(u);
-      if (u.profile !== "CEO") navigate("/dashboard");
+      const effectiveProfile =
+        u.system_role === "support" || u.system_role === "client_admin"
+          ? "CEO"
+          : u.profile;
+      if (effectiveProfile !== "CEO") { navigate("/dashboard"); return; }
+      // Carrega temporadas do Supabase
+      if (u.tenant_id) {
+        listSeasonsDb(u.tenant_id)
+          .then(setTemporadas)
+          .catch(err => console.error("Erro ao carregar temporadas:", err));
+      }
     } else {
       navigate("/");
     }
   }, [navigate]);
 
-  useEffect(() => {
-    if (!localStorage.getItem(TEMPORADAS_KEY)) {
-      localStorage.setItem(TEMPORADAS_KEY, JSON.stringify(DEFAULT_TEMPORADAS));
-    }
-  }, []);
-
   // ── Persistência helpers ──────────────────────────────────────────────────────
   const persistTemporadas = (data: Temporada[]) => {
-    try { localStorage.setItem(TEMPORADAS_KEY, JSON.stringify(data)); } catch { /* silent */ }
+    setTemporadas(data);
   };
   const persistColecoes = (data: Colecao[]) => {
     try { localStorage.setItem(COLECOES_KEY, JSON.stringify(data)); } catch { /* silent */ }
   };
 
   // ── Handlers: Temporadas ──────────────────────────────────────────────────────
-  const handleSaveTemporada = () => {
+  const handleSaveTemporada = async () => {
+    if (!user?.tenant_id) return;
     if (!temporadaNome.trim()) {
       alert("Preencha o nome da temporada.");
       return;
     }
-    const nova: Temporada = {
-      id:         Date.now(),
-      nome:       temporadaNome.trim(),
-      mesInicio:  temporadaInicio,
-      mesFim:     temporadaFim,
-      criadaEm:   new Date().toISOString(),
-    };
-    const updated = [...temporadas, nova];
-    setTemporadas(updated);
-    persistTemporadas(updated);
-    setTemporadaNome(""); setTemporadaInicio("Janeiro"); setTemporadaFim("Dezembro");
+    try {
+      const nova = await insertSeasonDb(
+        user.tenant_id,
+        temporadaNome.trim(),
+        temporadaInicio,
+        temporadaFim,
+      );
+      persistTemporadas([...temporadas, nova]);
+      setTemporadaNome(""); setTemporadaInicio("Janeiro"); setTemporadaFim("Dezembro");
+    } catch (err) {
+      console.error("Erro ao salvar temporada:", err);
+      alert("Erro ao salvar temporada. Tente novamente.");
+    }
   };
 
-  const handleDeleteTemporada = (id: number) => {
-    const linked = colecoes.some(c => c.temporadaId === id);
-    if (linked) {
+  // Executa a exclusão efetiva após confirmação (modal ou direta)
+  const executeDeleteTemporada = async (id: string, deleteLinkedColecoes: boolean) => {
+    try {
+      await deleteSeasonDb(id);
+      let updatedColecoes = colecoes;
+      if (deleteLinkedColecoes) {
+        updatedColecoes = colecoes.filter(c => c.temporadaId !== id);
+        setColecoes(updatedColecoes);
+        persistColecoes(updatedColecoes);
+      }
+      persistTemporadas(temporadas.filter(t => t.id !== id));
+      if (editingColId && colecoes.find(c => c.id === editingColId)?.temporadaId === id) {
+        setEditingColId(null); setColNome(""); setColInicio(""); setColFim("");
+      }
+    } catch (err) {
+      console.error("Erro ao excluir temporada:", err);
+      alert("Erro ao excluir temporada. Tente novamente.");
+    }
+  };
+
+  const handleDeleteTemporada = (t: Temporada) => {
+    // Proteção: temporadas passadas nunca podem ser excluídas
+    if (isTemporadaPast(t)) {
+      alert("Temporadas de anos fiscais encerrados não podem ser excluídas.");
+      return;
+    }
+    const linkedColecoes = colecoes.filter(c => c.temporadaId === t.id);
+
+    // Temporada auto-gerada → modal de impacto
+    if (t.autoGerada) {
+      setModal({
+        action:           "delete",
+        temporada:        t,
+        editNome:         t.nome,
+        editMesInicio:    t.mesInicio,
+        editMesFim:       t.mesFim,
+        hasLinkedColecoes: linkedColecoes.length > 0,
+      });
+      return;
+    }
+
+    // Manual → comportamento original (bloqueia se há coleções)
+    if (linkedColecoes.length > 0) {
       alert("Esta temporada possui coleções vinculadas. Remova as coleções antes de excluir a temporada.");
       return;
     }
-    const updated = temporadas.filter(t => t.id !== id);
-    setTemporadas(updated);
-    persistTemporadas(updated);
+    executeDeleteTemporada(t.id, false);
+  };
+
+  // Abre formulário de edição para temporada auto-gerada
+  const handleStartEditAuto = (t: Temporada) => {
+    if (isTemporadaPast(t)) {
+      alert("Temporadas de anos fiscais encerrados não podem ser editadas.");
+      return;
+    }
+    setEditingAutoId(t.id);
+    setEditingAutoNome(t.nome);
+    setEditingAutoInicio(t.mesInicio);
+    setEditingAutoFim(t.mesFim);
+  };
+
+  const handleSaveEditAuto = () => {
+    const t = temporadas.find(x => x.id === editingAutoId);
+    if (!t) return;
+    setModal({
+      action:           "edit",
+      temporada:        t,
+      editNome:         editingAutoNome.trim() || t.nome,
+      editMesInicio:    editingAutoInicio,
+      editMesFim:       editingAutoFim,
+      hasLinkedColecoes: colecoes.some(c => c.temporadaId === t.id),
+    });
+  };
+
+  // Confirmação do modal — aplica a mudança com o escopo escolhido
+  const confirmModal = async (scope: "pontual" | "regra_geral") => {
+    if (!modal || !user?.tenant_id) return;
+    const { action, temporada, editNome, editMesInicio, editMesFim, hasLinkedColecoes } = modal;
+
+    if (action === "delete") {
+      const proceed = !hasLinkedColecoes || window.confirm(
+        `Esta temporada possui coleções vinculadas. Elas também serão excluídas. Confirmar?`
+      );
+      if (!proceed) { setModal(null); return; }
+      await executeDeleteTemporada(temporada.id, hasLinkedColecoes);
+
+      if (scope === "regra_geral" && temporada.tipo) {
+        const regra = await getRegraDefaultDb(user.tenant_id);
+        const newRegra: TemporadaRegraDefault = temporada.tipo === "verao"
+          ? { ...regra, verao: { mesInicio: "", mesFim: "" } }
+          : { ...regra, inverno: { mesInicio: "", mesFim: "" } };
+        await saveRegraDefaultDb(user.tenant_id, newRegra);
+      }
+    }
+
+    if (action === "edit") {
+      try {
+        await updateSeasonDb(temporada.id, editNome, editMesInicio, editMesFim);
+        persistTemporadas(temporadas.map(t =>
+          t.id === temporada.id
+            ? { ...t, nome: editNome, mesInicio: editMesInicio, mesFim: editMesFim }
+            : t
+        ));
+        if (scope === "regra_geral" && temporada.tipo) {
+          const regra = await getRegraDefaultDb(user.tenant_id);
+          const newRegra: TemporadaRegraDefault = temporada.tipo === "verao"
+            ? { ...regra, verao: { mesInicio: editMesInicio, mesFim: editMesFim } }
+            : { ...regra, inverno: { mesInicio: editMesInicio, mesFim: editMesFim } };
+          await saveRegraDefaultDb(user.tenant_id, newRegra);
+        }
+      } catch (err) {
+        console.error("Erro ao editar temporada:", err);
+        alert("Erro ao salvar edição. Tente novamente.");
+      }
+      setEditingAutoId(null);
+    }
+
+    setModal(null);
   };
 
   // ── Handlers: Coleções ────────────────────────────────────────────────────────
@@ -478,7 +653,7 @@ export default function OperationSettings() {
     if (!colInicio || !colFim){ alert("Preencha as datas de início e fim."); return; }
     if (colInicio > colFim)   { alert("A data de início deve ser anterior à data de fim."); return; }
 
-    const temporada = temporadas.find(t => t.id === Number(selectedTemporadaId));
+    const temporada = temporadas.find(t => t.id === selectedTemporadaId);
     if (!temporada) return;
 
     if (!dateInTemporada(colInicio, temporada)) {
@@ -501,7 +676,7 @@ export default function OperationSettings() {
     } else {
       const nova: Colecao = {
         id:          Date.now(),
-        temporadaId: Number(selectedTemporadaId),
+        temporadaId: selectedTemporadaId,
         nome:        colNome.trim(),
         dataInicio:  colInicio,
         dataFim:     colFim,
@@ -683,7 +858,7 @@ export default function OperationSettings() {
     return `${day}/${m}/${y}`;
   };
 
-  const colecoesVisíveis = colecoes.filter(c => c.temporadaId === Number(selectedTemporadaId));
+  const colecoesVisíveis = colecoes.filter(c => c.temporadaId === selectedTemporadaId);
 
   if (!user) return null;
 
@@ -691,7 +866,7 @@ export default function OperationSettings() {
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
       {/* Header */}
-      <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
+      <header id="tour-op-intro" className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
@@ -707,6 +882,14 @@ export default function OperationSettings() {
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={tour.reopen}
+              className="text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-opacity"
+              title="Ver tour desta tela"
+              aria-label="Abrir tour"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }}
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <LogOut className="w-5 h-5" />
@@ -718,26 +901,27 @@ export default function OperationSettings() {
       <main className="max-w-[1600px] mx-auto px-6 py-8 space-y-6">
 
         {/* ── CARD 1: Temporadas de Coleções ─────────────────────────────────── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
+        <div id="tour-op-temporadas" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
           <div className="flex items-center gap-3 mb-2">
             <Calendar className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Temporadas de Coleções</h2>
           </div>
-          <div className="flex items-start gap-2 mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-            <Lock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-            <p className="text-amber-800 text-sm">
-              Defina os períodos fixos de cada temporada da sua marca.
-              <strong className="ml-1">Após salva, a temporada não pode ser alterada</strong> —
-              ela serve como base fixa para o planejamento da curva de vendas.
+          <div className="flex items-start gap-2 mb-6 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+            <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+            <p className="text-[#28071C]/70 text-sm">
+              O sistema cria automaticamente as temporadas padrão ao salvar um Planejamento Estratégico.
+              Temporadas marcadas com <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#7598CF] bg-[#7598CF]/10 px-1.5 py-0.5 rounded-full uppercase">Auto</span> podem ser editadas com escolha de impacto.
+              Temporadas de anos encerrados são somente leitura.
             </p>
           </div>
 
-          {/* Formulário */}
+          {/* Formulário — adicionar nova temporada manual */}
+          <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-3">Adicionar temporada manual</p>
           <div className="grid grid-cols-3 gap-4 mb-4">
             <div>
               <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Nome da Temporada</label>
               <input type="text" value={temporadaNome} onChange={e => setTemporadaNome(e.target.value)}
-                placeholder="Ex: Outono/Inverno 2025"
+                placeholder="Ex: Resort 2026"
                 className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
             </div>
             <div>
@@ -761,7 +945,7 @@ export default function OperationSettings() {
             <Save className="w-5 h-5 mr-2" />Salvar Temporada
           </button>
 
-          {/* Tabela — sem botão Editar (temporadas são imutáveis) */}
+          {/* Tabela de temporadas */}
           <div className="bg-white rounded-lg overflow-hidden border border-[#7598CF]/20">
             <table className="w-full">
               <thead className="bg-[#7598CF]">
@@ -778,30 +962,106 @@ export default function OperationSettings() {
                   <tr><td colSpan={5} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
                 )}
                 {temporadas.map(t => {
-                  const n = colecoes.filter(c => c.temporadaId === t.id).length;
+                  const n      = colecoes.filter(c => c.temporadaId === t.id).length;
+                  const isPast = isTemporadaPast(t);
+                  const isEditingThis = editingAutoId === t.id;
                   return (
-                    <tr key={t.id} className="border-b border-[#28071C]/10 hover:bg-gray-50">
-                      <td className="px-4 py-3 text-[#28071C] font-medium">{t.nome}</td>
-                      <td className="px-4 py-3 text-[#28071C]">{t.mesInicio}</td>
-                      <td className="px-4 py-3 text-[#28071C]">{t.mesFim}</td>
+                    <tr key={t.id} className={`border-b border-[#28071C]/10 ${isPast ? "bg-[#28071C]/3" : "hover:bg-gray-50"}`}>
+
+                      {/* Nome + badges */}
+                      <td className="px-4 py-3">
+                        {isEditingThis ? (
+                          <input autoFocus type="text" value={editingAutoNome}
+                            onChange={e => setEditingAutoNome(e.target.value)}
+                            className="w-full px-2 py-1 border-2 border-[#7598CF]/50 rounded text-sm text-[#28071C] focus:outline-none" />
+                        ) : (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`font-medium text-sm ${isPast ? "text-[#28071C]/40" : "text-[#28071C]"}`}>{t.nome}</span>
+                            {t.autoGerada && (
+                              <span className="text-[10px] font-bold text-[#7598CF] bg-[#7598CF]/10 px-1.5 py-0.5 rounded-full uppercase tracking-widest">
+                                Auto
+                              </span>
+                            )}
+                            {t.anoFiscal && (
+                              <span className="text-[10px] text-[#28071C]/35 bg-[#28071C]/6 px-1.5 py-0.5 rounded-full">
+                                {isPast ? `${t.anoFiscal} · encerrado` : `Fiscal ${t.anoFiscal}`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Início */}
+                      <td className="px-4 py-3">
+                        {isEditingThis ? (
+                          <select value={editingAutoInicio} onChange={e => setEditingAutoInicio(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/40 rounded px-2 py-1 text-sm text-[#28071C] focus:outline-none cursor-pointer">
+                            {months.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        ) : (
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesInicio}</span>
+                        )}
+                      </td>
+
+                      {/* Fim */}
+                      <td className="px-4 py-3">
+                        {isEditingThis ? (
+                          <select value={editingAutoFim} onChange={e => setEditingAutoFim(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/40 rounded px-2 py-1 text-sm text-[#28071C] focus:outline-none cursor-pointer">
+                            {months.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        ) : (
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesFim}</span>
+                        )}
+                      </td>
+
+                      {/* Coleções */}
                       <td className="px-4 py-3">
                         {n > 0
                           ? <span className="text-[11px] bg-[#7598CF]/15 text-[#7598CF] border border-[#7598CF]/30 rounded-full px-2 py-0.5 font-semibold">{n} coleç{n === 1 ? "ão" : "ões"}</span>
                           : <span className="text-[#28071C]/30 text-xs">—</span>
                         }
                       </td>
+
+                      {/* Ações */}
                       <td className="px-4 py-3">
-                        <div className="flex items-center justify-center gap-2">
-                          {/* Botão Editar removido — temporadas são imutáveis após criação */}
-                          <span title="Temporadas não podem ser editadas após criação"
-                            className="p-2 text-[#28071C]/20 cursor-not-allowed">
-                            <Lock className="w-4 h-4" />
-                          </span>
-                          <button onClick={() => handleDeleteTemporada(t.id)}
-                            title={n > 0 ? "Remova as coleções antes de excluir" : "Excluir temporada"}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          {isPast ? (
+                            <span title="Ano encerrado — somente leitura" className="p-2 text-[#28071C]/20 cursor-not-allowed">
+                              <Lock className="w-4 h-4" />
+                            </span>
+                          ) : isEditingThis ? (
+                            <>
+                              <button onClick={handleSaveEditAuto}
+                                className="px-3 py-1.5 bg-[#7598CF] text-white rounded text-xs font-semibold hover:opacity-90">
+                                Salvar
+                              </button>
+                              <button onClick={() => setEditingAutoId(null)}
+                                className="p-2 text-[#28071C]/40 hover:text-[#28071C] rounded transition-colors">
+                                <X className="w-4 h-4" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {/* Editar: disponível para auto-geradas; imutável para manuais */}
+                              {t.autoGerada ? (
+                                <button onClick={() => handleStartEditAuto(t)} title="Editar temporada"
+                                  className="p-2 text-[#28071C]/50 hover:text-[#28071C] hover:bg-[#28071C]/8 rounded transition-colors">
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                              ) : (
+                                <span title="Temporadas manuais são imutáveis após criação"
+                                  className="p-2 text-[#28071C]/15 cursor-not-allowed">
+                                  <Lock className="w-3.5 h-3.5" />
+                                </span>
+                              )}
+                              <button onClick={() => handleDeleteTemporada(t)}
+                                title="Excluir temporada"
+                                className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -812,8 +1072,96 @@ export default function OperationSettings() {
           </div>
         </div>
 
+        {/* ── MODAL: Impacto da alteração de temporada automática ─────────────── */}
+        {modal && (
+          <div className="fixed inset-0 z-[9100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setModal(null)} />
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+              {/* Cabeçalho */}
+              <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-5 py-4 flex items-center justify-between">
+                <span className="text-white font-semibold text-sm">
+                  {modal.action === "delete" ? "Excluir temporada automática" : "Editar temporada automática"}
+                </span>
+                <button onClick={() => setModal(null)} className="text-white/60 hover:text-white">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Corpo */}
+              <div className="px-5 py-5 space-y-4">
+                <div className="flex items-center gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+                  <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
+                  <p className="text-[#28071C]/70 text-sm">
+                    A temporada <strong className="text-[#28071C]">{modal.temporada.nome}</strong> foi criada automaticamente pelo sistema.
+                    Escolha o impacto desta alteração:
+                  </p>
+                </div>
+
+                {modal.hasLinkedColecoes && modal.action === "delete" && (
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                    <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                    <p className="text-amber-800 text-xs">
+                      Esta temporada possui coleções vinculadas. Ao confirmar, as coleções também serão excluídas.
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-1">
+                  {/* Opção A — Pontual */}
+                  <button
+                    onClick={() => confirmModal("pontual")}
+                    className="w-full text-left border-2 border-[#28071C]/12 hover:border-[#7598CF] rounded-xl p-4 transition-all group"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-6 h-6 rounded-full bg-[#7598CF]/10 border-2 border-[#7598CF]/30 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-[#7598CF]/20">
+                        <span className="text-[10px] font-bold text-[#7598CF]">A</span>
+                      </div>
+                      <div>
+                        <p className="text-[#28071C] font-semibold text-sm">
+                          Apenas para {modal.temporada.anoFiscal ? `o ano fiscal ${modal.temporada.anoFiscal}` : "esta temporada"}
+                        </p>
+                        <p className="text-[#28071C]/50 text-xs mt-0.5">
+                          A regra padrão permanece intacta. Os próximos anos continuarão sendo gerados com o modelo atual.
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Opção B — Regra geral */}
+                  <button
+                    onClick={() => confirmModal("regra_geral")}
+                    className="w-full text-left border-2 border-[#28071C]/12 hover:border-[#9B8CD8] rounded-xl p-4 transition-all group"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-6 h-6 rounded-full bg-[#9B8CD8]/10 border-2 border-[#9B8CD8]/30 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:bg-[#9B8CD8]/20">
+                        <span className="text-[10px] font-bold text-[#9B8CD8]">B</span>
+                      </div>
+                      <div>
+                        <p className="text-[#28071C] font-semibold text-sm">Alterar a regra padrão</p>
+                        <p className="text-[#28071C]/50 text-xs mt-0.5">
+                          {modal.action === "edit"
+                            ? "Adota este novo modelo como padrão para os próximos anos automaticamente gerados."
+                            : "Remove este tipo de temporada do modelo padrão — não será mais gerada automaticamente."}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Rodapé */}
+              <div className="px-5 pb-4 flex justify-end">
+                <button onClick={() => setModal(null)}
+                  className="px-4 py-2 text-sm text-[#28071C]/50 hover:text-[#28071C] transition-colors">
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── CARD 2: Coleções / Drops ────────────────────────────────────────── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
+        <div id="tour-op-colecoes" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
           <div className="flex items-center gap-3 mb-2">
             <Layers className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Coleções / Drops</h2>
@@ -876,7 +1224,7 @@ export default function OperationSettings() {
           {selectedTemporadaId && (
             <div className="mb-3 flex items-center gap-2">
               <span className="text-xs text-[#28071C] bg-[#28071C]/10 border border-[#28071C]/30 rounded-full px-3 py-1 font-semibold">
-                {temporadas.find(t => t.id === Number(selectedTemporadaId))?.nome}
+                {temporadas.find(t => t.id === selectedTemporadaId)?.nome}
               </span>
               <span className="text-xs text-[#28071C]/40">
                 — exibindo {colecoesVisíveis.length} coleç{colecoesVisíveis.length === 1 ? "ão" : "ões"}
@@ -937,7 +1285,7 @@ export default function OperationSettings() {
         </div>
 
         {/* ── CARD 3 (NEW): Faixas de Preço por Categoria ────────────────────── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
+        <div id="tour-op-faixas" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
           <div className="flex items-center gap-3 mb-2">
             <Tag className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Faixas de Preço por Categoria</h2>
@@ -1053,7 +1401,7 @@ export default function OperationSettings() {
           // Re-render do card de importação na posição correta
           // O estado e handlers já existem (importMode, importStep, etc.)
           return (
-            <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
+            <div id="tour-op-importacao" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-3">
                   <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
@@ -1184,7 +1532,7 @@ export default function OperationSettings() {
         })()}
 
         {/* ── CARD 5: Configuração de Hierarquia de Produtos (editor completo) ── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
+        <div id="tour-op-hierarquia" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
           <div className="flex items-center gap-3 mb-2">
             <Layers className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Configuração de Hierarquia de Produtos</h2>
@@ -1273,7 +1621,7 @@ export default function OperationSettings() {
         </div>
 
         {/* ── CARD 5: Configuração de Lead Times ──────────────────────────────── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
+        <div id="tour-op-leadtimes" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
           <div className="flex items-center gap-3 mb-6">
             <Clock className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Configuração de Lead Times</h2>
@@ -1363,7 +1711,7 @@ export default function OperationSettings() {
         </div>
 
         {/* ── CARD 6 (NEW): Sustentador de Margem ─────────────────────────────── */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
+        <div id="tour-op-basicos" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
           <div className="flex items-center justify-between mb-2">
             <div>
               <h2 className="text-[#28071C] text-xl font-bold">Sustentador de Margem</h2>
@@ -1696,6 +2044,11 @@ export default function OperationSettings() {
         </div>
 
       </main>
+
+      {/* Product Tour */}
+      {tour.isOpen && (
+        <ProductTour steps={OPERATION_SETTINGS_TOUR} onClose={tour.dismiss} />
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
   STRATEGIC_FOCUS_COLORS, PLAN_INDICATORS, DEFAULT_PRIORITIES,
   SUGGESTED_COUNTS, MAX_UNLOCK, savePlanCycle,
 } from "../types/planCycle"
+import { autoGenerateForYear } from "../../services/temporadaService"
 import type {
   StrategicFocus, PlanFieldPriority, AnnualPlanCycle, FieldStatus,
 } from "../types/planCycle"
@@ -136,7 +137,7 @@ export default function PlanningSetup() {
   const tipoPerfil   = classifyOrigem(origemPerfil)
 
   // ── Wizard step ────────────────────────────────────────────────────────────
-  const [user, setUser] = useState<{ name: string; email: string; profile: string } | null>(null)
+  const [user, setUser] = useState<{ name: string; email: string; profile: string; tenant_id?: string } | null>(null)
   const [step, setStep] = useState<1 | 2>(1)
   const [focus, setFocus] = useState<StrategicFocus | null>(
     existingCycle?.focus ?? null
@@ -159,7 +160,11 @@ export default function PlanningSetup() {
     if (!stored) { navigate("/"); return }
     const u = JSON.parse(stored)
     setUser(u)
-    if (u.profile !== "CEO") navigate("/dashboard")
+    const effectiveProfile =
+      u.system_role === "support" || u.system_role === "client_admin"
+        ? "CEO"
+        : u.profile
+    if (effectiveProfile !== "CEO") navigate("/dashboard")
   }, [navigate])
 
   // Se for revisão e já tiver ciclo salvo, pré-preenche step 2 com as prioridades existentes
@@ -321,6 +326,13 @@ export default function PlanningSetup() {
       lastModifiedAt: new Date().toISOString(),
     }
     savePlanCycle(cycle)
+    // Gera automaticamente as 2 temporadas padrão para o ano fiscal, se ainda não existirem
+    const tenantId = sessionStorage.getItem("activeTenantId") ?? user?.tenant_id ?? ""
+    if (tenantId) {
+      autoGenerateForYear(tenantId, year).catch(err =>
+        console.warn("Erro ao gerar temporadas automáticas:", err)
+      )
+    }
     navigate("/planning", { state: { year, mode: isReview ? "review" : "new", focus, fieldPriorities } })
   }
 
@@ -483,244 +495,232 @@ export default function PlanningSetup() {
                 )}
               </div>
 
-              {/* ── ACTIVE INDICATORS ── */}
-              <div className="bg-white/75 backdrop-blur-sm rounded-2xl overflow-hidden shadow-sm">
-                <div className="px-5 py-3 border-b border-[#28071C]/8 flex items-center justify-between bg-[#7598CF]/6">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-[#7598CF]" />
-                    <span className="text-xs text-[#7598CF] uppercase tracking-widest font-bold">
-                      Indicadores Ativos — metas editáveis no plano
+              {/* ── TWO-COLUMN LAYOUT: ACTIVE  |  READ-ONLY ── */}
+              <div className="grid grid-cols-2 gap-4 items-start">
+
+                {/* ── COLUNA ESQUERDA: ATIVOS ── */}
+                <div className="bg-white/75 backdrop-blur-sm rounded-2xl overflow-hidden shadow-sm">
+                  <div className="px-4 py-2.5 border-b border-[#28071C]/8 flex items-center justify-between bg-[#7598CF]/6">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-[#7598CF]" />
+                      <span className="text-[11px] text-[#7598CF] uppercase tracking-widest font-bold">
+                        Ativos — metas editáveis
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-[#28071C]/40 font-medium">
+                      {activeOrder.length}
+                      {unlockedCount > 0 && (
+                        <span className="ml-1.5 text-violet-600">
+                          ({unlockedCount}/{MAX_UNLOCK} lib.)
+                        </span>
+                      )}
                     </span>
                   </div>
-                  <span className="text-xs text-[#28071C]/40 font-medium">
-                    {activeOrder.length} indicadores
-                    {unlockedCount > 0 && (
-                      <span className="ml-2 text-violet-600">
-                        ({unlockedCount}/{MAX_UNLOCK} liberados)
-                      </span>
-                    )}
-                  </span>
-                </div>
 
-                {activeOrder.length === 0 && (
-                  <p className="text-center text-[#28071C]/35 text-sm py-8">
-                    Nenhum indicador ativo.
-                  </p>
-                )}
+                  {activeOrder.length === 0 && (
+                    <p className="text-center text-[#28071C]/35 text-sm py-6">
+                      Nenhum indicador ativo.
+                    </p>
+                  )}
 
-                {activeOrder.map((key, idx) => {
-                  const ind       = indMeta(key)
-                  const status    = statuses[key] as Exclude<FieldStatus, 'inactive'>
-                  const isRef     = references.has(key)
-                  const isFirst   = idx === 0
-                  const isLast    = idx === activeOrder.length - 1
-                  const badge     = STATUS_BADGE[status]
-                  const isReceita = key === RECEITA_KEY
+                  {activeOrder.map((key, idx) => {
+                    const ind       = indMeta(key)
+                    const status    = statuses[key] as Exclude<FieldStatus, 'inactive'>
+                    const isRef     = references.has(key)
+                    const isFirst   = idx === 0
+                    const isLast    = idx === activeOrder.length - 1
+                    const badge     = STATUS_BADGE[status]
+                    const isReceita = key === RECEITA_KEY
 
-                  return (
-                    <div
-                      key={key}
-                      className={`flex items-center gap-3 px-5 py-3.5 border-b border-[#28071C]/5 last:border-0 ${
-                        isReceita ? "bg-[#7598CF]/5" : isRef ? "bg-amber-50/40" : "bg-white"
-                      }`}
-                    >
-                      {/* Rank */}
-                      <div className={`w-6 h-6 rounded-full text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0 ${
-                        isReceita ? "bg-[#28071C]" : "bg-[#7598CF]"
-                      }`}>
-                        {idx + 1}
-                      </div>
-
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-semibold text-[#28071C]">{ind.label}</span>
-                          {INDICATOR_TOOLTIPS[key] && <IndicatorTooltip text={INDICATOR_TOOLTIPS[key]} />}
-                          {isReceita ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-[#28071C]/10 text-[#28071C]/70 border border-[#28071C]/20 flex items-center gap-0.5">
-                              <Lock className="w-2.5 h-2.5" /> Obrigatório
-                            </span>
-                          ) : (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${badge.cls}`}>
-                              {badge.label}
-                            </span>
-                          )}
-                          {isRef && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-100 text-amber-700 border border-amber-300 flex items-center gap-0.5">
-                              <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />Referência
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-[#28071C]/40 mt-0.5">{ind.description}</p>
-                      </div>
-
-                      {/* Reference toggle (receita também pode ser referência) */}
-                      <button
-                        onClick={() => toggleRef(key)}
-                        title={isRef ? "Remover indicador de referência" : "Marcar como indicador de referência"}
-                        className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all ${
-                          isRef
-                            ? "bg-amber-100 text-amber-600 hover:bg-amber-200"
-                            : "text-[#28071C]/20 hover:text-amber-500 hover:bg-amber-50"
+                    return (
+                      <div
+                        key={key}
+                        className={`flex items-center gap-2 px-4 py-2.5 border-b border-[#28071C]/5 last:border-0 ${
+                          isReceita ? "bg-[#7598CF]/5" : isRef ? "bg-amber-50/40" : "bg-white"
                         }`}
                       >
-                        <Star className={`w-3.5 h-3.5 ${isRef ? "fill-amber-500" : ""}`} />
-                      </button>
+                        {/* Rank */}
+                        <div className={`w-5 h-5 rounded-full text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0 ${
+                          isReceita ? "bg-[#28071C]" : "bg-[#7598CF]"
+                        }`}>
+                          {idx + 1}
+                        </div>
 
-                      {/* Lock back (only for unlocked) */}
-                      {status === "unlocked" && (
-                        <button
-                          onClick={() => lockBack(key)}
-                          title="Remover do plano ativo"
-                          className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[#28071C]/25 hover:text-red-500 hover:bg-red-50 transition-all"
-                        >
-                          <Lock className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-semibold text-[#28071C]">{ind.label}</span>
+                            {INDICATOR_TOOLTIPS[key] && <IndicatorTooltip text={INDICATOR_TOOLTIPS[key]} />}
+                            {isReceita ? (
+                              <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-[#28071C]/10 text-[#28071C]/70 border border-[#28071C]/20 flex items-center gap-0.5">
+                                <Lock className="w-2 h-2" /> Obrigatório
+                              </span>
+                            ) : (
+                              <span className={`text-[9px] px-1 py-0.5 rounded font-semibold ${badge.cls}`}>
+                                {badge.label}
+                              </span>
+                            )}
+                            {isRef && (
+                              <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-100 text-amber-700 border border-amber-300 flex items-center gap-0.5">
+                                <Star className="w-2 h-2 fill-amber-500 text-amber-500" />Ref.
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-[#28071C]/40 mt-0.5 truncate">{ind.description}</p>
+                        </div>
 
-                      {/* Dismiss (suggested only, not receita, max MAX_DISMISS) */}
-                      {status === "suggested" && !isReceita && (
+                        {/* Reference toggle */}
                         <button
-                          onClick={() => dismiss(key)}
-                          disabled={!canDismiss}
-                          title={canDismiss ? "Remover conscientemente este indicador do plano" : `Máximo de ${MAX_DISMISS} remoções atingido`}
-                          className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all ${
-                            canDismiss
-                              ? "text-[#28071C]/20 hover:text-red-500 hover:bg-red-50"
-                              : "text-[#28071C]/10 cursor-not-allowed"
+                          onClick={() => toggleRef(key)}
+                          title={isRef ? "Remover referência" : "Marcar como referência"}
+                          className={`flex-shrink-0 w-6 h-6 rounded flex items-center justify-center transition-all ${
+                            isRef ? "bg-amber-100 text-amber-600 hover:bg-amber-200" : "text-[#28071C]/20 hover:text-amber-500 hover:bg-amber-50"
                           }`}
                         >
-                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <Star className={`w-3 h-3 ${isRef ? "fill-amber-500" : ""}`} />
                         </button>
-                      )}
 
-                      {/* Receita lock icon (non-interactive) */}
-                      {isReceita && (
-                        <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[#28071C]/20" title="Receita não pode ser removida">
-                          <Lock className="w-3.5 h-3.5" />
+                        {/* Lock back (unlocked only) */}
+                        {status === "unlocked" && (
+                          <button onClick={() => lockBack(key)} title="Remover do plano ativo"
+                            className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-[#28071C]/25 hover:text-red-500 hover:bg-red-50 transition-all">
+                            <Lock className="w-3 h-3" />
+                          </button>
+                        )}
+
+                        {/* Dismiss (suggested, not receita) */}
+                        {status === "suggested" && !isReceita && (
+                          <button onClick={() => dismiss(key)} disabled={!canDismiss}
+                            title={canDismiss ? "Remover do plano" : `Máx. ${MAX_DISMISS} remoções`}
+                            className={`flex-shrink-0 w-6 h-6 rounded flex items-center justify-center transition-all ${
+                              canDismiss ? "text-[#28071C]/20 hover:text-red-500 hover:bg-red-50" : "text-[#28071C]/10 cursor-not-allowed"
+                            }`}>
+                            <AlertTriangle className="w-3 h-3" />
+                          </button>
+                        )}
+
+                        {/* Receita lock (non-interactive) */}
+                        {isReceita && (
+                          <div className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-[#28071C]/20">
+                            <Lock className="w-3 h-3" />
+                          </div>
+                        )}
+
+                        {/* Up/Down */}
+                        <div className="flex flex-col gap-0 flex-shrink-0">
+                          <button onClick={() => moveUp(idx)} disabled={isFirst}
+                            className="w-5 h-4 flex items-center justify-center rounded hover:bg-[#7598CF]/12 disabled:opacity-15 transition-colors">
+                            <ChevronUp className="w-3 h-3 text-[#28071C]/50" />
+                          </button>
+                          <button onClick={() => moveDown(idx)} disabled={isLast}
+                            className="w-5 h-4 flex items-center justify-center rounded hover:bg-[#7598CF]/12 disabled:opacity-15 transition-colors">
+                            <ChevronDown className="w-3 h-3 text-[#28071C]/50" />
+                          </button>
                         </div>
-                      )}
-
-                      {/* Up/Down */}
-                      <div className="flex flex-col gap-0 flex-shrink-0">
-                        <button
-                          onClick={() => moveUp(idx)}
-                          disabled={isFirst}
-                          className="w-6 h-5 flex items-center justify-center rounded hover:bg-[#7598CF]/12 disabled:opacity-15 transition-colors"
-                        >
-                          <ChevronUp className="w-3.5 h-3.5 text-[#28071C]/50" />
-                        </button>
-                        <button
-                          onClick={() => moveDown(idx)}
-                          disabled={isLast}
-                          className="w-6 h-5 flex items-center justify-center rounded hover:bg-[#7598CF]/12 disabled:opacity-15 transition-colors"
-                        >
-                          <ChevronDown className="w-3.5 h-3.5 text-[#28071C]/50" />
-                        </button>
                       </div>
-                    </div>
-                  )
-                })}
-              </div>
+                    )
+                  })}
+                </div>
 
-              {/* ── INACTIVE / DISMISSED INDICATORS ── */}
-              {inactiveKeys.length > 0 && (
+                {/* ── COLUNA DIREITA: SOMENTE LEITURA ── */}
                 <div className="bg-white/50 backdrop-blur-sm rounded-2xl overflow-hidden shadow-sm">
-                  <div className="px-5 py-3 border-b border-[#28071C]/6 flex items-center justify-between bg-[#28071C]/3">
+                  <div className="px-4 py-2.5 border-b border-[#28071C]/6 flex items-center justify-between bg-[#28071C]/3">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-[#28071C]/25" />
-                      <span className="text-xs text-[#28071C]/40 uppercase tracking-widest font-bold">
-                        Somente Leitura — não editáveis no plano
+                      <span className="text-[11px] text-[#28071C]/40 uppercase tracking-widest font-bold">
+                        Somente leitura
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       {dismissCount > 0 && (
-                        <span className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 font-semibold">
-                          {dismissCount}/{MAX_DISMISS} removidos conscientemente
+                        <span className="text-[9px] text-red-600 bg-red-50 border border-red-200 rounded-full px-1.5 py-0.5 font-semibold">
+                          {dismissCount}/{MAX_DISMISS} removidos
                         </span>
                       )}
                       {!canUnlock && (
-                        <span className="text-[10px] text-violet-600 bg-violet-50 border border-violet-200 rounded-full px-2 py-0.5 font-semibold">
-                          Máximo {MAX_UNLOCK} liberados atingido
+                        <span className="text-[9px] text-violet-600 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5 font-semibold">
+                          Máx. {MAX_UNLOCK} lib.
                         </span>
                       )}
                       {canUnlock && (
-                        <span className="text-[10px] text-[#28071C]/35">
-                          {MAX_UNLOCK - unlockedCount} liberação{MAX_UNLOCK - unlockedCount !== 1 ? "ões" : ""} disponível{MAX_UNLOCK - unlockedCount !== 1 ? "is" : ""}
+                        <span className="text-[9px] text-[#28071C]/35">
+                          {MAX_UNLOCK - unlockedCount} disp.
                         </span>
                       )}
                     </div>
                   </div>
 
+                  {inactiveKeys.length === 0 && (
+                    <p className="text-center text-[#28071C]/25 text-xs py-6">
+                      Todos os indicadores estão ativos.
+                    </p>
+                  )}
+
                   {inactiveKeys.map(key => {
-                    const ind          = indMeta(key)
-                    const isDismissed  = statuses[key] === "dismissed"
+                    const ind           = indMeta(key)
+                    const isDismissed   = statuses[key] === "dismissed"
                     const canUnlockThis = canUnlock && !isDismissed
                     return (
                       <div
                         key={key}
-                        className={`flex items-center gap-3 px-5 py-3 border-b border-[#28071C]/5 last:border-0 ${
+                        className={`flex items-center gap-2 px-4 py-2.5 border-b border-[#28071C]/5 last:border-0 ${
                           isDismissed ? "bg-red-50/30" : "opacity-55"
                         }`}
                       >
-                        {/* Rank icon */}
-                        <div className={`w-6 h-6 rounded-full text-[11px] font-bold flex items-center justify-center flex-shrink-0 ${
-                          isDismissed
-                            ? "bg-red-100 text-red-400"
-                            : "bg-[#28071C]/10 text-[#28071C]/35"
+                        {/* Icon */}
+                        <div className={`w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0 ${
+                          isDismissed ? "bg-red-100 text-red-400" : "bg-[#28071C]/10 text-[#28071C]/35"
                         }`}>
                           {isDismissed ? "✕" : "—"}
                         </div>
 
                         {/* Content */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className={`text-sm font-medium ${isDismissed ? "text-[#28071C]/60" : "text-[#28071C]/50"}`}>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className={`text-xs font-medium ${isDismissed ? "text-[#28071C]/60" : "text-[#28071C]/50"}`}>
                               {ind.label}
                             </p>
                             {INDICATOR_TOOLTIPS[key] && <IndicatorTooltip text={INDICATOR_TOOLTIPS[key]} />}
                             {isDismissed && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-50 text-red-500 border border-red-200">
-                                Removido conscientemente
+                              <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-red-50 text-red-500 border border-red-200">
+                                Removido
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-[#28071C]/30">{ind.description}</p>
+                          <p className="text-[10px] text-[#28071C]/30 truncate">{ind.description}</p>
                         </div>
 
-                        {/* Reinstate button (dismissed only) */}
+                        {/* Reinstate (dismissed) */}
                         {isDismissed && (
-                          <button
-                            onClick={() => reinstate(key)}
-                            title="Reinserir este indicador nos ativos"
-                            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#7598CF]/40 text-[#7598CF] bg-[#7598CF]/8 hover:bg-[#7598CF]/15 transition-all"
-                          >
-                            <RotateCcw className="w-3 h-3" />
+                          <button onClick={() => reinstate(key)} title="Reinserir nos ativos"
+                            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold border border-[#7598CF]/40 text-[#7598CF] bg-[#7598CF]/8 hover:bg-[#7598CF]/15 transition-all">
+                            <RotateCcw className="w-2.5 h-2.5" />
                             Reinserir
                           </button>
                         )}
 
-                        {/* Unlock button (inactive only) */}
+                        {/* Unlock (inactive) */}
                         {!isDismissed && (
                           <button
                             onClick={() => canUnlockThis && unlock(key)}
                             disabled={!canUnlockThis}
-                            title={canUnlockThis ? "Liberar para edição no plano" : `Máximo de ${MAX_UNLOCK} indicadores liberados`}
-                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                            title={canUnlockThis ? "Liberar para edição" : `Máx. ${MAX_UNLOCK} liberados`}
+                            className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold border transition-all ${
                               canUnlockThis
                                 ? "border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 opacity-100"
                                 : "border-[#28071C]/10 text-[#28071C]/25 cursor-not-allowed"
                             }`}
                           >
-                            <Unlock className="w-3 h-3" />
-                            {canUnlockThis ? "Liberar" : "Máx. atingido"}
+                            <Unlock className="w-2.5 h-2.5" />
+                            {canUnlockThis ? "Liberar" : "Máx."}
                           </button>
                         )}
                       </div>
                     )
                   })}
                 </div>
-              )}
+
+              </div>{/* end grid */}
 
               {/* Legend */}
               <div className="flex flex-wrap gap-4 text-xs text-[#28071C]/45 px-1">

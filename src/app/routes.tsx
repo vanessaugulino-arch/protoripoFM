@@ -12,6 +12,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import Admin_Clients from "./pages/Admin_Clients";
 import Admin_Users from "./pages/Admin_Users";
 import Admin_Permissions from "./pages/Admin_Permissions";
+import TenantSelector from "./pages/TenantSelector";
 import SortimentPlan from "./pages/SortimentPlan";
 import Onboarding from "./pages/Onboarding";
 import PlanningGateway from "./pages/PlanningGateway";
@@ -74,6 +75,10 @@ export const router = createBrowserRouter([
   {
     path: "/sortiment-plan",
     Component: SortimentPlan,
+  },
+  {
+    path: "/tenant-selector",
+    Component: TenantSelector,
   },
   // Admin Routes
   {
