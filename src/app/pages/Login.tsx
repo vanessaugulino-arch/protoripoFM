@@ -47,6 +47,19 @@ export default function Login() {
 
       sessionStorage.setItem("currentUser", JSON.stringify(currentUser));
 
+      // Conta demo — reinicia o fluxo completo a cada login
+      if (currentUser.email === "contato@thefashionoffice.com.br") {
+        localStorage.removeItem("fashionmind_presentation_seen");
+        localStorage.removeItem("fashionmind_onboarding_complete");
+        localStorage.removeItem("fashionmind_onboarding_profile");
+        // Remove também flags de tour para que os tours reapareçam
+        Object.keys(localStorage)
+          .filter(k => k.startsWith("fashionmind_tour_"))
+          .forEach(k => localStorage.removeItem(k));
+        navigate("/presentation");
+        return;
+      }
+
       if (currentUser.system_role === "support") {
         navigate("/tenant-selector");
         return;

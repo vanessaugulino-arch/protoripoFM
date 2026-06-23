@@ -230,7 +230,11 @@ export default function Planning() {
     if (stored) {
       const u = JSON.parse(stored)
       setUser(u)
-      if (u.profile !== "CEO") navigate("/dashboard")
+      const effectiveProfile =
+        u.system_role === "support" || u.system_role === "client_admin"
+          ? "CEO"
+          : u.profile
+      if (effectiveProfile !== "CEO") navigate("/dashboard")
     } else navigate("/")
   }, [navigate, routeState])
 
