@@ -749,7 +749,7 @@ export default function ChannelPlanning() {
                       {fieldTooltip && (
                         <span className="relative group ml-auto flex-shrink-0">
                           <Info className="w-3 h-3 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors cursor-help" />
-                          <span className="absolute left-0 bottom-full mb-2 w-52 px-3 py-2 bg-[#28071C] text-white text-[10px] rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-normal">
+                          <span className="absolute left-0 bottom-full mb-2 w-52 px-3 py-2 bg-[#28071C] text-white text-[10px] rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed font-normal">
                             {fieldTooltip}
                             <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
                           </span>

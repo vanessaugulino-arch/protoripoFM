@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, Navigate, Outlet } from "react-router";
 import Login from "./pages/Login";
 import SystemPresentation from "./pages/SystemPresentation";
 import Dashboard from "./pages/Dashboard";
@@ -18,6 +18,25 @@ import Onboarding from "./pages/Onboarding";
 import PlanningGateway from "./pages/PlanningGateway";
 import PlanningSetup from "./pages/PlanningSetup";
 import ProfileAdjust from "./pages/ProfileAdjust";
+import MatrizAbastecimento from "./pages/MatrizAbastecimento";
+// Fase 2 — acessíveis apenas pelo usuário Suporte
+import CycleClosing from "./pages/CycleClosing";
+import CollectionPlanning from "./pages/CollectionPlanning";
+import ProductMix from "./pages/ProductMix";
+import TrackingCreative from "./pages/TrackingCreative";
+
+// Guard: bloqueia acesso a rotas de Fase 2 para qualquer role que não seja "support"
+function SuporteRoute() {
+  const raw = sessionStorage.getItem("currentUser");
+  if (!raw) return <Navigate to="/" replace />;
+  try {
+    const user = JSON.parse(raw);
+    if (user?.system_role !== "support") return <Navigate to="/dashboard" replace />;
+  } catch {
+    return <Navigate to="/" replace />;
+  }
+  return <Outlet />;
+}
 
 export const router = createBrowserRouter([
   {
@@ -73,6 +92,10 @@ export const router = createBrowserRouter([
     Component: OperationSettings,
   },
   {
+    path: "/matriz-abastecimento",
+    Component: MatrizAbastecimento,
+  },
+  {
     path: "/sortiment-plan",
     Component: SortimentPlan,
   },
@@ -96,5 +119,27 @@ export const router = createBrowserRouter([
   {
     path: "/admin/permissions",
     Component: Admin_Permissions,
+  },
+  // ── Fase 2 — Pré-visualização exclusiva Suporte ───────────────────────────
+  {
+    element: <SuporteRoute />,
+    children: [
+      {
+        path: "/preview/cycle-closing",
+        Component: CycleClosing,
+      },
+      {
+        path: "/preview/collection-planning",
+        Component: CollectionPlanning,
+      },
+      {
+        path: "/preview/product-mix",
+        Component: ProductMix,
+      },
+      {
+        path: "/preview/tracking-creative",
+        Component: TrackingCreative,
+      },
+    ],
   },
 ]);

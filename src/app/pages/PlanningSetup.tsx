@@ -100,7 +100,7 @@ function IndicatorTooltip({ text }: { text: string }) {
   return (
     <span className="relative group inline-flex items-center ml-1">
       <Info className="w-3 h-3 text-[#28071C]/20 group-hover:text-[#7598CF] cursor-help transition-colors" />
-      <span className="absolute left-0 bottom-full mb-2 w-60 p-2.5 bg-[#28071C] text-white text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-normal">
+      <span className="absolute left-0 bottom-full mb-2 w-60 p-2.5 bg-[#28071C] text-white text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed font-normal">
         {text}
         <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
       </span>

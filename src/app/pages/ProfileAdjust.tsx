@@ -84,6 +84,8 @@ export default function ProfileAdjust() {
 
   const showTrade = origem === "propria" || origem === "hibrido"
 
+  if (!user) return null
+
   return (
     <div className="min-h-screen bg-[#F2F2F2]">
       {/* HEADER */}

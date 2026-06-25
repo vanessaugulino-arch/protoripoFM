@@ -1060,7 +1060,7 @@ function CompactField({
         {tooltip && (
           <div className="group relative ml-0.5">
             <Info className="w-3 h-3 text-[#28071C]/25 cursor-help group-hover:text-[#7598CF] transition-colors" />
-            <div className="absolute left-full ml-1.5 top-1/2 -translate-y-1/2 w-52 bg-[#28071C] text-white text-[10px] rounded-lg p-2.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-30 leading-relaxed">
+            <div className="absolute left-full ml-1.5 top-1/2 -translate-y-1/2 w-52 bg-[#28071C] text-white text-[10px] rounded-lg p-2.5 opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-30 leading-relaxed">
               {tooltip}
               <span className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[#28071C]" />
             </div>

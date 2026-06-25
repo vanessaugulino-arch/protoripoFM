@@ -542,7 +542,7 @@ export default function Planning() {
                     )
                     const isPos  = hasVar && !isNeg
                     return (
-                      <div key={id} className={`bg-white border rounded-lg px-2.5 py-2 ${isNeg ? 'border-red-100' : isPos ? 'border-emerald-100' : 'border-gray-100'}`}>
+                      <div key={id} className={`relative group bg-white border rounded-lg px-2.5 py-2 cursor-default ${isNeg ? 'border-red-100' : isPos ? 'border-emerald-100' : 'border-gray-100'}`}>
                         <p className="text-[9px] text-gray-400 leading-tight">{meta.label}</p>
                         <p className="text-xs text-[#28071C] font-bold mt-0.5">{meta.valor}</p>
                         {hasVar && (
@@ -551,6 +551,13 @@ export default function Planning() {
                             {meta.variacao}
                           </p>
                         )}
+                        {/* Tooltip 2s — aparece após 2 segundos de hover */}
+                        <div className="absolute bottom-full left-0 mb-2 w-52 px-3 py-2 bg-[#28071C] text-white text-[10px] rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed font-normal">
+                          <p className="font-semibold text-[#F6F3AA] mb-0.5">{meta.label}</p>
+                          <p>{meta.desc}</p>
+                          <p className="text-white/50 mt-1">Fonte: {meta.fonte}</p>
+                          <span className="absolute top-full left-3 border-4 border-transparent border-t-[#28071C]" />
+                        </div>
                       </div>
                     )
                   })}

@@ -6,6 +6,8 @@ import {
   User,
   Calendar,
   Clock,
+  Truck,
+  ArrowRight,
   Edit,
   Trash2,
   Save,
@@ -116,27 +118,12 @@ interface FaixaPreco {
   };
 }
 
-// ─── Lead Times ───────────────────────────────────────────────────────────────
-interface LeadTimeRule {
-  id: number;
-  type: "producao" | "pedido";
-  grupo: string;
-  categoria: string;
-  subcategoria: string;
-  nivelRisco: string;
-  faixaPreco: string;
-  leadTime: number;
-  unit: "dias" | "meses";
-}
-
 // ─── Constants ────────────────────────────────────────────────────────────────
 // months re-exportado do serviço para uso nos formulários locais
 const months = MONTHS_SVC;
 const grupos               = ["Vestuário", "Acessórios", "Calçados", "Joias"];
 const categorias           = ["Blusas", "Vestidos", "Calças", "Saias", "Jaquetas"];
 const SUBCATEGORIAS_DEFAULT = ["Casual", "Formal", "Esportivo", "Festa"];
-const niveisRisco          = ["Básico", "Moda", "Alta Moda"];
-const FAIXAS_PRECO_OPTIONS = ["Econômico", "Médio", "Premium", "Luxo"];
 
 // ─── Hierarquia estruturada ───────────────────────────────────────────────────
 export interface HierNode { id: string; label: string; children: HierNode[] }
@@ -352,19 +339,6 @@ export default function OperationSettings() {
   const [colFim,      setColFim]      = useState("");
   const [editingColId, setEditingColId] = useState<number | null>(null);
 
-  // ── Lead Times ───────────────────────────────────────────────────────────────
-  const [leadTimeType,          setLeadTimeType]          = useState<"producao" | "pedido">("producao");
-  const [selectedGrupo,         setSelectedGrupo]         = useState("");
-  const [selectedCategoria,     setSelectedCategoria]     = useState("");
-  const [selectedSubcategoria,  setSelectedSubcategoria]  = useState("");
-  const [selectedNivelRisco,    setSelectedNivelRisco]    = useState("");
-  const [selectedFaixaPreco,    setSelectedFaixaPreco]    = useState("");
-  const [leadTimeDays,          setLeadTimeDays]          = useState(30);
-  const [leadTimeUnit,          setLeadTimeUnit]          = useState<"dias" | "meses">("dias");
-  const [leadTimeRules, setLeadTimeRules] = useState<LeadTimeRule[]>([
-    { id: 1, type: "producao", grupo: "Vestuário",  categoria: "Blusas",   subcategoria: "Casual",  nivelRisco: "Moda",      faixaPreco: "Médio",   leadTime: 45, unit: "dias" },
-    { id: 2, type: "pedido",   grupo: "Acessórios", categoria: "Vestidos", subcategoria: "Formal",  nivelRisco: "Alta Moda", faixaPreco: "Premium", leadTime: 60, unit: "dias" },
-  ]);
 
   // ── Hierarquia de Produtos ───────────────────────────────────────────────────
   const [hierDivisaoAtiva, setHierDivisaoAtiva] = useState<boolean>(() => {
@@ -708,27 +682,6 @@ export default function OperationSettings() {
     setEditingColId(null);
     setColNome(""); setColInicio(""); setColFim("");
   };
-
-  // ── Handlers: Lead Times ──────────────────────────────────────────────────────
-  const handleSaveLeadTimeRule = () => {
-    if (!selectedGrupo || !selectedCategoria || !selectedNivelRisco) {
-      alert("Preencha pelo menos Grupo, Categoria e Nível de Risco.");
-      return;
-    }
-    const nova: LeadTimeRule = {
-      id: leadTimeRules.length + 1,
-      type: leadTimeType,
-      grupo: selectedGrupo, categoria: selectedCategoria, subcategoria: selectedSubcategoria,
-      nivelRisco: selectedNivelRisco, faixaPreco: selectedFaixaPreco,
-      leadTime: leadTimeDays, unit: leadTimeUnit,
-    };
-    setLeadTimeRules([...leadTimeRules, nova]);
-    setSelectedGrupo(""); setSelectedCategoria(""); setSelectedSubcategoria("");
-    setSelectedNivelRisco(""); setSelectedFaixaPreco(""); setLeadTimeDays(30);
-  };
-
-  const handleDeleteRule = (id: number) =>
-    setLeadTimeRules(leadTimeRules.filter(r => r.id !== id));
 
   // ── Handlers: Hierarquia ─────────────────────────────────────────────────────
   const handleAddSubcategoria = () => {
@@ -1620,93 +1573,40 @@ export default function OperationSettings() {
           </div>
         </div>
 
-        {/* ── CARD 5: Configuração de Lead Times ──────────────────────────────── */}
+        {/* ── CARD 5: Matriz de Abastecimento ──────────────────────────────────── */}
         <div id="tour-op-leadtimes" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
-          <div className="flex items-center gap-3 mb-6">
-            <Clock className="w-6 h-6 text-[#28071C]" />
-            <h2 className="text-[#28071C] text-xl font-bold">Configuração de Lead Times</h2>
-          </div>
-
-          <div className="mb-6">
-            <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-3">Tipo de Lead Time</label>
-            <div className="flex gap-4">
-              {(["producao", "pedido"] as const).map(t => (
-                <button key={t} onClick={() => setLeadTimeType(t)}
-                  className={`px-6 py-3 rounded-lg font-semibold transition-all ${leadTimeType === t ? "bg-[#7598CF] text-white shadow-md" : "bg-white text-[#28071C] border-2 border-[#7598CF]/30"}`}>
-                  {t === "producao" ? "Produção" : "Pedido"}
-                </button>
-              ))}
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#F6F3AA] flex items-center justify-center shrink-0">
+                <Truck className="w-5 h-5 text-[#28071C]" />
+              </div>
+              <div>
+                <h2 className="text-[#28071C] text-xl font-bold">Matriz de Abastecimento</h2>
+                <p className="text-[#28071C]/50 text-sm mt-0.5">
+                  Lead time e condições de pagamento por hierarquia de produto × fornecedor
+                </p>
+              </div>
             </div>
+            <button
+              onClick={() => navigate("/matriz-abastecimento")}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm shrink-0"
+            >
+              Acessar <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
 
-          <div className="mb-6">
-            <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-3">Filtros de Nível</label>
-            <div className="grid grid-cols-5 gap-4">
-              {[
-                { label: "Grupo",        value: selectedGrupo,        set: setSelectedGrupo,        opts: grupos        },
-                { label: "Categoria",    value: selectedCategoria,    set: setSelectedCategoria,    opts: categorias    },
-                { label: "Subcategoria", value: selectedSubcategoria, set: setSelectedSubcategoria, opts: subcategorias },
-                { label: "Nível de Risco",value: selectedNivelRisco, set: setSelectedNivelRisco,   opts: niveisRisco   },
-                { label: "Faixa de Preço",value: selectedFaixaPreco, set: setSelectedFaixaPreco,   opts: FAIXAS_PRECO_OPTIONS },
-              ].map(({ label, value, set, opts }) => (
-                <div key={label}>
-                  <label className="block text-[#28071C]/70 text-xs mb-2">{label}</label>
-                  <select value={value} onChange={e => set(e.target.value)}
-                    className="w-full bg-white rounded-lg px-3 py-2 text-[#28071C] text-sm border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                    <option value="">Selecione</option>
-                    {opts.map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mb-6">
-            <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-3">Prazo (Lead Time)</label>
-            <div className="flex gap-4">
-              <input type="number" value={leadTimeDays} onChange={e => setLeadTimeDays(Number(e.target.value))} min={0}
-                className="flex-1 bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
-              <select value={leadTimeUnit} onChange={e => setLeadTimeUnit(e.target.value as "dias" | "meses")}
-                className="bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                <option value="dias">Dias</option>
-                <option value="meses">Meses</option>
-              </select>
-            </div>
-          </div>
-
-          <button onClick={handleSaveLeadTimeRule}
-            className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md mb-6">
-            <Save className="w-5 h-5 mr-2" />Salvar Regra de Suprimento
-          </button>
-
-          <div className="bg-white rounded-lg overflow-hidden border border-[#7598CF]/20">
-            <table className="w-full">
-              <thead className="bg-[#F6F3AA]">
-                <tr>
-                  {["Tipo","Grupo","Categoria","Nível","Lead Time","Ações"].map(h => (
-                    <th key={h} className={`px-4 py-3 text-[#28071C] text-sm uppercase tracking-wide ${h === "Ações" ? "text-center" : "text-left"}`}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {leadTimeRules.map(r => (
-                  <tr key={r.id} className="border-b border-[#28071C]/10 hover:bg-gray-50">
-                    <td className="px-4 py-3 text-[#28071C] capitalize">{r.type}</td>
-                    <td className="px-4 py-3 text-[#28071C]">{r.grupo}</td>
-                    <td className="px-4 py-3 text-[#28071C]">{r.categoria}</td>
-                    <td className="px-4 py-3 text-[#28071C]">{r.nivelRisco}</td>
-                    <td className="px-4 py-3 text-[#28071C]">{r.leadTime} {r.unit}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-center gap-2">
-                        <button className="p-2 text-[#7598CF] hover:bg-[#7598CF]/10 rounded transition-colors"><Edit className="w-4 h-4" /></button>
-                        <button onClick={() => handleDeleteRule(r.id)}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4" /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-5 grid grid-cols-3 gap-3">
+            {[
+              { icon: Truck,       label: "Fornecedores",            desc: "White label, private label, importados e produção própria" },
+              { icon: Clock,       label: "Lead Time",               desc: "Produção + Trânsito por combinação de hierarquia e fornecedor" },
+              { icon: Save,        label: "Condições de Pagamento",  desc: "Parcelas com gatilhos: Pedido, Faturamento ou Entrega" },
+            ].map(({ icon: Icon, label, desc }) => (
+              <div key={label} className="bg-[#F6F3AA]/30 rounded-xl p-4 border border-[#F6F3AA]">
+                <Icon className="w-4 h-4 text-[#28071C]/50 mb-2" />
+                <div className="text-[#28071C] font-semibold text-sm">{label}</div>
+                <div className="text-[#28071C]/50 text-xs mt-1 leading-relaxed">{desc}</div>
+              </div>
+            ))}
           </div>
         </div>
 

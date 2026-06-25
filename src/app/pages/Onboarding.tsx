@@ -701,18 +701,6 @@ export default function Onboarding() {
                 </div>
               )}
 
-              {/* Bloco Sell-Through */}
-              <div className="flex items-start gap-3 bg-[#F6F3AA]/40 border border-[#F6F3AA] rounded-xl px-4 py-3 mb-3">
-                <span className="text-base flex-shrink-0 mt-0.5">📊</span>
-                <div>
-                  <p className="text-[#28071C] text-xs font-bold mb-0.5 uppercase tracking-widest">Sell-Through</p>
-                  <p className="text-[#28071C]/70 text-xs leading-relaxed">
-                    Mede a performance e a eficiência de escoamento da sua coleção.<br />
-                    <span className="font-semibold text-[#28071C]">Venda ÷ (Estoque Inicial + Compras do período).</span>
-                  </p>
-                </div>
-              </div>
-
               <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
                 <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
                 <p className="text-[#28071C]/60 text-xs leading-relaxed">
