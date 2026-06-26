@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import {
   ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown,
-  Plus, X, Upload, Users, Package, Info,
+  Plus, X, Upload, Users, Package, Info, CheckCircle2,
 } from 'lucide-react'
+import ImportWizard from '../components/ImportWizard'
+import type { ImportDataType, ImportResult } from '../../services/importService'
 import {
   type SegmentId, type RawMaterialId, type OrigemPecas, type SalesChannelId,
   type TeamInvite, type DataImportChoice,
@@ -255,16 +257,42 @@ export default function Onboarding() {
   // ── Etapa 5: Dados ──────────────────────────────────────────────────────────
   const [dataChoice, setDataChoice] = useState<DataImportChoice | null>(null)
   const [uploadedFiles, setUploadedFiles] = useState<Record<string, string>>({})
+  // wizard state: qual tipo está aberto agora
+  const [activeWizardType, setActiveWizardType] = useState<ImportDataType | null>(null)
+  // resultados importados por tipo
+  const [importResults, setImportResults] = useState<Partial<Record<ImportDataType, ImportResult>>>({})
 
   function handleFileChange(key: string, file: File | undefined) {
     if (file) setUploadedFiles(prev => ({ ...prev, [key]: file.name }))
   }
 
+  function handleWizardComplete(result: ImportResult) {
+    setImportResults(prev => ({ ...prev, [result.dataType]: result }))
+    setUploadedFiles(prev => ({ ...prev, [result.dataType]: result.fileName }))
+    setActiveWizardType(null)
+  }
+
+  // Mapeamento entre chave do UPLOAD_FIELDS e ImportDataType
+  const FIELD_KEY_TO_IMPORT_TYPE: Record<string, ImportDataType> = {
+    catalog:   'catalog',
+    sales:     'sales',
+    orders:    'orders',
+    inventory: 'inventory',
+  }
+
+  // tenantId ativo (pode ser null para conta demo sem activeTenantId)
+  const activeTenantId = (() => {
+    const cu = sessionStorage.getItem('currentUser')
+    if (!cu) return ''
+    const parsed = JSON.parse(cu)
+    return sessionStorage.getItem('activeTenantId') ?? parsed.tenant_id ?? ''
+  })()
+
   const requiredUploaded =
     dataChoice !== 'deferred' &&
     dataChoice !== null &&
-    Boolean(uploadedFiles['catalog']) &&
-    Boolean(uploadedFiles['sales'])
+    Boolean(importResults['catalog'] || uploadedFiles['catalog']) &&
+    Boolean(importResults['sales'] || uploadedFiles['sales'])
 
   // ── Navegação ────────────────────────────────────────────────────────────────
   function goNext() { setStep(s => Math.min(s + 1, STEP_META.length - 1)) }
@@ -844,162 +872,190 @@ export default function Onboarding() {
           {currentStepId === 'data' && (
             <div>
               <SectionLabel optional>Dados & Histórico</SectionLabel>
-              <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
-                Importe seus dados para ativar indicadores históricos — ou explore o sistema agora e importe depois em Configurações.
-              </p>
 
-              {/* Seleção do fluxo */}
-              {!dataChoice && (
-                <div className="space-y-3">
-                  {[
-                    {
-                      key: 'completa' as DataImportChoice,
-                      icon: <Upload className="w-5 h-5 text-[#9B8CD8]" />,
-                      badge: 'Sem ERP',
-                      badgeColor: 'text-[#9B8CD8] bg-[#9B8CD8]/10',
-                      title: 'Importação Completa',
-                      desc: 'Seus dados de produto, vendas e estoque estão em planilhas. Faça upload de todos os arquivos agora.',
-                    },
-                    {
-                      key: 'hierarquia' as DataImportChoice,
-                      icon: <Package className="w-5 h-5 text-[#7598CF]" />,
-                      badge: 'Com ERP',
-                      badgeColor: 'text-[#7598CF] bg-[#7598CF]/10',
-                      title: 'Complemento de Hierarquia',
-                      desc: 'Seu ERP já possui os produtos, mas a hierarquia de categorias está em planilha separada.',
-                    },
-                  ].map(opt => (
-                    <button
-                      key={opt.key}
-                      onClick={() => setDataChoice(opt.key)}
-                      className="w-full flex items-start gap-4 px-4 py-4 border-2 border-[#28071C]/10 rounded-2xl text-left hover:border-[#7598CF]/50 transition-all bg-white"
-                    >
-                      <div className="w-10 h-10 bg-[#28071C]/5 rounded-xl flex items-center justify-center flex-shrink-0">
-                        {opt.icon}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest ${opt.badgeColor}`}>
-                            {opt.badge}
-                          </span>
-                        </div>
-                        <p className="text-[#28071C] font-semibold text-sm">{opt.title}</p>
-                        <p className="text-[#28071C]/55 text-xs mt-0.5 leading-relaxed">{opt.desc}</p>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-[#28071C]/30 mt-1 flex-shrink-0" />
-                    </button>
-                  ))}
-
-                  <div className="text-center pt-2">
-                    <button
-                      onClick={() => { setDataChoice('deferred'); goNext() }}
-                      className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 underline transition-colors"
-                    >
-                      Importar depois — explorar o sistema agora
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Upload de arquivos */}
-              {(dataChoice === 'completa' || dataChoice === 'hierarquia') && (
+              {/* Wizard aberto inline para um tipo específico */}
+              {activeWizardType && (
                 <div>
                   <button
-                    onClick={() => setDataChoice(null)}
+                    onClick={() => setActiveWizardType(null)}
                     className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors"
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
-                    Mudar opção
+                    Voltar à lista
                   </button>
-
-                  <div className="space-y-3">
-                    {(dataChoice === 'hierarquia'
-                      ? UPLOAD_FIELDS.slice(0, 1)
-                      : UPLOAD_FIELDS
-                    ).map(field => {
-                      const uploaded = uploadedFiles[field.key]
-                      return (
-                        <div
-                          key={field.key}
-                          className={`rounded-xl border-2 p-4 transition-all ${
-                            uploaded
-                              ? 'bg-emerald-50 border-emerald-200'
-                              : field.required
-                                ? 'bg-white border-[#28071C]/12'
-                                : 'bg-white border-dashed border-[#28071C]/12'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-0.5">
-                                <p className="text-[#28071C] text-sm font-semibold">{field.label}</p>
-                                {field.required && (
-                                  <span className="text-[10px] bg-red-50 text-red-500 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
-                                    Obrigatório
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[#28071C]/50 text-xs">{field.description}</p>
-                              <p className="text-[#28071C]/35 text-[10px] mt-0.5">{field.hint}</p>
-                            </div>
-                            <div className="flex-shrink-0">
-                              {uploaded ? (
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-emerald-700 text-xs font-semibold max-w-[120px] truncate">{uploaded}</span>
-                                  <button
-                                    onClick={() => setUploadedFiles(prev => { const n = {...prev}; delete n[field.key]; return n })}
-                                    className="text-emerald-500 hover:text-red-500 transition-colors"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              ) : (
-                                <label className="flex items-center gap-1.5 px-3 py-1.5 bg-[#28071C] text-white text-xs font-semibold rounded-lg cursor-pointer hover:bg-[#28071C]/90 transition-colors">
-                                  <Upload className="w-3.5 h-3.5" />
-                                  Upload
-                                  <input
-                                    type="file"
-                                    accept=".xlsx,.csv"
-                                    className="sr-only"
-                                    onChange={e => handleFileChange(field.key, e.target.files?.[0])}
-                                  />
-                                </label>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  {dataChoice === 'hierarquia' && (
-                    <div className="mt-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 flex items-start gap-2">
-                      <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-                      <p className="text-[#28071C]/60 text-xs leading-relaxed">
-                        O sistema cruzará os dados pelo <strong className="text-[#28071C]">código do produto (SKU)</strong> como chave de join entre o ERP e a planilha de hierarquia.
-                      </p>
-                    </div>
-                  )}
-
-                  <NavButtons
-                    onBack={() => setDataChoice(null)}
-                    onNext={goNext}
-                    nextDisabled={!requiredUploaded}
-                    nextLabel="Confirmar importação"
-                    onSkip={() => { setDataChoice('deferred'); goNext() }}
-                    skipLabel="Importar depois"
+                  <ImportWizard
+                    dataType={activeWizardType}
+                    tenantId={activeTenantId}
+                    onComplete={handleWizardComplete}
+                    onCancel={() => setActiveWizardType(null)}
                   />
                 </div>
               )}
 
-              {/* Quando "deferred" é selecionado, já vai para o próximo passo */}
-              {!dataChoice && (
-                <NavButtons
-                  onBack={goBack}
-                  onNext={() => { setDataChoice('deferred'); goNext() }}
-                  nextLabel="Continuar sem importar"
-                  onSkip={undefined}
-                />
+              {/* Lista de arquivos (quando nenhum wizard está aberto) */}
+              {!activeWizardType && (
+                <>
+                  <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
+                    Importe seus dados para ativar indicadores históricos — ou explore o sistema agora e importe depois em Configurações.
+                  </p>
+
+                  {/* Seleção do fluxo */}
+                  {!dataChoice && (
+                    <div className="space-y-3">
+                      {[
+                        {
+                          key: 'completa' as DataImportChoice,
+                          icon: <Upload className="w-5 h-5 text-[#9B8CD8]" />,
+                          badge: 'Sem ERP',
+                          badgeColor: 'text-[#9B8CD8] bg-[#9B8CD8]/10',
+                          title: 'Importação Completa',
+                          desc: 'Seus dados de produto, vendas e estoque estão em planilhas. Faça upload de todos os arquivos agora.',
+                        },
+                        {
+                          key: 'hierarquia' as DataImportChoice,
+                          icon: <Package className="w-5 h-5 text-[#7598CF]" />,
+                          badge: 'Com ERP',
+                          badgeColor: 'text-[#7598CF] bg-[#7598CF]/10',
+                          title: 'Complemento de Hierarquia',
+                          desc: 'Seu ERP já possui os produtos, mas a hierarquia de categorias está em planilha separada.',
+                        },
+                      ].map(opt => (
+                        <button
+                          key={opt.key}
+                          onClick={() => setDataChoice(opt.key)}
+                          className="w-full flex items-start gap-4 px-4 py-4 border-2 border-[#28071C]/10 rounded-2xl text-left hover:border-[#7598CF]/50 transition-all bg-white"
+                        >
+                          <div className="w-10 h-10 bg-[#28071C]/5 rounded-xl flex items-center justify-center flex-shrink-0">
+                            {opt.icon}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest ${opt.badgeColor}`}>
+                                {opt.badge}
+                              </span>
+                            </div>
+                            <p className="text-[#28071C] font-semibold text-sm">{opt.title}</p>
+                            <p className="text-[#28071C]/55 text-xs mt-0.5 leading-relaxed">{opt.desc}</p>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-[#28071C]/30 mt-1 flex-shrink-0" />
+                        </button>
+                      ))}
+
+                      <div className="text-center pt-2">
+                        <button
+                          onClick={() => { setDataChoice('deferred'); goNext() }}
+                          className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 underline transition-colors"
+                        >
+                          Importar depois — explorar o sistema agora
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Lista de arquivos com botões de importação via wizard */}
+                  {(dataChoice === 'completa' || dataChoice === 'hierarquia') && (
+                    <div>
+                      <button
+                        onClick={() => setDataChoice(null)}
+                        className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        Mudar opção
+                      </button>
+
+                      <div className="space-y-3">
+                        {(dataChoice === 'hierarquia'
+                          ? [{ key: 'catalog', label: 'Hierarquia de Códigos', required: true, description: 'SKU + níveis hierárquicos (join pelo código do produto).', hint: 'Obrigatório — enriquece os dados do ERP.' }]
+                          : UPLOAD_FIELDS
+                        ).map(field => {
+                          const importType = dataChoice === 'hierarquia' ? 'hierarchy' : FIELD_KEY_TO_IMPORT_TYPE[field.key]
+                          const result = importResults[importType as ImportDataType]
+                          const isImported = Boolean(result)
+                          return (
+                            <div
+                              key={field.key}
+                              className={`rounded-xl border-2 p-4 transition-all ${
+                                isImported
+                                  ? 'bg-emerald-50 border-emerald-200'
+                                  : field.required
+                                    ? 'bg-white border-[#28071C]/12'
+                                    : 'bg-white border-dashed border-[#28071C]/12'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-0.5">
+                                    <p className="text-[#28071C] text-sm font-semibold">{field.label}</p>
+                                    {field.required && (
+                                      <span className="text-[10px] bg-red-50 text-red-500 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
+                                        Obrigatório
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[#28071C]/50 text-xs">{field.description}</p>
+                                  {isImported && result && (
+                                    <p className="text-emerald-600 text-xs mt-0.5">
+                                      {result.importedRows} registros importados
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex-shrink-0">
+                                  {isImported ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                                      <button
+                                        onClick={() => setActiveWizardType(importType as ImportDataType)}
+                                        className="text-emerald-600 hover:text-emerald-800 text-xs underline"
+                                      >
+                                        Reimportar
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => setActiveWizardType(importType as ImportDataType)}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#28071C] text-white text-xs font-semibold rounded-lg hover:bg-[#28071C]/90 transition-colors"
+                                    >
+                                      <Upload className="w-3.5 h-3.5" />
+                                      Importar
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {dataChoice === 'hierarquia' && (
+                        <div className="mt-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 flex items-start gap-2">
+                          <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                          <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                            O sistema cruzará os dados pelo <strong className="text-[#28071C]">código do produto (SKU)</strong> como chave de join entre o ERP e a planilha de hierarquia.
+                          </p>
+                        </div>
+                      )}
+
+                      <NavButtons
+                        onBack={() => setDataChoice(null)}
+                        onNext={goNext}
+                        nextDisabled={!requiredUploaded}
+                        nextLabel="Confirmar importação"
+                        onSkip={() => { setDataChoice('deferred'); goNext() }}
+                        skipLabel="Importar depois"
+                      />
+                    </div>
+                  )}
+
+                  {/* Quando nenhuma escolha ainda */}
+                  {!dataChoice && (
+                    <NavButtons
+                      onBack={goBack}
+                      onNext={() => { setDataChoice('deferred'); goNext() }}
+                      nextLabel="Continuar sem importar"
+                      onSkip={undefined}
+                    />
+                  )}
+                </>
               )}
             </div>
           )}

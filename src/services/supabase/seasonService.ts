@@ -1,6 +1,9 @@
 // ─── seasonService.ts ─────────────────────────────────────────────────────────
 // Persistência de Temporadas e Regras Padrão via Supabase.
 // Consumido por: temporadaService.ts (wrapper), OperationSettings, PlanningSetup, Onboarding.
+// Nota: as colunas fiscal_year, auto_generated e tipo foram adicionadas à tabela
+// seasons após a geração do database.types.ts. Usamos `db = supabase as any` até
+// que os tipos sejam regenerados via `supabase gen types typescript`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { supabase } from "../../lib/supabase";
@@ -9,6 +12,9 @@ import {
   type Temporada,
   type TemporadaRegraDefault,
 } from "../temporadaService";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any;
 
 // ─── Mapeamento DB → interface ────────────────────────────────────────────────
 
@@ -29,7 +35,7 @@ function rowToTemporada(row: any): Temporada {
 // ─── Seasons CRUD ─────────────────────────────────────────────────────────────
 
 export async function listSeasonsDb(tenantId: string): Promise<Temporada[]> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("seasons")
     .select("*")
     .eq("tenant_id", tenantId)
@@ -49,16 +55,16 @@ export async function insertSeasonDb(
   autoGerada  = false,
   tipo?:      "verao" | "inverno",
 ): Promise<Temporada> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("seasons")
     .insert({
-      tenant_id:     tenantId,
-      name:          nome,
-      month_start:   mesInicio,
-      month_end:     mesFim,
-      fiscal_year:   anoFiscal ?? null,
+      tenant_id:      tenantId,
+      name:           nome,
+      month_start:    mesInicio,
+      month_end:      mesFim,
+      fiscal_year:    anoFiscal ?? null,
       auto_generated: autoGerada,
-      tipo:          tipo ?? null,
+      tipo:           tipo ?? null,
     })
     .select()
     .single();
@@ -73,7 +79,7 @@ export async function updateSeasonDb(
   mesInicio: string,
   mesFim:    string,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("seasons")
     .update({ name: nome, month_start: mesInicio, month_end: mesFim })
     .eq("id", id);
@@ -82,7 +88,7 @@ export async function updateSeasonDb(
 }
 
 export async function deleteSeasonDb(id: string): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("seasons")
     .delete()
     .eq("id", id);
@@ -95,15 +101,15 @@ export async function deleteSeasonDb(id: string): Promise<void> {
 export async function getRegraDefaultDb(
   tenantId: string,
 ): Promise<TemporadaRegraDefault> {
-  const { data } = await supabase
+  const { data } = await db
     .from("season_default_rules")
     .select("*")
     .eq("tenant_id", tenantId);
 
   if (!data || data.length === 0) return DEFAULT_REGRA;
 
-  const verao   = data.find(r => r.tipo === "verao");
-  const inverno = data.find(r => r.tipo === "inverno");
+  const verao   = data.find((r: any) => r.tipo === "verao");
+  const inverno = data.find((r: any) => r.tipo === "inverno");
 
   return {
     verao:   verao
@@ -136,7 +142,7 @@ export async function saveRegraDefaultDb(
     },
   ];
 
-  const { error } = await supabase
+  const { error } = await db
     .from("season_default_rules")
     .upsert(rows, { onConflict: "tenant_id,tipo" });
 
@@ -154,7 +160,7 @@ export async function autoGenerateForYearDb(
   anoFiscal: number,
 ): Promise<void> {
   // 1. Verifica idempotência
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("seasons")
     .select("id")
     .eq("tenant_id", tenantId)
@@ -167,24 +173,24 @@ export async function autoGenerateForYearDb(
   const regra = await getRegraDefaultDb(tenantId);
 
   // 3. Insere Verão e Inverno
-  const { error } = await supabase.from("seasons").insert([
+  const { error } = await db.from("seasons").insert([
     {
-      tenant_id:     tenantId,
-      name:          `Verão ${anoFiscal}`,
-      month_start:   regra.verao.mesInicio,
-      month_end:     regra.verao.mesFim,
-      fiscal_year:   anoFiscal,
+      tenant_id:      tenantId,
+      name:           `Verão ${anoFiscal}`,
+      month_start:    regra.verao.mesInicio,
+      month_end:      regra.verao.mesFim,
+      fiscal_year:    anoFiscal,
       auto_generated: true,
-      tipo:          "verao",
+      tipo:           "verao",
     },
     {
-      tenant_id:     tenantId,
-      name:          `Inverno ${anoFiscal}`,
-      month_start:   regra.inverno.mesInicio,
-      month_end:     regra.inverno.mesFim,
-      fiscal_year:   anoFiscal,
+      tenant_id:      tenantId,
+      name:           `Inverno ${anoFiscal}`,
+      month_start:    regra.inverno.mesInicio,
+      month_end:      regra.inverno.mesFim,
+      fiscal_year:    anoFiscal,
       auto_generated: true,
-      tipo:          "inverno",
+      tipo:           "inverno",
     },
   ]);
 

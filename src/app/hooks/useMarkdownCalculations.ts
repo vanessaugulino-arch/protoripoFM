@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { ProductMarkdown, MarkdownSummary, ELASTICITY_MULTIPLIER } from "../types/markdown";
+import { ProductMarkdown, MarkdownSummary, ELASTICITY_MULTIPLIER, DiscountLevel } from "../types/markdown";
 
 /**
  * Hook para cálculos em tempo real de markdown

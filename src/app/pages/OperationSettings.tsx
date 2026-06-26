@@ -27,6 +27,9 @@ import {
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
+import ImportWizard from "../components/ImportWizard";
+import type { ImportDataType, ImportResult } from "../../services/importService";
+import { IMPORT_CONFIG } from "../../services/importService";
 import {
   type Temporada,
   type TemporadaRegraDefault,
@@ -391,63 +394,22 @@ export default function OperationSettings() {
   const [hierEditLabel, setHierEditLabel] = useState('');
   const [hierSavedStructOk, setHierSavedStructOk] = useState(false);
 
-  // ── Importação de Planilhas ────────────────────────────────────────────────
+  // ── Importação de Planilhas (novo — via ImportWizard) ────────────────────
+  const [activeImportType, setActiveImportType] = useState<ImportDataType | null>(null);
+  const [lastImportResult, setLastImportResult] = useState<ImportResult | null>(null);
+
+  // Estado legado mantido para não quebrar referências que ainda existem no JSX antigo (card hidden)
   const [importMode, setImportMode]           = useState<ImportMode | null>(null);
   const [importStep, setImportStep]           = useState<ImportStep>("select");
   const [importFileName, setImportFileName]   = useState<string>("");
   const [importHeaders, setImportHeaders]     = useState<string[]>([]);
   const [columnMapping, setColumnMapping]     = useState<Record<string, string>>({});
   const [importDragging, setImportDragging]   = useState(false);
-
-  // ── Importação handlers ────────────────────────────────────────────────────
-  const processImportFile = (file: File) => {
-    setImportFileName(file.name);
-    const isCsv = file.name.toLowerCase().endsWith(".csv");
-
-    if (isCsv) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result as string;
-        const firstLine = text.split(/\r?\n/)[0] ?? "";
-        const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-        setImportHeaders(headers.length > 0 ? headers : ["Coluna A", "Coluna B", "Coluna C"]);
-        setColumnMapping({});
-        setImportStep("mapping");
-      };
-      reader.readAsText(file, "utf-8");
-    } else {
-      // XLSX: sem parser instalado — simular com colunas genéricas
-      setImportHeaders(["Coluna A", "Coluna B", "Coluna C", "Coluna D", "Coluna E", "Coluna F"]);
-      setColumnMapping({});
-      setImportStep("mapping");
-    }
-  };
-
-  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) processImportFile(file);
-  };
-
-  const handleImportDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setImportDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) processImportFile(file);
-  };
-
-  const handleImportReset = () => {
-    setImportMode(null);
-    setImportStep("select");
-    setImportFileName("");
-    setImportHeaders([]);
-    setColumnMapping({});
-  };
-
+  const handleImportReset = () => { setImportMode(null); setImportStep("select"); setImportFileName(""); setImportHeaders([]); setColumnMapping({}); };
+  const handleImportFileChange = (_e: React.ChangeEvent<HTMLInputElement>) => {};
+  const handleImportDrop = (_e: React.DragEvent<HTMLDivElement>) => {};
   const activeSystemFields = importMode === "completa" ? SYSTEM_FIELDS_COMPLETA : SYSTEM_FIELDS_HIERARQUIA;
-
-  const requiredFieldsMapped = activeSystemFields
-    .filter(f => f.required)
-    .every(f => Boolean(columnMapping[f.key]));
+  const requiredFieldsMapped = activeSystemFields.filter(f => f.required).every(f => Boolean(columnMapping[f.key]));
 
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
@@ -1135,7 +1097,7 @@ export default function OperationSettings() {
           <div className="grid grid-cols-4 gap-4 mb-4">
             <div>
               <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Temporada</label>
-              <select value={selectedTemporadaId} onChange={e => setSelectedTemporadaId(Number(e.target.value) as number | "")}
+              <select value={selectedTemporadaId} onChange={e => setSelectedTemporadaId(e.target.value)}
                 className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 cursor-pointer">
                 <option value="">Selecione…</option>
                 {temporadas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
@@ -1349,140 +1311,85 @@ export default function OperationSettings() {
           )}
         </div>
 
-        {/* ── CARD 4: Importação de Planilhas (antes da Hierarquia) ───────────── */}
-        {(() => {
-          // Re-render do card de importação na posição correta
-          // O estado e handlers já existem (importMode, importStep, etc.)
-          return (
-            <div id="tour-op-importacao" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-3">
-                  <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
-                  <div>
-                    <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
-                    <p className="text-[#28071C]/50 text-sm mt-0.5">Carregue dados de produtos ou hierarquia de códigos do seu sistema</p>
-                  </div>
-                </div>
-                {importStep !== "select" && (
-                  <button onClick={handleImportReset} className="flex items-center gap-1.5 text-[#28071C]/40 hover:text-[#28071C] text-sm transition-colors">
-                    <X className="w-4 h-4" />Reiniciar
-                  </button>
-                )}
+        {/* ── CARD 4: Importação de Planilhas ──────────────────────────────────── */}
+        <div id="tour-op-importacao" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-3">
+              <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
+              <div>
+                <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
+                <p className="text-[#28071C]/50 text-sm mt-0.5">
+                  Importe catálogo, vendas, pedidos, estoque ou hierarquia de códigos
+                </p>
               </div>
-
-              {importStep === "select" && (
-                <div className="mt-6">
-                  <p className="text-[#28071C]/60 text-sm mb-4">Selecione o fluxo que melhor descreve sua situação:</p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button onClick={() => { setImportMode("completa"); setImportStep("upload"); }}
-                      className="text-left border-2 border-[#9B8CD8]/30 hover:border-[#9B8CD8] rounded-2xl p-5 transition-all group hover:bg-[#9B8CD8]/4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="w-8 h-8 bg-[#9B8CD8]/15 rounded-lg flex items-center justify-center">
-                          <Upload className="w-4 h-4 text-[#9B8CD8]" />
-                        </div>
-                        <span className="text-xs font-bold text-[#9B8CD8] uppercase tracking-widest">Sem ERP</span>
-                      </div>
-                      <h3 className="text-[#28071C] font-bold text-base mb-2">Importação Completa</h3>
-                      <p className="text-[#28071C]/55 text-sm leading-relaxed">Catálogo completo via planilha — código, descrição, preço, custo e hierarquia.</p>
-                      <div className="flex items-center gap-1 mt-4 text-[#9B8CD8] text-xs font-semibold">Selecionar <ChevronRight className="w-3.5 h-3.5" /></div>
-                    </button>
-                    <button onClick={() => { setImportMode("hierarquia"); setImportStep("upload"); }}
-                      className="text-left border-2 border-[#7598CF]/30 hover:border-[#7598CF] rounded-2xl p-5 transition-all group hover:bg-[#7598CF]/4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="w-8 h-8 bg-[#7598CF]/15 rounded-lg flex items-center justify-center">
-                          <Layers className="w-4 h-4 text-[#7598CF]" />
-                        </div>
-                        <span className="text-xs font-bold text-[#7598CF] uppercase tracking-widest">Com ERP</span>
-                      </div>
-                      <h3 className="text-[#28071C] font-bold text-base mb-2">Complemento de Hierarquia</h3>
-                      <p className="text-[#28071C]/55 text-sm leading-relaxed">ERP sem hierarquia de códigos — planilha separada cruzada pelo SKU.</p>
-                      <div className="flex items-center gap-1 mt-4 text-[#7598CF] text-xs font-semibold">Selecionar <ChevronRight className="w-3.5 h-3.5" /></div>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {importStep === "upload" && importMode && (
-                <div className="mt-6">
-                  <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 border ${importMode === "completa" ? "bg-[#9B8CD8]/8 border-[#9B8CD8]/25" : "bg-[#7598CF]/8 border-[#7598CF]/25"}`}>
-                    <Info className={`w-4 h-4 flex-shrink-0 mt-0.5 ${importMode === "completa" ? "text-[#9B8CD8]" : "text-[#7598CF]"}`} />
-                    <p className="text-[#28071C]/60 text-xs leading-relaxed">
-                      {importMode === "completa" ? "Faça upload do catálogo. Na próxima etapa mapeie cada coluna ao campo do sistema." : "Faça upload da planilha de hierarquia. Cruzamento pelo código do produto (SKU)."}
-                    </p>
-                  </div>
-                  <div onDragOver={e => { e.preventDefault(); setImportDragging(true); }} onDragLeave={() => setImportDragging(false)} onDrop={handleImportDrop}
-                    className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all ${importDragging ? "border-[#7598CF] bg-[#7598CF]/8" : "border-[#28071C]/20 hover:border-[#7598CF]/60 hover:bg-[#7598CF]/4"}`}>
-                    <Upload className="w-10 h-10 text-[#28071C]/25 mx-auto mb-3" />
-                    <p className="text-[#28071C]/60 text-sm mb-1 font-medium">Arraste o arquivo aqui ou clique para selecionar</p>
-                    <p className="text-[#28071C]/35 text-xs mb-4">Formatos aceitos: .xlsx · .csv</p>
-                    <label className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold cursor-pointer hover:bg-[#28071C]/90 transition-colors">
-                      <Upload className="w-4 h-4" />Selecionar arquivo
-                      <input type="file" accept=".xlsx,.csv" className="sr-only" onChange={handleImportFileChange} />
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {importStep === "mapping" && importMode && (
-                <div className="mt-6">
-                  <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                    <div className="flex-1">
-                      <p className="text-emerald-800 text-sm font-semibold">{importFileName}</p>
-                      <p className="text-emerald-700 text-xs mt-0.5">{importHeaders.length} colunas detectadas</p>
-                    </div>
-                    <button onClick={() => setImportStep("upload")} className="text-emerald-600 hover:text-emerald-800 text-xs underline">Trocar</button>
-                  </div>
-                  <div className="border border-[#28071C]/10 rounded-2xl overflow-hidden">
-                    <div className="grid grid-cols-2 gap-0 bg-[#28071C]/5 px-5 py-2.5">
-                      <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Campo do sistema</span>
-                      <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Coluna na planilha</span>
-                    </div>
-                    <div className="divide-y divide-[#28071C]/6">
-                      {activeSystemFields.map(field => (
-                        <div key={field.key} className="grid grid-cols-2 gap-4 items-center px-5 py-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[#28071C]/70 text-sm">{field.label}</span>
-                            {field.required && <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">Obrigatório</span>}
-                          </div>
-                          <select value={columnMapping[field.key] ?? ""} onChange={e => setColumnMapping(prev => ({ ...prev, [field.key]: e.target.value }))}
-                            className={`bg-white border-2 rounded-lg px-3 py-2 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 ${field.required && !columnMapping[field.key] ? "border-red-200" : "border-[#28071C]/15 focus:border-[#7598CF]"}`}>
-                            <option value="">— Não mapear —</option>
-                            {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between mt-5">
-                    <div className="text-xs text-[#28071C]/40">
-                      {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length === 0
-                        ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />Todos os campos obrigatórios mapeados</span>
-                        : <span className="text-red-500">{activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length} campo(s) obrigatório(s) sem mapeamento</span>}
-                    </div>
-                    <button onClick={() => setImportStep("done")} disabled={!requiredFieldsMapped}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-35 transition-all shadow-sm">
-                      <CheckCircle2 className="w-4 h-4" />{importMode === "completa" ? "Confirmar importação" : "Aplicar hierarquia"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {importStep === "done" && importMode && (
-                <div className="mt-6 text-center py-8">
-                  <div className="w-16 h-16 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-600" />
-                  </div>
-                  <h3 className="text-[#28071C] font-bold text-lg mb-2">{importMode === "completa" ? "Catálogo importado!" : "Hierarquia aplicada!"}</h3>
-                  <p className="text-[#28071C]/55 text-sm mb-6">Arquivo: <strong>{importFileName}</strong></p>
-                  <button onClick={handleImportReset} className="px-5 py-2.5 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl text-sm font-semibold hover:bg-[#28071C]/5 transition-all">
-                    Nova importação
-                  </button>
-                </div>
-              )}
             </div>
-          );
-        })()}
+            {activeImportType && (
+              <button
+                onClick={() => setActiveImportType(null)}
+                className="flex items-center gap-1.5 text-[#28071C]/40 hover:text-[#28071C] text-sm transition-colors"
+              >
+                <X className="w-4 h-4" /> Cancelar
+              </button>
+            )}
+          </div>
+
+          {/* Último resultado importado */}
+          {!activeImportType && lastImportResult && (
+            <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-5 mt-4">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-emerald-800 text-sm font-semibold">
+                  {IMPORT_CONFIG[lastImportResult.dataType]?.label} — {lastImportResult.importedRows} registros importados
+                </p>
+                <p className="text-emerald-700 text-xs">{lastImportResult.fileName}</p>
+              </div>
+              <button
+                onClick={() => setLastImportResult(null)}
+                className="text-emerald-400 hover:text-emerald-700 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Wizard ativo */}
+          {activeImportType ? (
+            <div className="mt-4">
+              <ImportWizard
+                dataType={activeImportType}
+                tenantId={(() => {
+                  const cu = sessionStorage.getItem("currentUser");
+                  if (!cu) return "";
+                  const u = JSON.parse(cu);
+                  return sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
+                })()}
+                onComplete={(result) => {
+                  setLastImportResult({ ...result });
+                  setActiveImportType(null);
+                }}
+                onCancel={() => setActiveImportType(null)}
+              />
+            </div>
+          ) : (
+            /* Seletor de tipo de importação */
+            <div className="mt-5 grid grid-cols-1 gap-3">
+              {(Object.entries(IMPORT_CONFIG) as [ImportDataType, typeof IMPORT_CONFIG[ImportDataType]][]).map(([key, cfg]) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveImportType(key)}
+                  className="flex items-center gap-4 px-4 py-3.5 border-2 border-[#28071C]/10 hover:border-[#9B8CD8]/50 rounded-xl text-left transition-all hover:bg-[#9B8CD8]/4 group"
+                >
+                  <span className="text-2xl flex-shrink-0">{cfg.icon}</span>
+                  <div className="flex-1">
+                    <p className="text-[#28071C] font-semibold text-sm">{cfg.label}</p>
+                    <p className="text-[#28071C]/50 text-xs mt-0.5">{cfg.description}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-[#28071C]/30 group-hover:text-[#9B8CD8] transition-colors flex-shrink-0" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* ── CARD 5: Configuração de Hierarquia de Produtos (editor completo) ── */}
         <div id="tour-op-hierarquia" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">

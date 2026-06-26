@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router"
-import { ArrowLeft, Save, Check, User, LogOut } from "lucide-react"
+import { ArrowLeft, Save, Check, User, LogOut, ChevronUp, ChevronDown, Info } from "lucide-react"
 import {
   SEGMENT_LABELS, ALL_RAW_MATERIALS, RAW_MATERIAL_LABELS,
   ORIGEM_LABELS, ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
   getStoredProfile,
 } from "../types/onboarding"
 import type { SegmentId, RawMaterialId, OrigemPecas, OnboardingProfile, RankedMaterial } from "../types/onboarding"
-import { ChevronUp, ChevronDown } from "lucide-react"
+import { MONTHS, DEFAULT_REGRA, computeMesFim } from "../../services/temporadaService"
+import { getRegraDefaultDb, saveRegraDefaultDb } from "../../services/supabase/seasonService"
 
 const ALL_SEGMENTS = Object.keys(SEGMENT_LABELS) as SegmentId[]
 const ALL_ORIGENS  = Object.keys(ORIGEM_LABELS)  as OrigemPecas[]
@@ -24,6 +25,11 @@ export default function ProfileAdjust() {
   const [hasImport,    setHasImport]    = useState(false)
   const [hasExport,    setHasExport]    = useState(false)
   const [saved,        setSaved]        = useState(false)
+  const [veraoInicio,   setVeraoInicio]   = useState(DEFAULT_REGRA.verao.mesInicio)
+  const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
+
+  const veraoFim   = computeMesFim(invernoInicio)
+  const invernoFim = computeMesFim(veraoInicio)
 
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser")
@@ -39,6 +45,15 @@ export default function ProfileAdjust() {
     } else {
       // Bootstrap from all materials ranked in default order
       setMaterials(ALL_RAW_MATERIALS.map((id, i) => ({ id, rank: i + 1 })))
+    }
+    // Carrega a regra de temporadas do Supabase
+    const cu = JSON.parse(stored)
+    const tenantId = sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? ""
+    if (tenantId) {
+      getRegraDefaultDb(tenantId).then(regra => {
+        setVeraoInicio(regra.verao.mesInicio)
+        setInvernoInicio(regra.inverno.mesInicio)
+      }).catch(() => {})
     }
   }, [navigate])
 
@@ -66,7 +81,7 @@ export default function ProfileAdjust() {
     })
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (segments.length === 0) return
     const profile: OnboardingProfile = {
       segments,
@@ -74,10 +89,25 @@ export default function ProfileAdjust() {
       origem,
       hasImportedMaterial: hasImport,
       exports: hasExport,
+      productHierarchy: [],
+      salesChannels: [],
       completedAt: new Date().toISOString(),
     }
     localStorage.setItem(ONBOARDING_PROFILE_KEY, JSON.stringify(profile))
     localStorage.setItem(ONBOARDING_DONE_KEY, "true")
+    // Salva regra de temporadas no Supabase
+    const cu = JSON.parse(sessionStorage.getItem("currentUser") ?? "{}")
+    const tenantId = sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? ""
+    if (tenantId) {
+      try {
+        await saveRegraDefaultDb(tenantId, {
+          verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
+          inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
+        })
+      } catch (err) {
+        console.warn("Erro ao salvar regra de temporadas:", err)
+      }
+    }
     setSaved(true)
     setTimeout(() => navigate(-1), 1200)
   }
@@ -245,11 +275,94 @@ export default function ProfileAdjust() {
           </div>
         </section>
 
+        {/* ─── CALENDÁRIO DE TEMPORADAS ────────────────────────────────────── */}
+        <section className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#28071C]/8">
+            <h2 className="text-[#28071C] font-semibold text-base">Calendário de Temporadas</h2>
+            <p className="text-[#28071C]/50 text-sm mt-0.5">
+              Defina o mês de início de cada temporada. O mês de fim é calculado automaticamente.
+            </p>
+          </div>
+          <div className="p-6">
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              {/* Verão */}
+              <div className="bg-white rounded-2xl border-2 border-[#7598CF]/30 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">☀️</span>
+                  <span className="text-[#28071C] font-bold text-sm">Verão</span>
+                  <span className="ml-auto text-[10px] font-semibold text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
+                    <select
+                      value={veraoInicio}
+                      onChange={e => setVeraoInicio(e.target.value)}
+                      className="w-full px-3 py-2 border-2 border-[#7598CF]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer"
+                    >
+                      {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
+                    <div className="w-full px-3 py-2 border-2 border-[#7598CF]/15 rounded-lg text-sm text-[#28071C]/50 bg-[#7598CF]/5">
+                      {veraoFim}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Inverno */}
+              <div className="bg-white rounded-2xl border-2 border-[#9B8CD8]/30 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">❄️</span>
+                  <span className="text-[#28071C] font-bold text-sm">Inverno</span>
+                  <span className="ml-auto text-[10px] font-semibold text-[#9B8CD8] bg-[#9B8CD8]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
+                    <select
+                      value={invernoInicio}
+                      onChange={e => setInvernoInicio(e.target.value)}
+                      className="w-full px-3 py-2 border-2 border-[#9B8CD8]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer"
+                    >
+                      {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
+                    <div className="w-full px-3 py-2 border-2 border-[#9B8CD8]/15 rounded-lg text-sm text-[#28071C]/50 bg-[#9B8CD8]/5">
+                      {invernoFim}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {veraoInicio === invernoInicio && (
+              <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3">
+                <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                <p className="text-amber-800 text-xs">
+                  O mês de início do Verão e do Inverno não podem ser o mesmo. Ajuste um deles.
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+              <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+              <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                Essas datas definem o <strong>período de venda a preço cheio</strong> — não a data de entrega. Alterações aqui refletem nas configurações de planejamento.
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* ─── SAVE BUTTON ─────────────────────────────────────────────────── */}
         <div className="flex justify-end pb-8">
           <button
             onClick={handleSave}
-            disabled={segments.length === 0}
+            disabled={segments.length === 0 || veraoInicio === invernoInicio}
             className={`flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold transition-all shadow-md ${
               saved
                 ? "bg-emerald-500 text-white"

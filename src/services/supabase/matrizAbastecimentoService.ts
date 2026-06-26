@@ -1,8 +1,15 @@
 // ─── matrizAbastecimentoService.ts ───────────────────────────────────────────
 // CRUD para as tabelas criadas na migration 004_matriz_abastecimento.sql
+// Nota: as tabelas abaixo ainda não estão no database.types.ts (gerado antes
+// da migration 004). Usamos cast `as any` até que os tipos sejam regenerados
+// via `supabase gen types typescript --project-id <id>`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { supabase } from "../../lib/supabase";
+
+// Alias tipado para tabelas fora do schema gerado
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TIPOS
@@ -93,7 +100,7 @@ export interface MatrizEntry {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function listHierarquiaDb(tenantId: string): Promise<HierarquiaProduto[]> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("hierarquia_produtos")
     .select("*")
     .eq("tenant_id", tenantId)
@@ -102,7 +109,7 @@ export async function listHierarquiaDb(tenantId: string): Promise<HierarquiaProd
     .order("divisao")
     .order("categoria");
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []) as HierarquiaProduto[];
 }
 
 export async function upsertHierarquiaDb(
@@ -117,7 +124,7 @@ export async function upsertHierarquiaDb(
     ordem: r.ordem ?? i,
     ativo: true,
   }));
-  const { error } = await supabase
+  const { error } = await db
     .from("hierarquia_produtos")
     .upsert(records, { onConflict: "tenant_id,divisao,categoria,subcategoria" });
   if (error) throw error;
@@ -128,44 +135,44 @@ export async function upsertHierarquiaDb(
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function listFornecedoresDb(tenantId: string): Promise<Fornecedor[]> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("fornecedores")
     .select("*")
     .eq("tenant_id", tenantId)
     .order("nome");
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []) as Fornecedor[];
 }
 
 export async function insertFornecedorDb(
   tenantId: string,
   values: Omit<Fornecedor, "id" | "tenant_id" | "created_at" | "updated_at">
 ): Promise<Fornecedor> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("fornecedores")
     .insert({ ...values, tenant_id: tenantId })
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return data as Fornecedor;
 }
 
 export async function updateFornecedorDb(
   id: string,
   values: Partial<Omit<Fornecedor, "id" | "tenant_id" | "created_at">>
 ): Promise<Fornecedor> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("fornecedores")
     .update(values)
     .eq("id", id)
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return data as Fornecedor;
 }
 
 export async function deleteFornecedorDb(id: string): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("fornecedores")
     .update({ ativo: false })
     .eq("id", id);
@@ -177,14 +184,14 @@ export async function deleteFornecedorDb(id: string): Promise<void> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function listCondicoesDb(tenantId: string): Promise<CondicaoPagamento[]> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("condicoes_pagamento")
     .select("*, parcelas:condicoes_pagamento_parcelas(*)")
     .eq("tenant_id", tenantId)
     .eq("ativo", true)
     .order("descricao");
   if (error) throw error;
-  return (data ?? []).map((row) => ({
+  return ((data ?? []) as CondicaoPagamento[]).map((row) => ({
     ...row,
     parcelas: (row.parcelas ?? []).sort(
       (a: Parcela, b: Parcela) => a.parcela_numero - b.parcela_numero
@@ -203,7 +210,7 @@ export async function insertCondicaoDb(
     throw new Error(`Soma dos percentuais deve ser 100%. Atual: ${soma.toFixed(2)}%`);
 
   // Insere cabeçalho
-  const { data: header, error: hErr } = await supabase
+  const { data: header, error: hErr } = await db
     .from("condicoes_pagamento")
     .insert({ tenant_id: tenantId, descricao })
     .select()
@@ -212,21 +219,21 @@ export async function insertCondicaoDb(
 
   // Insere parcelas
   const parcelasRows = parcelas.map((p, i) => ({
-    condicao_pagamento_id: header.id,
+    condicao_pagamento_id: (header as CondicaoPagamento).id,
     parcela_numero: i + 1,
     percentual: p.percentual,
     tipo_gatilho: p.tipo_gatilho,
     dias_apos_gatilho: p.dias_apos_gatilho,
   }));
-  const { data: pRows, error: pErr } = await supabase
+  const { data: pRows, error: pErr } = await db
     .from("condicoes_pagamento_parcelas")
     .insert(parcelasRows)
     .select();
   if (pErr) throw pErr;
 
   return {
-    ...header,
-    parcelas: (pRows ?? []).sort((a, b) => a.parcela_numero - b.parcela_numero),
+    ...(header as CondicaoPagamento),
+    parcelas: ((pRows ?? []) as Parcela[]).sort((a, b) => a.parcela_numero - b.parcela_numero),
   };
 }
 
@@ -240,7 +247,7 @@ export async function updateCondicaoDb(
     throw new Error(`Soma dos percentuais deve ser 100%. Atual: ${soma.toFixed(2)}%`);
 
   // Atualiza cabeçalho
-  const { data: header, error: hErr } = await supabase
+  const { data: header, error: hErr } = await db
     .from("condicoes_pagamento")
     .update({ descricao })
     .eq("id", id)
@@ -249,7 +256,7 @@ export async function updateCondicaoDb(
   if (hErr) throw hErr;
 
   // Remove parcelas antigas e reinsere
-  const { error: delErr } = await supabase
+  const { error: delErr } = await db
     .from("condicoes_pagamento_parcelas")
     .delete()
     .eq("condicao_pagamento_id", id);
@@ -262,20 +269,20 @@ export async function updateCondicaoDb(
     tipo_gatilho: p.tipo_gatilho,
     dias_apos_gatilho: p.dias_apos_gatilho,
   }));
-  const { data: pRows, error: pErr } = await supabase
+  const { data: pRows, error: pErr } = await db
     .from("condicoes_pagamento_parcelas")
     .insert(parcelasRows)
     .select();
   if (pErr) throw pErr;
 
   return {
-    ...header,
-    parcelas: (pRows ?? []).sort((a, b) => a.parcela_numero - b.parcela_numero),
+    ...(header as CondicaoPagamento),
+    parcelas: ((pRows ?? []) as Parcela[]).sort((a, b) => a.parcela_numero - b.parcela_numero),
   };
 }
 
 export async function deleteCondicaoDb(id: string): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("condicoes_pagamento")
     .update({ ativo: false })
     .eq("id", id);
@@ -287,7 +294,7 @@ export async function deleteCondicaoDb(id: string): Promise<void> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function listMatrizDb(tenantId: string): Promise<MatrizEntry[]> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("matriz_abastecimento")
     .select(`
       *,
@@ -303,7 +310,7 @@ export async function listMatrizDb(tenantId: string): Promise<MatrizEntry[]> {
     .order("categoria")
     .order("subcategoria");
   if (error) throw error;
-  return (data ?? []).map((row) => ({
+  return ((data ?? []) as MatrizEntry[]).map((row) => ({
     ...row,
     condicao: row.condicao
       ? {
@@ -320,31 +327,31 @@ export async function insertMatrizEntryDb(
   tenantId: string,
   values: Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "updated_at" | "fornecedor" | "condicao">
 ): Promise<MatrizEntry> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("matriz_abastecimento")
     .insert({ ...values, tenant_id: tenantId })
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return data as MatrizEntry;
 }
 
 export async function updateMatrizEntryDb(
   id: string,
   values: Partial<Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "fornecedor" | "condicao">>
 ): Promise<MatrizEntry> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("matriz_abastecimento")
     .update(values)
     .eq("id", id)
     .select()
     .single();
   if (error) throw error;
-  return data;
+  return data as MatrizEntry;
 }
 
 export async function deleteMatrizEntryDb(id: string): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("matriz_abastecimento")
     .update({ ativo: false })
     .eq("id", id);

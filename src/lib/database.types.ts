@@ -791,6 +791,7 @@ export type Database = {
           category: string | null
           collection_name: string | null
           color: string | null
+          color_group: string | null
           created_at: string
           division: string | null
           id: string
@@ -814,6 +815,7 @@ export type Database = {
           category?: string | null
           collection_name?: string | null
           color?: string | null
+          color_group?: string | null
           created_at?: string
           division?: string | null
           id?: string
@@ -837,6 +839,7 @@ export type Database = {
           category?: string | null
           collection_name?: string | null
           color?: string | null
+          color_group?: string | null
           created_at?: string
           division?: string | null
           id?: string

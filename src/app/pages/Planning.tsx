@@ -290,7 +290,7 @@ export default function Planning() {
       { key: "cobertura",     label: "Cobertura (dias)",   plan: v.cobertura,     ref: histSel.cobertura       },
       { key: "producaoPecas", label: "Produção (peças)",   plan: v.producaoPecas, ref: histSel.producao        },
       { key: "ticketMedio",   label: "Ticket Médio (R$)",  plan: v.ticketMedio,   ref: histSel.ticketMedio     },
-      { key: "estoqueMedio",  label: "Estoque Médio (R$)", plan: v.estoqueMedio,  ref: histSel.estoqueMedioRS  },
+      { key: "estoqueMediao",  label: "Estoque Médio (R$)", plan: v.estoqueMediao,  ref: histSel.estoqueMedioRS  },
       { key: "mkdRS",         label: "Markdown (R$)",      plan: v.mkdRS,         ref: histSel.markdown        },
       { key: "gmroi",         label: "GMROI",              plan: v.gmroi,         ref: histSel.gmroi           },
     ]
@@ -304,7 +304,7 @@ export default function Planning() {
       { key: "cobertura",         label: "Cobertura (dias)",       value: histSel.cobertura,         fmt: "days"       },
       { key: "producaoPecas",     label: "Produção (peças)",       value: histSel.producao,          fmt: "number"     },
       { key: "ticketMedio",       label: "Ticket Médio (R$)",      value: histSel.ticketMedio,       fmt: "currency"   },
-      { key: "estoqueMedio",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
+      { key: "estoqueMediao",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
       { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
       { key: "mkdRS",             label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },
       { key: "gmroi",             label: "GMROI",                  value: histSel.gmroi,             fmt: "multiplier" },
@@ -699,9 +699,9 @@ export default function Planning() {
                           <div className={borderCls}>
                             <PlanningField
                               label={f.label}
-                              fieldKey={f.key}
+                              fieldKey={f.key as import("@/engine/planningEngine").FieldKey}
                               value={f.getValue(v)}
-                              state={f.getState(s) as "user" | "calculated" | "locked"}
+                              state={f.getState(s) as import("@/engine/planningEngine").FieldState}
                               format={f.format}
                               helpText={f.getHelp(referenceYear, histRef, baseline)}
                               onEdit={setField}
@@ -732,7 +732,7 @@ export default function Planning() {
                     <PlanningField
                       key={f.key}
                       label={f.label}
-                      fieldKey={f.key}
+                      fieldKey={f.key as import("@/engine/planningEngine").FieldKey}
                       value={f.getValue(v)}
                       state="calculated"
                       format={f.format}
@@ -1065,7 +1065,7 @@ export default function Planning() {
                         const keyMap: Record<string, string> = {
                           "Receita (R$)": "receitaBruta", "Margem Bruta (%)": "margemBruta",
                           "PMV (R$)": "pmv", "OTB (R$)": "otbCompra",
-                          "Estoque Médio (R$)": "estoqueMedio", "Giro": "giro",
+                          "Estoque Médio (R$)": "estoqueMediao", "Giro": "giro",
                           "Cobertura (dias)": "cobertura", "Markdown (R$)": "mkdRS",
                           "Produção (peças)": "producaoPecas", "GMROI": "gmroi",
                         }

@@ -20,6 +20,7 @@ interface PlanningFieldProps {
   state:       FieldState
   format?:     FieldFormat
   baseValue?:  number | null   // valor histórico — exibido como referência
+  helpText?:   string          // texto de ajuda contextual (tooltip/descrição)
   onEdit:      (field: FieldKey, value: number | null) => void
   onUnlock:    (field: FieldKey) => void
   className?:  string

@@ -101,10 +101,11 @@ interface UserData {
 }
 
 interface Temporada {
-  id: number;
+  id: string | number;
   nome: string;
   mesInicio: string;
   mesFim: string;
+  anoFiscal?: number;
 }
 
 const FALLBACK_TEMPORADAS: Temporada[] = [
@@ -330,7 +331,7 @@ export default function Module3DivisionPlanning() {
     await exportToPDF({
       elementId: "module3-export-content",
       fileName:  `planejamento_divisao_${selectedSeasonId}`,
-      title:     `Planejamento por Divisão — ${selectedTemporada?.name ?? selectedSeasonId}`,
+      title:     `Planejamento por Divisão — ${selectedTemporada?.nome ?? selectedSeasonId}`,
     });
     setIsExportingPDF(false);
   };

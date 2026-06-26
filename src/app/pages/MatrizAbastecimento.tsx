@@ -912,7 +912,8 @@ function CondicaoModal({
 
   // Auto-gera descrição
   const gerada = gerarDescricaoCondicao(
-    parcelas.map(p => ({
+    parcelas.map((p, i) => ({
+      parcela_numero: i + 1,
       percentual: parseFloat(p.percentual) || 0,
       tipo_gatilho: p.tipo_gatilho,
       dias_apos_gatilho: parseInt(p.dias_apos_gatilho) || 0,

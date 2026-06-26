@@ -3,7 +3,7 @@
  * Gerencia salvamento, carregamento e export de cenários por temporada
  */
 
-import { Module3Scenario, BusinessDivisionId, DivisionPlanBlock } from "../types/module3";
+import { Module3Scenario, BusinessDivisionId, DivisionPlanBlock } from "../app/types/module3";
 
 const STORAGE_KEY_PREFIX = "fashionmind_m3_scenarios_";
 
