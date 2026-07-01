@@ -1219,7 +1219,7 @@ export default function SortimentPlan() {
               <div className="bg-white rounded-xl shadow-md border border-[#28071C]/8 overflow-hidden">
                 {(() => {
                   // macroPlan é sempre definido quando seasonId está ativo (temporada planejada)
-                  const focus        = macroPlan?.focus ?? "cash";
+                  const focus        = macroPlan?.focus ?? "caixa";
                   const focusColor   = STRATEGIC_FOCUS_COLORS[focus];
                   const ciaMargemPct = (macroPlan?.versions[0]?.values?.["margemBruta"] as number | null) ?? null;
 
