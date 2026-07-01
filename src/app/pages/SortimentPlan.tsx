@@ -1661,7 +1661,7 @@ export default function SortimentPlan() {
             </button>
 
             {/* Timeline */}
-            {timelineMonths.length > 0 && activeDivision.collections.length > 0 && (
+            {timelineMonths.length > 0 && (
               <div className="bg-white rounded-2xl p-5 mb-4 shadow-sm">
                 <h3 className="text-sm font-medium text-[#28071C] mb-4 flex items-center gap-2">
                   <Calendar className="w-4 h-4" />
