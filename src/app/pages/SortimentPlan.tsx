@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
+import { isTemporadaPast } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
   getPlanCycle,
@@ -273,16 +274,51 @@ export default function SortimentPlan() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
   const [activeView, setActiveView] = useState<ModuleView>("sortiment");
-  const [seasonId] = useState("verao-2027");
+  // ── Temporada selecionada ─────────────────────────────────────────────────────
+  // null = nenhuma temporada escolhida ainda (mostra tela de seleção)
+  const LAST_SEASON_KEY = "fashionmind_sortiment_last_season";
+
+  const [seasonId, setSeasonIdRaw] = useState<string | null>(() => {
+    return localStorage.getItem(LAST_SEASON_KEY) ?? null;
+  });
 
   const [divisions, setDivisions] = useState<Division[]>(() => {
     try {
-      const saved = localStorage.getItem(`fashionmind_sortiment_${seasonId}`);
+      const sid = localStorage.getItem(LAST_SEASON_KEY);
+      if (!sid) return INITIAL_DIVISIONS;
+      const saved = localStorage.getItem(`fashionmind_sortiment_${sid}`);
       return saved ? JSON.parse(saved) : INITIAL_DIVISIONS;
     } catch {
       return INITIAL_DIVISIONS;
     }
   });
+
+  // Troca de temporada: persiste a atual e carrega a nova
+  const selectSeason = (id: string) => {
+    if (id === seasonId) return;
+    // persiste plano atual antes de trocar
+    if (seasonId) {
+      try { localStorage.setItem(`fashionmind_sortiment_${seasonId}`, JSON.stringify(divisions)); } catch { /* */ }
+    }
+    localStorage.setItem(LAST_SEASON_KEY, id);
+    setSeasonIdRaw(id);
+    // carrega dados da nova temporada
+    try {
+      const saved = localStorage.getItem(`fashionmind_sortiment_${id}`);
+      setDivisions(saved ? JSON.parse(saved) : INITIAL_DIVISIONS);
+    } catch {
+      setDivisions(INITIAL_DIVISIONS);
+    }
+    // recarrega cenários da nova temporada
+    try {
+      const sc = localStorage.getItem(SCENARIOS_KEY(id));
+      setScenarios(sc ? JSON.parse(sc) : []);
+    } catch {
+      setScenarios([]);
+    }
+    setActiveDivId(INITIAL_DIVISIONS[0]?.id ?? "");
+    setActiveMixColId(null);
+  };
 
   const [activeDivId, setActiveDivId] = useState<string>(divisions[0]?.id ?? "");
   const [activeMixColId, setActiveMixColId] = useState<string | null>(null);
@@ -293,8 +329,13 @@ export default function SortimentPlan() {
 
   // ── Cenários ─────────────────────────────────────────────────────────────────
   const [scenarios, setScenarios] = useState<Scenario[]>(() => {
-    try { return JSON.parse(localStorage.getItem(SCENARIOS_KEY("verao-2027")) ?? "[]"); } catch { return []; }
+    try {
+      const sid = localStorage.getItem(LAST_SEASON_KEY);
+      if (!sid) return [];
+      return JSON.parse(localStorage.getItem(SCENARIOS_KEY(sid)) ?? "[]");
+    } catch { return []; }
   });
+  const [showSeasonPicker,  setShowSeasonPicker]  = useState(false);
   const [showScenarioPanel, setShowScenarioPanel] = useState(false);
   const [showSaveModal,     setShowSaveModal]     = useState(false);
   const [showCompareModal,  setShowCompareModal]  = useState(false);
@@ -375,7 +416,18 @@ export default function SortimentPlan() {
       setUser(parsed);
       if (parsed.tenant_id) {
         listSeasonsDb(parsed.tenant_id)
-          .then(setTemporadas)
+          .then(list => {
+            setTemporadas(list);
+            // Se não há temporada selecionada (primeira vez), abre o picker
+            const saved = localStorage.getItem(LAST_SEASON_KEY);
+            if (!saved && list.length > 0) setShowSeasonPicker(true);
+            // Valida que a temporada salva ainda existe
+            if (saved && list.length > 0 && !list.find(t => t.id === saved)) {
+              localStorage.removeItem(LAST_SEASON_KEY);
+              setSeasonIdRaw(null);
+              setShowSeasonPicker(true);
+            }
+          })
           .catch(err => console.error("Erro ao carregar temporadas:", err));
         loadLockedCollections(parsed.tenant_id);
       }
@@ -396,8 +448,9 @@ export default function SortimentPlan() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
-  // Persiste no localStorage quando divisions muda
+  // Persiste no localStorage quando divisions muda (só se houver temporada selecionada)
   useEffect(() => {
+    if (!seasonId) return;
     localStorage.setItem(`fashionmind_sortiment_${seasonId}`, JSON.stringify(divisions));
   }, [divisions, seasonId]);
 
@@ -843,13 +896,31 @@ export default function SortimentPlan() {
               <span className="text-[#F6F3AA] text-base font-semibold">
                 Fashion Mind · Módulo 5
               </span>
-              <span className="text-[#F6F3AA]/70 text-sm ml-3">
-                Plano de Sortimento
-              </span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-2">· Plano de Sortimento</span>
+              {/* Temporada selecionada — chip clicável para trocar */}
+              {seasonId ? (
+                <button
+                  onClick={() => setShowSeasonPicker(true)}
+                  className="ml-3 inline-flex items-center gap-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] text-xs font-semibold px-2.5 py-1 rounded-full transition-all"
+                  title="Trocar temporada"
+                >
+                  <Calendar className="w-3 h-3" />
+                  {temporadas.find(t => t.id === seasonId)?.nome ?? "Temporada"}
+                  <ChevronDown className="w-3 h-3 opacity-60" />
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowSeasonPicker(true)}
+                  className="ml-3 inline-flex items-center gap-1.5 bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 text-xs font-semibold px-2.5 py-1 rounded-full transition-all animate-pulse"
+                >
+                  <Calendar className="w-3 h-3" />
+                  Selecionar temporada
+                </button>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {/* Scenario actions */}
+            {/* Scenario actions — só disponíveis com temporada selecionada */}
             <button
               onClick={() => setShowSaveModal(true)}
               title="Salvar simulação atual como cenário"
@@ -1011,10 +1082,69 @@ export default function SortimentPlan() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
 
+        {/* ── Guard: nenhuma temporada selecionada ─────────────────────────── */}
+        {!seasonId && (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+            <div className="bg-white rounded-2xl shadow-md border border-[#28071C]/8 p-10 max-w-lg w-full">
+              <Calendar className="w-12 h-12 text-[#7598CF] mx-auto mb-4" />
+              <h2 className="text-xl font-bold text-[#28071C] mb-2">
+                Escolha a temporada para planejar
+              </h2>
+              <p className="text-sm text-[#28071C]/50 mb-6 leading-relaxed">
+                Você pode planejar uma temporada futura ou ajustar coleções de uma temporada em andamento — por exemplo, para capturar oportunidades de estoque ou corrigir a curva de vendas.
+              </p>
+              {temporadas.length === 0 ? (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>
+                    Nenhuma temporada cadastrada. Configure em{" "}
+                    <button onClick={() => navigate("/operation-settings")} className="underline font-semibold">
+                      Configurações de Operação
+                    </button>.
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {temporadas.map(t => {
+                    const past = isTemporadaPast(t);
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => selectSeason(t.id)}
+                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 border-[#28071C]/10 hover:border-[#7598CF] hover:bg-[#7598CF]/5 transition-all text-left group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Calendar className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
+                          <div>
+                            <p className="font-semibold text-[#28071C] text-sm">{t.nome}</p>
+                            <p className="text-xs text-[#28071C]/40">{t.mesInicio} → {t.mesFim}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {past ? (
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#28071C]/30 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                              Encerrada
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">
+                              {t.anoFiscal ? `Fiscal ${t.anoFiscal}` : "Ativa"}
+                            </span>
+                          )}
+                          <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* SUB-MÓDULO A — SORTIMENT                                          */}
         {/* ══════════════════════════════════════════════════════════════════ */}
-        {activeView === "sortiment" && activeDivision && (
+        {seasonId && activeView === "sortiment" && activeDivision && (
           <div>
 
             {/* Division tabs */}
@@ -1676,7 +1806,7 @@ export default function SortimentPlan() {
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* SUB-MÓDULO B — MIX DE PRODUTOS                                   */}
         {/* ══════════════════════════════════════════════════════════════════ */}
-        {activeView === "mix" && (
+        {seasonId && activeView === "mix" && (
           <div>
             {allColsSorted.length === 0 ? (
               <div className="text-center py-24 text-[#28071C]/40">
@@ -2182,6 +2312,101 @@ export default function SortimentPlan() {
           </div>
         )}
       </main>
+
+      {/* ── MODAL: Seleção / Troca de Temporada ─────────────────────────────── */}
+      {showSeasonPicker && (
+        <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => seasonId && setShowSeasonPicker(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+
+            {/* Header */}
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Calendar className="w-5 h-5 text-[#F6F3AA]" />
+                <span className="text-white font-semibold">
+                  {seasonId ? "Trocar Temporada" : "Selecionar Temporada"}
+                </span>
+              </div>
+              {seasonId && (
+                <button
+                  onClick={() => setShowSeasonPicker(false)}
+                  className="text-white/60 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+
+            {/* Explicação */}
+            <div className="px-6 pt-5 pb-2">
+              <p className="text-sm text-[#28071C]/60 leading-relaxed">
+                Selecione a temporada que deseja planejar ou revisar. Você pode ajustar coleções de uma temporada em andamento para capturar oportunidades ou corrigir a curva de vendas.
+              </p>
+            </div>
+
+            {/* Lista de temporadas */}
+            <div className="px-6 pb-6 space-y-2 max-h-[50vh] overflow-y-auto">
+              {temporadas.length === 0 ? (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 mt-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>
+                    Nenhuma temporada cadastrada. Configure em{" "}
+                    <button
+                      onClick={() => navigate("/operation-settings")}
+                      className="underline font-semibold"
+                    >
+                      Configurações de Operação
+                    </button>.
+                  </span>
+                </div>
+              ) : (
+                temporadas.map(t => {
+                  const past    = isTemporadaPast(t);
+                  const active  = t.id === seasonId;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => { selectSeason(t.id); setShowSeasonPicker(false); }}
+                      className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left group ${
+                        active
+                          ? "border-[#7598CF] bg-[#7598CF]/8"
+                          : "border-[#28071C]/10 hover:border-[#7598CF]/50 hover:bg-[#7598CF]/5"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Calendar className={`w-4 h-4 flex-shrink-0 ${active ? "text-[#7598CF]" : "text-[#28071C]/30"}`} />
+                        <div>
+                          <p className="font-semibold text-[#28071C] text-sm">{t.nome}</p>
+                          <p className="text-xs text-[#28071C]/40">{t.mesInicio} → {t.mesFim}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {active && (
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">
+                            Atual
+                          </span>
+                        )}
+                        {!active && past && (
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-[#28071C]/30 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                            Encerrada
+                          </span>
+                        )}
+                        {!active && !past && (
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                            {t.anoFiscal ? `Fiscal ${t.anoFiscal}` : "Ativa"}
+                          </span>
+                        )}
+                        {!active && <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />}
+                        {active && <CheckCircle className="w-4 h-4 text-[#7598CF]" />}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── MODAL: Adicionar Coleção / Drop ──────────────────────────────────── */}
       {showAddModal && (
