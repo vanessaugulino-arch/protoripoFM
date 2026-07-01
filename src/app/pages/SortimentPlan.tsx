@@ -1141,14 +1141,16 @@ export default function SortimentPlan() {
                         </Tooltip>
                         <Tooltip text="Pirâmide de preços da divisão: proporção de receita por faixa P1 / P2 / P3.">
                           <div className="px-4 py-2 cursor-default flex items-center gap-2">
-                            <div className="flex h-2.5 rounded overflow-hidden gap-px flex-1">
-                              <div className="bg-blue-400" style={{ width: `${activeDivision.pricePyramid.p1}%` }} title={`P1: ${fmtPct(activeDivision.pricePyramid.p1)}`} />
-                              <div className="bg-violet-400" style={{ width: `${activeDivision.pricePyramid.p2}%` }} title={`P2: ${fmtPct(activeDivision.pricePyramid.p2)}`} />
-                              <div className="bg-rose-400" style={{ width: `${activeDivision.pricePyramid.p3}%` }} title={`P3: ${fmtPct(activeDivision.pricePyramid.p3)}`} />
-                            </div>
-                            <span className="text-[10px] text-[#28071C]/40 whitespace-nowrap">
-                              {fmtPct(activeDivision.pricePyramid.p1)} · {fmtPct(activeDivision.pricePyramid.p2)} · {fmtPct(activeDivision.pricePyramid.p3)}
-                            </span>
+                            {([
+                              { tier: "P1", pct: activeDivision.pricePyramid.p1, color: "text-blue-600" },
+                              { tier: "P2", pct: activeDivision.pricePyramid.p2, color: "text-violet-600" },
+                              { tier: "P3", pct: activeDivision.pricePyramid.p3, color: "text-rose-600" },
+                            ]).map(({ tier, pct, color }) => (
+                              <span key={tier} className="flex items-center gap-1">
+                                <span className={`text-[9px] font-bold ${color}`}>{tier}</span>
+                                <span className="text-[10px] font-medium text-[#28071C]">{fmtPct(pct)}</span>
+                              </span>
+                            ))}
                           </div>
                         </Tooltip>
                         <Tooltip text="PMV alvo por faixa de preço desta divisão, definido no Módulo 3.">
@@ -1207,9 +1209,16 @@ export default function SortimentPlan() {
                             <div className="bg-rose-400" style={{ width: `${activeDivision.pricePyramid.p3}%` }} />
                           </div>
                           <div className="flex gap-2 text-[10px]">
-                            <span className="text-blue-600 font-semibold">{fmtPct(activeDivision.pricePyramid.p1)}</span>
-                            <span className="text-violet-600 font-semibold">{fmtPct(activeDivision.pricePyramid.p2)}</span>
-                            <span className="text-rose-600 font-semibold">{fmtPct(activeDivision.pricePyramid.p3)}</span>
+                            {([
+                              { tier: "P1", pct: activeDivision.pricePyramid.p1, color: "text-blue-600" },
+                              { tier: "P2", pct: activeDivision.pricePyramid.p2, color: "text-violet-600" },
+                              { tier: "P3", pct: activeDivision.pricePyramid.p3, color: "text-rose-600" },
+                            ]).map(({ tier, pct, color }) => (
+                              <span key={tier} className="flex items-center gap-0.5">
+                                <span className={`font-bold ${color}`}>{tier}</span>
+                                <span className={`font-semibold ${color}`}>{fmtPct(pct)}</span>
+                              </span>
+                            ))}
                           </div>
                         </div>
                       </Tooltip>
