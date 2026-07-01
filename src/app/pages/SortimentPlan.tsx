@@ -323,6 +323,9 @@ export default function SortimentPlan() {
   const [activeDivId, setActiveDivId] = useState<string>(divisions[0]?.id ?? "");
   const [activeMixColId, setActiveMixColId] = useState<string | null>(null);
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  // "Nova Categoria" inline: id da linha que está em modo de digitação
+  const [newCatRowId, setNewCatRowId] = useState<string | null>(null);
+  const [newCatDraft, setNewCatDraft]  = useState("");
 
   // ── Plano macro estratégico (Módulo 1) ───────────────────────────────────────
   const [macroPlan, setMacroPlan] = useState<AnnualPlanCycle | null>(null);
@@ -802,6 +805,28 @@ export default function SortimentPlan() {
     }
     return months;
   }, [activeDivision, temporadas, seasonId]);
+
+  // ── Mix histórico: peso ponderado de cada categoria em TODAS as coleções da divisão ──
+  const historicalCatWeights = useMemo(() => {
+    if (!activeDivision) return {} as Record<string, number>;
+    const allCols = activeDivision.collections;
+    const totalRevPct = allCols.reduce((s, c) => s + (c.revenuePct ?? 0), 0);
+    if (totalRevPct === 0) return {} as Record<string, number>;
+    const weights: Record<string, number> = {};
+    for (const col of allCols) {
+      const colWeight = (col.revenuePct ?? 0) / totalRevPct;
+      for (const cat of col.categories) {
+        weights[cat.category] = (weights[cat.category] ?? 0) + cat.participationPct * colWeight;
+      }
+    }
+    return weights;
+  }, [activeDivision]);
+
+  // Categorias customizadas (digitadas pelo usuário, não estão em CATEGORIES)
+  const customCategories = useMemo(() => {
+    const all = divisions.flatMap(d => d.collections.flatMap(c => c.categories.map(cat => cat.category)));
+    return [...new Set(all.filter(c => !CATEGORIES.includes(c)))];
+  }, [divisions]);
 
   // ── Budget projection (Mix view) ─────────────────────────────────────────────
 
@@ -1871,8 +1896,11 @@ export default function SortimentPlan() {
                         </div>
                       </div>
 
-                      {/* Category allocation */}
-                      <div className="bg-white rounded-2xl shadow-sm mb-5">
+                      {/* ── Layout 2 colunas: Distribuição + Mix Histórico ──────── */}
+                      <div className="grid grid-cols-1 xl:grid-cols-[1fr_300px] gap-5 items-start mb-5">
+
+                        {/* Coluna esquerda: Distribuição por Categoria */}
+                        <div className="bg-white rounded-2xl shadow-sm">
                         <div className="p-5 border-b border-[#28071C]/10 flex items-center justify-between">
                           <div>
                             <h3 className="font-semibold text-[#28071C]">
@@ -1926,24 +1954,56 @@ export default function SortimentPlan() {
                             const catInvest  = layers.reduce(
                               (s, l) => s + calcVolume(tierRev(cRev, l), l.avgPrice) * calcMaxCost(l.avgPrice, div.targetMarginPct), 0
                             );
+                            const isNewCatRow = newCatRowId === cat.id;
 
                             return (
                               <div key={cat.id}>
                                 {/* Category row */}
                                 <div className="px-5 py-4 flex flex-wrap items-center gap-4">
+                                  {/* Selector ou input inline para "Nova Categoria" */}
+                                  {isNewCatRow ? (
+                                    <input
+                                      autoFocus
+                                      value={newCatDraft}
+                                      onChange={e => setNewCatDraft(e.target.value)}
+                                      onKeyDown={e => {
+                                        if (e.key === "Enter" && newCatDraft.trim()) {
+                                          updateCategoryField(div.id, col.id, cat.id, "category", newCatDraft.trim(), col);
+                                          setNewCatRowId(null); setNewCatDraft("");
+                                        }
+                                        if (e.key === "Escape") { setNewCatRowId(null); setNewCatDraft(""); }
+                                      }}
+                                      onBlur={() => {
+                                        if (newCatDraft.trim()) {
+                                          updateCategoryField(div.id, col.id, cat.id, "category", newCatDraft.trim(), col);
+                                        }
+                                        setNewCatRowId(null); setNewCatDraft("");
+                                      }}
+                                      placeholder="Nome da categoria..."
+                                      className="bg-white border-2 border-[#7598CF] rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none w-40"
+                                    />
+                                  ) : (
                                   <select
                                     value={cat.category}
-                                    onChange={e =>
-                                      updateCategoryField(div.id, col.id, cat.id, "category", e.target.value, col)
-                                    }
+                                    onChange={e => {
+                                      if (e.target.value === "__nova__") {
+                                        setNewCatRowId(cat.id);
+                                        setNewCatDraft("");
+                                      } else {
+                                        updateCategoryField(div.id, col.id, cat.id, "category", e.target.value, col);
+                                      }
+                                    }}
                                     className="bg-[#F2F2F2] rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 w-40"
                                   >
-                                    {CATEGORIES.map(c => (
+                                    {[...CATEGORIES, ...customCategories].map(c => (
                                       <option key={c} value={c}>
                                         {c}
                                       </option>
                                     ))}
+                                    <option disabled>──────────</option>
+                                    <option value="__nova__">+ Nova Categoria</option>
                                   </select>
+                                  )}
 
                                   <div className="flex items-center gap-2">
                                     <input
@@ -2123,7 +2183,46 @@ export default function SortimentPlan() {
                             );
                           })}
                         </div>
-                      </div>
+                        </div>{/* /coluna esquerda */}
+
+                        {/* Coluna direita: Mix Histórico — sticky */}
+                        <div className="sticky top-[220px] bg-white rounded-2xl shadow-sm overflow-hidden max-h-[calc(100vh-240px)] flex flex-col">
+                          <div className="p-4 border-b border-[#28071C]/8 shrink-0">
+                            <h3 className="font-semibold text-[#28071C] text-sm">Mix Histórico — {div.name}</h3>
+                            <p className="text-xs text-[#28071C]/40 mt-0.5">Peso médio por categoria · todas as coleções</p>
+                          </div>
+                          <div className="divide-y divide-[#28071C]/5 overflow-y-auto flex-1">
+                            {Object.keys(historicalCatWeights).length === 0 ? (
+                              <div className="px-4 py-8 text-center text-xs text-[#28071C]/30">
+                                Nenhum histórico disponível ainda.
+                              </div>
+                            ) : (
+                              Object.entries(historicalCatWeights)
+                                .sort(([, a], [, b]) => b - a)
+                                .map(([catName, histPct]) => {
+                                  const currentPct = col.categories.find(c => c.category === catName)?.participationPct ?? null;
+                                  const delta = currentPct !== null ? currentPct - histPct : null;
+                                  return (
+                                    <div key={catName} className="px-4 py-3 flex items-center justify-between gap-3">
+                                      <span className="text-sm text-[#28071C] truncate flex-1">{catName}</span>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <span className="text-xs text-[#28071C]/40">{histPct.toFixed(1)}%</span>
+                                        {delta !== null && (
+                                          <span className={`text-xs font-semibold flex items-center gap-0.5 ${
+                                            delta > 0 ? "text-emerald-600" : delta < 0 ? "text-red-500" : "text-[#28071C]/30"
+                                          }`}>
+                                            {delta > 0 ? "↑" : delta < 0 ? "↓" : "="} {Math.abs(delta).toFixed(1)}%
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                            )}
+                          </div>
+                        </div>{/* /coluna direita */}
+
+                      </div>{/* /grid 2 colunas */}
 
                       {/* Pyramid traffic light */}
                       {pyramidDeviation && (
