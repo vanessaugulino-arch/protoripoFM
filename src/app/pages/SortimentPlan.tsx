@@ -807,20 +807,49 @@ export default function SortimentPlan() {
   }, [activeDivision, temporadas, seasonId]);
 
   // ── Mix histórico: peso ponderado de cada categoria em TODAS as coleções da divisão ──
-  const historicalCatWeights = useMemo(() => {
-    if (!activeDivision) return {} as Record<string, number>;
-    const allCols = activeDivision.collections;
+  // Retorna { pct: %, revenue: R$ } por categoria do ANO FISCAL ANTERIOR
+  const historicalCatWeights = useMemo((): Record<string, { pct: number; revenue: number }> => {
+    if (!activeDivision || !seasonId) return {};
+
+    const currentSeason     = temporadas.find(t => t.id === seasonId);
+    const currentFiscalYear = currentSeason?.anoFiscal;
+    if (!currentFiscalYear) return {};
+
+    const prevYear    = currentFiscalYear - 1;
+    const prevSeasons = temporadas.filter(t => t.anoFiscal === prevYear);
+    if (prevSeasons.length === 0) return {};
+
+    // Encontra a mesma divisão nos dados do ano anterior
+    let prevDiv: Division | null = null;
+    for (const ps of prevSeasons) {
+      try {
+        const raw = localStorage.getItem(`fashionmind_sortiment_${ps.id}`);
+        if (!raw) continue;
+        const divs: Division[] = JSON.parse(raw);
+        const found = divs.find(d => d.name === activeDivision.name);
+        if (found) { prevDiv = found; break; }
+      } catch { /* */ }
+    }
+    if (!prevDiv) return {};
+
+    const allCols     = prevDiv.collections;
     const totalRevPct = allCols.reduce((s, c) => s + (c.revenuePct ?? 0), 0);
-    if (totalRevPct === 0) return {} as Record<string, number>;
+    if (totalRevPct === 0) return {};
+
     const weights: Record<string, number> = {};
-    for (const col of allCols) {
-      const colWeight = (col.revenuePct ?? 0) / totalRevPct;
-      for (const cat of col.categories) {
-        weights[cat.category] = (weights[cat.category] ?? 0) + cat.participationPct * colWeight;
+    for (const c of allCols) {
+      const w = (c.revenuePct ?? 0) / totalRevPct;
+      for (const cat of c.categories) {
+        weights[cat.category] = (weights[cat.category] ?? 0) + cat.participationPct * w;
       }
     }
-    return weights;
-  }, [activeDivision]);
+
+    const result: Record<string, { pct: number; revenue: number }> = {};
+    for (const [name, pct] of Object.entries(weights)) {
+      result[name] = { pct, revenue: prevDiv.revenueTarget * pct / 100 };
+    }
+    return result;
+  }, [activeDivision, temporadas, seasonId]);
 
   // Categorias customizadas (digitadas pelo usuário, não estão em CATEGORIES)
   const customCategories = useMemo(() => {
@@ -1897,7 +1926,7 @@ export default function SortimentPlan() {
                       </div>
 
                       {/* ── Layout 2 colunas: Distribuição + Mix Histórico ──────── */}
-                      <div className="grid grid-cols-1 xl:grid-cols-[1fr_300px] gap-5 items-start mb-5">
+                      <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-5 items-start mb-5">
 
                         {/* Coluna esquerda: Distribuição por Categoria */}
                         <div className="bg-white rounded-2xl shadow-sm">
@@ -2189,30 +2218,49 @@ export default function SortimentPlan() {
                         <div className="sticky top-[220px] bg-white rounded-2xl shadow-sm overflow-hidden max-h-[calc(100vh-240px)] flex flex-col">
                           <div className="p-4 border-b border-[#28071C]/8 shrink-0">
                             <h3 className="font-semibold text-[#28071C] text-sm">Mix Histórico — {div.name}</h3>
-                            <p className="text-xs text-[#28071C]/40 mt-0.5">Peso médio por categoria · todas as coleções</p>
+                            <p className="text-xs text-[#28071C]/40 mt-0.5">Ano anterior · receita e % por categoria</p>
+                          </div>
+                          {/* cabeçalho das colunas */}
+                          <div className="px-4 py-1.5 grid grid-cols-[1fr_auto_auto_auto] gap-3 bg-[#28071C]/3 border-b border-[#28071C]/5 shrink-0">
+                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider">Categoria</span>
+                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-20">Receita aa</span>
+                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-12">% aa</span>
+                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-16">Atual</span>
                           </div>
                           <div className="divide-y divide-[#28071C]/5 overflow-y-auto flex-1">
                             {Object.keys(historicalCatWeights).length === 0 ? (
                               <div className="px-4 py-8 text-center text-xs text-[#28071C]/30">
-                                Nenhum histórico disponível ainda.
+                                Sem dados do ano anterior para esta divisão.
                               </div>
                             ) : (
                               Object.entries(historicalCatWeights)
-                                .sort(([, a], [, b]) => b - a)
-                                .map(([catName, histPct]) => {
+                                .sort(([, a], [, b]) => b.pct - a.pct)
+                                .map(([catName, hist]) => {
                                   const currentPct = col.categories.find(c => c.category === catName)?.participationPct ?? null;
-                                  const delta = currentPct !== null ? currentPct - histPct : null;
+                                  const delta = currentPct !== null ? currentPct - hist.pct : null;
+                                  const arrow  = delta === null ? null : delta > 0.05 ? "↑" : delta < -0.05 ? "↓" : "=";
+                                  const arrowColor = arrow === "↑" ? "text-emerald-600" : arrow === "↓" ? "text-red-500" : "text-[#28071C]/30";
                                   return (
-                                    <div key={catName} className="px-4 py-3 flex items-center justify-between gap-3">
-                                      <span className="text-sm text-[#28071C] truncate flex-1">{catName}</span>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <span className="text-xs text-[#28071C]/40">{histPct.toFixed(1)}%</span>
-                                        {delta !== null && (
-                                          <span className={`text-xs font-semibold flex items-center gap-0.5 ${
-                                            delta > 0 ? "text-emerald-600" : delta < 0 ? "text-red-500" : "text-[#28071C]/30"
-                                          }`}>
-                                            {delta > 0 ? "↑" : delta < 0 ? "↓" : "="} {Math.abs(delta).toFixed(1)}%
-                                          </span>
+                                    <div key={catName} className="px-4 py-3 grid grid-cols-[1fr_auto_auto_auto] gap-3 items-center">
+                                      <span className="text-sm text-[#28071C] truncate">{catName}</span>
+                                      <span className="text-xs text-[#28071C]/50 text-right w-20 tabular-nums">
+                                        {fmtCurrency(hist.revenue)}
+                                      </span>
+                                      <span className="text-xs text-[#28071C]/50 text-right w-12 tabular-nums">
+                                        {hist.pct.toFixed(1)}%
+                                      </span>
+                                      <div className="flex items-center justify-end gap-1 w-16">
+                                        {currentPct !== null ? (
+                                          <>
+                                            <span className="text-xs font-semibold text-[#28071C] tabular-nums">
+                                              {currentPct.toFixed(1)}%
+                                            </span>
+                                            {arrow && (
+                                              <span className={`text-xs font-bold ${arrowColor}`}>{arrow}</span>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <span className="text-xs text-[#28071C]/20">—</span>
                                         )}
                                       </div>
                                     </div>
