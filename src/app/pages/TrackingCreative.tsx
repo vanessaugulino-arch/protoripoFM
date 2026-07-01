@@ -180,7 +180,7 @@ export default function TrackingCreative() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Direção Criativa</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Direção Criativa</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Acompanhamento de Coleção</span>
             </div>
           </div>
@@ -200,7 +200,7 @@ export default function TrackingCreative() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Welcome Banner */}
         <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] rounded-2xl px-6 py-5 mb-6 flex items-center justify-between shadow-md">
           <div>
@@ -229,7 +229,7 @@ export default function TrackingCreative() {
               <DollarSign className="w-5 h-5 text-[#28071C]/70" />
               <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Receita Total Acumulada</p>
             </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 1.505.000</p>
+            <p className="text-[#28071C] text-2xl font-bold">R$ 1.505.000</p>
             <p className="text-green-600 text-sm mt-1">Meta: R$ 1.550.000 (96.8%)</p>
           </div>
 
@@ -238,7 +238,7 @@ export default function TrackingCreative() {
               <TrendingUp className="w-5 h-5 text-[#28071C]/70" />
               <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Margem </p>
             </div>
-            <p className="text-[#28071C] text-3xl font-bold">48.3%</p>
+            <p className="text-[#28071C] text-2xl font-bold">48.3%</p>
             <p className="text-[#28071C]/60 text-sm mt-1">Margem acumulada</p>
           </div>
 
@@ -247,7 +247,7 @@ export default function TrackingCreative() {
               <Package className="w-5 h-5 text-[#28071C]/70" />
               <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Cobertura de Estoque</p>
             </div>
-            <p className="text-[#28071C] text-3xl font-bold">17</p>
+            <p className="text-[#28071C] text-2xl font-bold">17</p>
             <p className="text-[#28071C]/60 text-sm mt-1">dias de cobertura</p>
           </div>
 
@@ -256,7 +256,7 @@ export default function TrackingCreative() {
               <ShoppingBag className="w-5 h-5 text-[#28071C]/70" />
               <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Preço Médio da Coleção</p>
             </div>
-            <p className="text-[#28071C] text-3xl font-bold">R$ 189</p>
+            <p className="text-[#28071C] text-2xl font-bold">R$ 189</p>
             <p className="text-[#28071C]/60 text-sm mt-1">por peça</p>
           </div>
         </div>

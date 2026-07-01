@@ -264,7 +264,7 @@ export default function CycleClosing() {
         </div>
       </DashboardHeader>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Painel de Controle Sticky */}
         <MarkdownControlPanel summary={summary} />
 

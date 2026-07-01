@@ -283,7 +283,7 @@ export default function PlanningGateway() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-[1400px] mx-auto px-6 py-5 space-y-5">
 
         {/* ─── FRASE DE CONTEXTO ───────────────────────────────────────────── */}
         <div className="bg-gradient-to-r from-[#28071C]/5 to-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-6 py-4 text-center">
@@ -652,7 +652,7 @@ export default function PlanningGateway() {
                 <p className="text-[10px] text-[#7598CF] uppercase tracking-widest font-semibold mb-1">
                   Próximo ciclo disponível
                 </p>
-                <p className="text-[#28071C] font-black text-4xl">{cycleState.nextNewCycle}</p>
+                <p className="text-[#28071C] font-black text-3xl">{cycleState.nextNewCycle}</p>
                 <p className="text-[#28071C]/50 text-xs mt-1">
                   {cycleState.plannedYears.length === 0
                     ? "Nenhum plano anterior registrado"

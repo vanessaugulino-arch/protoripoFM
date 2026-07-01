@@ -242,7 +242,7 @@ export default function ProductMix() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Mix de Produtos</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Mix de Produtos</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Estrutura do Mix de Produtos</span>
             </div>
           </div>
@@ -263,7 +263,7 @@ export default function ProductMix() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Container 1: Seleção de Ciclo */}
         <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm">
           <label className="block text-[#28071C]/70 text-sm mb-2 uppercase tracking-wide">

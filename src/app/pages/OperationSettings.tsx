@@ -84,7 +84,7 @@ const OPERATION_SETTINGS_TOUR: TourStep[] = [
   {
     targetId: "tour-op-basicos",
     title: "Sustentador de Margem",
-    content: "Sinalize os produtos básicos que sustentam a margem da marca. Podem vir do estoque existente ou ser definidos no plano de sortimento.",
+    content: "Sinalize os produtos classificados como Sustentador de Margem — básicos com variações de cor ou detalhe. Podem vir do estoque existente ou ser definidos no plano de sortimento.",
   },
 ];
 
@@ -342,6 +342,10 @@ export default function OperationSettings() {
   const [colFim,      setColFim]      = useState("");
   const [editingColId, setEditingColId] = useState<number | null>(null);
 
+  // ── Regra de bloqueio: coleções com produtos em produção ───────────────────
+  // Apenas datas de entrada podem ser alteradas quando a coleção já tem produtos.
+  const [lockedColNames, setLockedColNames] = useState<Set<string>>(new Set());
+
 
   // ── Hierarquia de Produtos ───────────────────────────────────────────────────
   const [hierDivisaoAtiva, setHierDivisaoAtiva] = useState<boolean>(() => {
@@ -421,11 +425,26 @@ export default function OperationSettings() {
           ? "CEO"
           : u.profile;
       if (effectiveProfile !== "CEO") { navigate("/dashboard"); return; }
-      // Carrega temporadas do Supabase
       if (u.tenant_id) {
+        // Carrega temporadas do Supabase
         listSeasonsDb(u.tenant_id)
           .then(setTemporadas)
           .catch(err => console.error("Erro ao carregar temporadas:", err));
+        // Carrega nomes de coleções que já têm produtos em produção
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (import("../../lib/supabase") as Promise<{ supabase: any }>).then(({ supabase }) => {
+          supabase
+            .from("products")
+            .select("collection_name")
+            .eq("tenant_id", u.tenant_id)
+            .not("collection_name", "is", null)
+            .then(({ data }: { data: { collection_name: string }[] | null }) => {
+              const names = new Set<string>(
+                (data ?? []).map(r => r.collection_name).filter(Boolean)
+              );
+              setLockedColNames(names);
+            });
+        });
       }
     } else {
       navigate("/");
@@ -631,6 +650,8 @@ export default function OperationSettings() {
     setColInicio(c.dataInicio);
     setColFim(c.dataFim);
     setEditingColId(c.id);
+    // Scroll para o formulário de edição
+    document.getElementById("tour-op-colecoes")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleDeleteColecao = (id: number) => {
@@ -788,7 +809,7 @@ export default function OperationSettings() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Configurações</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Configurações</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Configurações de Operação</span>
             </div>
           </div>
@@ -813,7 +834,7 @@ export default function OperationSettings() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
 
         {/* ── CARD 1: Temporadas de Coleções ─────────────────────────────────── */}
         <div id="tour-op-temporadas" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
@@ -821,7 +842,7 @@ export default function OperationSettings() {
             <Calendar className="w-6 h-6 text-[#28071C]" />
             <h2 className="text-[#28071C] text-xl font-bold">Temporadas de Coleções</h2>
           </div>
-          <div className="flex items-start gap-2 mb-6 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+          <div className="flex items-start gap-2 mb-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
             <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
             <p className="text-[#28071C]/70 text-sm">
               O sistema cria automaticamente as temporadas padrão ao salvar um Planejamento Estratégico.
@@ -1093,29 +1114,65 @@ export default function OperationSettings() {
             </div>
           )}
 
+          {/* Aviso de bloqueio quando editando coleção com produtos */}
+          {editingColId !== null && lockedColNames.has(colNome) && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <p className="text-amber-800 text-sm">
+                <strong>Produtos em produção</strong> — esta coleção já possui produtos cadastrados no ERP.
+                Apenas as datas de início e fim podem ser alteradas (postergação de lançamento).
+              </p>
+            </div>
+          )}
+
           {/* Formulário */}
           <div className="grid grid-cols-4 gap-4 mb-4">
             <div>
               <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Temporada</label>
-              <select value={selectedTemporadaId} onChange={e => setSelectedTemporadaId(e.target.value)}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 cursor-pointer">
+              <select
+                value={selectedTemporadaId}
+                onChange={e => setSelectedTemporadaId(e.target.value)}
+                disabled={editingColId !== null && lockedColNames.has(colNome)}
+                className={`w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 ${
+                  editingColId !== null && lockedColNames.has(colNome)
+                    ? "opacity-50 cursor-not-allowed"
+                    : "cursor-pointer"
+                }`}>
                 <option value="">Selecione…</option>
                 {temporadas.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
               </select>
             </div>
             <div>
               <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Nome da Coleção / Drop</label>
-              <input type="text" value={colNome} onChange={e => setColNome(e.target.value)}
+              <input
+                type="text"
+                value={colNome}
+                onChange={e => setColNome(e.target.value)}
+                disabled={editingColId !== null && lockedColNames.has(colNome)}
                 placeholder="Ex: Drop 1 · Alto Inverno · Cápsula"
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50" />
+                className={`w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 ${
+                  editingColId !== null && lockedColNames.has(colNome)
+                    ? "opacity-50 cursor-not-allowed"
+                    : ""
+                }`} />
             </div>
             <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Data de Início</label>
+              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">
+                Data de Início
+                {editingColId !== null && lockedColNames.has(colNome) && (
+                  <span className="ml-2 text-[10px] text-amber-600 font-semibold uppercase tracking-wide">editável</span>
+                )}
+              </label>
               <input type="date" value={colInicio} onChange={e => setColInicio(e.target.value)}
                 className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 cursor-pointer" />
             </div>
             <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Data de Fim</label>
+              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">
+                Data de Fim
+                {editingColId !== null && lockedColNames.has(colNome) && (
+                  <span className="ml-2 text-[10px] text-amber-600 font-semibold uppercase tracking-wide">editável</span>
+                )}
+              </label>
               <input type="date" value={colFim} onChange={e => setColFim(e.target.value)}
                 className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/30 focus:outline-none focus:ring-2 focus:ring-[#28071C]/50 cursor-pointer" />
             </div>
@@ -1170,25 +1227,52 @@ export default function OperationSettings() {
                   </tr>
                 )}
                 {(selectedTemporadaId ? colecoesVisíveis : colecoes).map(c => {
-                  const temp = temporadas.find(t => t.id === c.temporadaId);
+                  const temp     = temporadas.find(t => t.id === c.temporadaId);
+                  const isLocked = lockedColNames.has(c.nome);
                   return (
                     <tr key={c.id} className={`border-b border-[#28071C]/10 hover:bg-gray-50 ${editingColId === c.id ? "bg-gray-50" : ""}`}>
-                      <td className="px-4 py-3 text-[#28071C] font-medium">{c.nome}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[#28071C] font-medium">{c.nome}</span>
+                          {isLocked && (
+                            <span
+                              title="Há produtos em produção vinculados — apenas datas podem ser alteradas"
+                              className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded-full uppercase tracking-wide"
+                            >
+                              <Lock className="w-2.5 h-2.5" />
+                              Em produção
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-[#28071C]/70 text-sm">{temp?.nome ?? "—"}</td>
                       <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.dataInicio)}</td>
                       <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.dataFim)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-center gap-2">
-                          <button onClick={() => handleEditColecao(c)}
-                            title="Editar datas da coleção"
-                            className="p-2 text-[#28071C] hover:bg-[#28071C]/10 rounded transition-colors">
+                          <button
+                            onClick={() => handleEditColecao(c)}
+                            title={isLocked ? "Apenas datas de entrada podem ser alteradas" : "Editar coleção"}
+                            className="p-2 text-[#28071C] hover:bg-[#28071C]/10 rounded transition-colors"
+                          >
                             <Edit className="w-4 h-4" />
                           </button>
-                          <button onClick={() => handleDeleteColecao(c.id)}
-                            title="Excluir coleção"
-                            className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {isLocked ? (
+                            <span
+                              title="Não é possível excluir — há produtos em produção vinculados"
+                              className="p-2 text-[#28071C]/20 cursor-not-allowed"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => handleDeleteColecao(c.id)}
+                              title="Excluir coleção"
+                              className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1522,7 +1606,7 @@ export default function OperationSettings() {
           <div className="flex items-center justify-between mb-2">
             <div>
               <h2 className="text-[#28071C] text-xl font-bold">Sustentador de Margem</h2>
-              <p className="text-[#28071C]/50 text-sm mt-0.5">Inclusão de Básicos</p>
+              <p className="text-[#28071C]/50 text-sm mt-0.5">Perfil de produto recorrente</p>
             </div>
             <button
               onClick={() => setBasicosAtivos(!basicosAtivos)}
@@ -1533,7 +1617,7 @@ export default function OperationSettings() {
           </div>
 
           <p className="text-[#28071C]/60 text-sm mb-4">
-            Incluir produtos básicos no Sustentador de Margem
+            Incluir produtos Sustentador de Margem na coleção
             <span className={`ml-2 text-xs font-semibold px-2 py-0.5 rounded-full ${basicosAtivos ? "bg-green-100 text-green-700" : "bg-[#28071C]/10 text-[#28071C]/40"}`}>
               {basicosAtivos ? "Ativo" : "Inativo"}
             </span>
@@ -1541,7 +1625,7 @@ export default function OperationSettings() {
 
           {basicosAtivos && (
             <div className="border-t border-[#28071C]/10 pt-4 space-y-4">
-              <p className="text-[#28071C]/70 text-sm uppercase tracking-wide font-semibold">Origem dos básicos</p>
+              <p className="text-[#28071C]/70 text-sm uppercase tracking-wide font-semibold">Origem dos produtos</p>
               <div className="flex flex-col gap-3">
                 {([
                   { value: "estoque" as const, label: "Informar produtos do estoque" },
@@ -1573,7 +1657,7 @@ export default function OperationSettings() {
               ) : (
                 <div className="flex items-center gap-2 bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-xl px-4 py-3">
                   <AlertCircle className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
-                  <p className="text-[#28071C]/70 text-sm">Os básicos serão definidos no plano de sortimento</p>
+                  <p className="text-[#28071C]/70 text-sm">Os produtos serão definidos no plano de sortimento</p>
                 </div>
               )}
             </div>
@@ -1689,7 +1773,7 @@ export default function OperationSettings() {
                 onDragOver={e => { e.preventDefault(); setImportDragging(true); }}
                 onDragLeave={() => setImportDragging(false)}
                 onDrop={handleImportDrop}
-                className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all ${
+                className={`relative border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
                   importDragging
                     ? "border-[#7598CF] bg-[#7598CF]/8 scale-[1.01]"
                     : "border-[#28071C]/20 hover:border-[#7598CF]/60 hover:bg-[#7598CF]/4"

@@ -142,7 +142,7 @@ export default function ProfileAdjust() {
         </div>
       </header>
 
-      <main className="max-w-[900px] mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-[900px] mx-auto px-6 py-5 space-y-5">
 
         {/* ─── SEGMENTOS ──────────────────────────────────────────────────── */}
         <section className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">

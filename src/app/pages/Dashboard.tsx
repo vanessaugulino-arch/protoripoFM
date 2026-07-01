@@ -4,6 +4,7 @@ import {
   LogOut, Settings, TrendingUp, BarChart3, Package, FileText,
   Layers, Shield, User, Lock, ChevronRight, Globe, Users,
   MonitorPlay, ClipboardList, SlidersHorizontal, Bug, HelpCircle,
+  FlaskConical,
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import { getChannelReviewedYears } from "../../services/channelScenarioService";
@@ -185,6 +186,17 @@ export default function Dashboard() {
   const plannedYears = getPlannedYears();
   const reviewedYears = getChannelReviewedYears();
 
+  // Modo Desenvolvimento: bypassa todos os locks — disponível para client_admin e support
+  const [devMode, setDevMode] = useState<boolean>(() => {
+    return localStorage.getItem("fashionmind_dev_mode") === "true";
+  });
+
+  const toggleDevMode = () => {
+    const next = !devMode;
+    setDevMode(next);
+    localStorage.setItem("fashionmind_dev_mode", String(next));
+  };
+
   useEffect(() => {
     const storedUser = sessionStorage.getItem("currentUser");
     if (storedUser) {
@@ -210,9 +222,14 @@ export default function Dashboard() {
   // Modo demo: nenhum plano salvo ainda → navegação livre com dados mock
   const isDemoMode = plannedYears.length === 0;
 
+  // Dev mode disponível para client_admin e support
+  const canUseDevMode = isSupport || isClientAdmin;
+  // Qualquer uma das condições libera tudo
+  const allUnlocked = isDemoMode || (canUseDevMode && devMode);
+
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, plannedYears, reviewedYears, isDemoMode)) return;
+    if (!isModuleUnlocked(card, plannedYears, reviewedYears, allUnlocked)) return;
     navigate(card.route);
   };
 
@@ -220,6 +237,22 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-[#7598CF] to-[#9B8CD8]">
+      {/* Banner de Modo Desenvolvimento */}
+      {canUseDevMode && devMode && (
+        <div className="bg-violet-600 px-6 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-white text-sm font-medium">
+            <FlaskConical className="w-4 h-4" />
+            Modo Desenvolvimento ativo — todos os módulos desbloqueados
+          </div>
+          <button
+            onClick={toggleDevMode}
+            className="text-white/80 hover:text-white text-xs underline"
+          >
+            Desativar
+          </button>
+        </div>
+      )}
+
       {/* Banner de Suporte */}
       {isSupport && (
         <div className="bg-amber-500 px-6 py-2 flex items-center justify-between">
@@ -253,6 +286,24 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Botão Modo Dev — visível para client_admin e support */}
+            {canUseDevMode && (
+              <button
+                onClick={toggleDevMode}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm ${
+                  devMode
+                    ? "bg-violet-500/30 text-violet-300 hover:bg-violet-500/40"
+                    : "text-[#F6F3AA]/70 hover:text-[#F6F3AA] hover:bg-white/10"
+                }`}
+                title={devMode ? "Desativar modo desenvolvimento" : "Ativar modo desenvolvimento (desbloqueia todos os módulos)"}
+              >
+                <FlaskConical className="w-4 h-4" />
+                <span className="hidden sm:inline">
+                  {devMode ? "Dev Mode ON" : "Dev Mode"}
+                </span>
+              </button>
+            )}
+
             {/* Ícone de admin — visível apenas para client_admin */}
             {isClientAdmin && (
               <button
@@ -294,8 +345,8 @@ export default function Dashboard() {
       </header>
 
       {/* Main Content — pb-44 garante scroll suficiente para o tour centralizar cards inferiores */}
-      <main className="max-w-7xl mx-auto px-6 py-8 pb-44">
-        <div id="tour-dashboard-greeting" className="text-center mb-8">
+      <main className="max-w-7xl mx-auto px-6 py-5 pb-20">
+        <div id="tour-dashboard-greeting" className="text-center mb-5">
           <h1 className="text-2xl font-semibold text-[#F6F3AA] mb-1">
             Bem-vindo ao Fashion Mind, {user.name}!
           </h1>
@@ -309,7 +360,7 @@ export default function Dashboard() {
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, isDemoMode);
+            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;
@@ -380,7 +431,7 @@ export default function Dashboard() {
 
         {/* Painel de debug — visível apenas para Suporte */}
         {isSupport && (
-          <div className="max-w-5xl mx-auto mt-10">
+          <div className="max-w-5xl mx-auto mt-4">
             <div className="bg-amber-500/15 border border-amber-400/30 backdrop-blur-sm rounded-2xl p-6">
               <div className="flex items-center gap-2 mb-4">
                 <Bug className="w-4 h-4 text-amber-300" />
@@ -424,7 +475,7 @@ export default function Dashboard() {
 
         {/* Progress hint when no plan exists */}
         {plannedYears.length === 0 && user.profile === "CEO" && (
-          <div className="max-w-5xl mx-auto mt-6">
+          <div className="max-w-5xl mx-auto mt-4">
             <div className="bg-white/20 backdrop-blur-sm rounded-xl px-5 py-4 text-center">
               <p className="text-white/90 text-sm">
                 💡 Comece pelo <strong>Planejamento Estratégico</strong> para definir as metas do ciclo e desbloquear os módulos seguintes.

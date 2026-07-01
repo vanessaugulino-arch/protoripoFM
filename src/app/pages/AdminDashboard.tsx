@@ -191,7 +191,7 @@ export default function AdminDashboard() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Cabeçalho do painel */}
         <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF] mb-8">
           <h2 className="text-[#28071C] text-xl mb-1">

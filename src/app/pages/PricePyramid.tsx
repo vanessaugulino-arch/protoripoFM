@@ -178,7 +178,7 @@ export default function PricePyramid() {
             <ArrowLeft className="w-6 h-6" />
           </button>
           <div>
-            <span className="text-[#F6F3AA] text-xl font-semibold">
+            <span className="text-[#F6F3AA] text-base font-semibold">
               Pirâmide de Preço · {divisionName}
             </span>
             <span className="text-[#F6F3AA]/70 text-sm ml-3">
@@ -248,7 +248,7 @@ export default function PricePyramid() {
         </div>
       </div>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-[1400px] mx-auto px-6 py-5 space-y-5">
 
         {/* ── ORIENTAÇÃO ──────────────────────────────────────────────────────── */}
         <div className="bg-amber-50 border-l-4 border-amber-500 rounded-xl px-6 py-4">

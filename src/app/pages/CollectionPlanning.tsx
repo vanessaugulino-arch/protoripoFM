@@ -240,7 +240,7 @@ export default function CollectionPlanning() {
                 <ArrowLeft className="w-6 h-6" />
               </button>
               <div>
-                <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Coleção</span>
+                <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Coleção</span>
                 <span className="text-[#F6F3AA]/70 text-sm ml-3">Definição de Temas e Looks</span>
               </div>
             </div>
@@ -261,7 +261,7 @@ export default function CollectionPlanning() {
         </header>
 
         {/* Main Content */}
-        <main className="max-w-[1600px] mx-auto px-6 py-8">
+        <main className="max-w-[1600px] mx-auto px-6 py-5">
           {/* Seleção de Ciclo */}
           <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm">
             <label className="block text-[#28071C]/70 text-sm mb-2 uppercase tracking-wide">
@@ -391,7 +391,7 @@ export default function CollectionPlanning() {
           <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm">
             <h2 className="text-[#28071C] text-xl mb-6">Cores por Tema</h2>
 
-            <div className="space-y-6">
+            <div className="space-y-4">
               {themes.filter(t => t.name).map((theme) => (
                 <div key={theme.id} className="border-l-4 border-[#7598CF] pl-6">
                   <div className="flex items-center justify-between mb-4">
@@ -490,7 +490,7 @@ export default function CollectionPlanning() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Coleção</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Coleção</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento de Coleção</span>
             </div>
           </div>
@@ -518,7 +518,7 @@ export default function CollectionPlanning() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Container 1: Metas da Direção Criativa */}
         <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm border-t-4 border-[#7598CF]">
           <h2 className="text-[#28071C] text-xl mb-6">Metas Definidas pela Direção Criativa - Grupo Feminino</h2>
@@ -766,7 +766,7 @@ export default function CollectionPlanning() {
 
             <div className="p-6">
               {categories.find(c => c.id === selectedCategory)?.subcategories.map((sub) => (
-                <div key={sub.id} className="mb-8 pb-8 border-b border-[#28071C]/10 last:border-b-0">
+                <div key={sub.id} className="mb-5 pb-5 border-b border-[#28071C]/10 last:border-b-0">
                   <h3 className="text-[#28071C] text-lg mb-4">{sub.name}</h3>
 
                   <table className="w-full text-sm">

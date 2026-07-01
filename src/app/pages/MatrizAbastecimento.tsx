@@ -467,7 +467,7 @@ export default function MatrizAbastecimento() {
       </div>
 
       {/* ── Conteúdo ───────────────────────────────────────────────────────── */}
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-7xl mx-auto px-6 py-5">
         {loading ? (
           <div className="flex items-center justify-center py-20 text-[#28071C]/40">
             <div className="w-6 h-6 border-2 border-[#7598CF] border-t-transparent rounded-full animate-spin mr-3" />

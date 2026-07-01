@@ -38,13 +38,21 @@ export interface PriceRange {
   premiumPercent: number;           // % de peças na faixa premium
 }
 
-// ─── Matriz de Risco ─────────────────────────────────────────────────────────
+// ─── Matriz de Perfil de Produto ─────────────────────────────────────────────
+// 3 perfis do e-book "O Preço Perfeito" (TFO):
+//   Sustentador de Margem — estrutura básica com variações de cor ou detalhe
+//   Motor de Giro         — moda/tendência de temporada, alto volume
+//   Ícone de Marca        — statement da marca, alta exposição editorial
+//
+// Nota: "Porta de Entrada" = faixa P1 (preço), NÃO é um perfil de produto.
+// Qualquer perfil pode estar em qualquer faixa (P1/P2/P3), mas há concentração
+// natural: Ícone → P3; Motor de Giro → P1/P2; Sustentador → P1/P2.
 export interface RiskMatrix {
-  basics: number;                   // % de produtos básicos/recorrentes
-  fashion: number;                  // % de produtos moda
-  highFashion: number;              // % de produtos alta moda
-  
-  // Validação: basics + fashion + highFashion = 100
+  sustentadorMargem: number;   // % Sustentador de Margem
+  motorGiro: number;           // % Motor de Giro
+  iconeMarca: number;          // % Ícone de Marca
+
+  // Validação: sustentadorMargem + motorGiro + iconeMarca = 100
 }
 
 // ─── Volume, OTB e Cobertura ─────────────────────────────────────────────────
@@ -196,7 +204,10 @@ export function calculateSellThrough(input: SellThroughInput): number {
 
 // ─── Helper: Validação de Risco Matrix ────────────────────────────────────
 export function isValidRiskMatrix(riskMatrix: RiskMatrix): boolean {
-  const total = riskMatrix.basics + riskMatrix.fashion + riskMatrix.highFashion;
+  const total =
+    riskMatrix.sustentadorMargem +
+    riskMatrix.motorGiro +
+    riskMatrix.iconeMarca;
   return Math.abs(total - 100) < 0.01; // Tolerância de 0.01%
 }
 

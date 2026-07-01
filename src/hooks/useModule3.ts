@@ -68,9 +68,9 @@ function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
         premiumPercent: 20,
       },
       riskMatrix: {
-        basics: 40,
-        fashion: 40,
-        highFashion: 20,
+        sustentadorMargem: 40,
+        motorGiro: 40,
+        iconeMarca: 20,
       },
       volumeCoverage: {
         coverage: 45,

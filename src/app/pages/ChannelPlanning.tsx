@@ -871,7 +871,7 @@ export default function ChannelPlanning() {
       {/* ── SAVE DIALOG ──────────────────────────────────────────────────────── */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl px-8 py-6 w-[420px] mx-4">
+          <div className="bg-white rounded-2xl shadow-xl px-6 py-5 w-[420px] mx-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[#28071C] font-bold text-base">Nomear Cenário</h3>
               <button onClick={() => setShowSaveDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]"><X className="w-5 h-5" /></button>
@@ -895,7 +895,7 @@ export default function ChannelPlanning() {
       {/* ── COMPARE MODAL ────────────────────────────────────────────────────── */}
       {showCompareModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-xl w-full mx-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 max-w-xl w-full mx-4">
             {compareResults ? (
               /* ── Resultados da comparação — todos os indicadores em colunas ── */
               <>

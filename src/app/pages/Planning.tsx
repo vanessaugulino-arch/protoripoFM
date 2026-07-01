@@ -443,7 +443,7 @@ export default function Planning() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 1</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 1</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento Estratégico</span>
             </div>
           </div>
@@ -992,7 +992,7 @@ export default function Planning() {
       {/* ── SAVE DIALOG ────────────────────────────────────────────────────── */}
       {saveDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl px-8 py-6 w-[420px] mx-4">
+          <div className="bg-white rounded-2xl shadow-xl px-6 py-5 w-[420px] mx-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[#28071C] font-bold text-base">Nomear Cenário</h3>
               <button onClick={() => setSaveDialogOpen(false)} className="text-[#28071C]/40 hover:text-[#28071C] transition-colors">

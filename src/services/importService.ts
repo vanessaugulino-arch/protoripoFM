@@ -358,20 +358,20 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         key: "risk_level",
         label: "Nível de Risco",
         description:
-          "Básico = giro garantido, baixo risco. Moda = tendência de temporada. Alta Moda = alto risco e margem.",
+          "Sustentador de Margem = estrutura básica com variações de cor ou detalhe. Motor de Giro = moda/tendência de temporada, alto volume. Ícone de Marca = statement da marca, alta exposição editorial. Qualquer perfil pode estar em P1/P2/P3.",
         required: false,
         valueType: "enum",
-        sampleValue: "Básico",
-        enumValues: ["Básico", "Moda", "Alta Moda"],
+        sampleValue: "Sustentador de Margem",
+        enumValues: ["Sustentador de Margem", "Motor de Giro", "Ícone de Marca"],
       },
       {
         key: "price_tier",
         label: "Faixa de Preço",
-        description: "Segmento de preço para análise de pirâmide e sortimento.",
+        description: "Faixa de preço do produto. P1 = entrada (inclui produtos que seriam chamados de 'porta de entrada'); P2 = médio; P3 = premium/alto.",
         required: false,
         valueType: "enum",
-        sampleValue: "Médio",
-        enumValues: ["Entrada", "Médio", "Premium", "Luxo"],
+        sampleValue: "P2",
+        enumValues: ["P1", "P2", "P3"],
       },
       // Cor (cor bruta; color_group é auto-calculado)
       {

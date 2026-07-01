@@ -369,7 +369,7 @@ export default function Module3DivisionPlanning() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">
+              <span className="text-[#F6F3AA] text-base font-semibold">
                 Fashion Mind · Módulo 3
               </span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">
@@ -399,16 +399,16 @@ export default function Module3DivisionPlanning() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
 
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* PARTE A — SELEÇÃO DE TEMPORADA E REFERÊNCIA                       */}
         {/* ══════════════════════════════════════════════════════════════════ */}
 
-        <div id="tour-m3-season" className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
-          <h2 className="text-[#28071C] text-lg font-bold mb-4">Temporada de Planejamento</h2>
+        <div id="tour-m3-season" className="bg-white/70 backdrop-blur-sm rounded-2xl p-5 shadow-sm border-t-4 border-[#7598CF]">
+          <h2 className="text-[#28071C] text-lg font-bold mb-3">Temporada de Planejamento</h2>
 
-          <div className="grid grid-cols-2 gap-6 mb-4">
+          <div className="grid grid-cols-2 gap-4 mb-3">
             {/* Temporada a planejar */}
             <div>
               <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide font-semibold mb-2">
@@ -417,7 +417,7 @@ export default function Module3DivisionPlanning() {
               <select
                 value={selectedSeasonId}
                 onChange={(e) => setSelectedSeasonId(e.target.value)}
-                className="w-full bg-white rounded-xl px-4 py-3 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 font-medium cursor-pointer"
+                className="w-full bg-white rounded-xl px-3 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 font-medium cursor-pointer"
               >
                 <option value="">Selecione a temporada...</option>
                 {temporadas.map((t) => (
@@ -439,7 +439,7 @@ export default function Module3DivisionPlanning() {
               <select
                 value={referenceSeasonId}
                 onChange={(e) => setReferenceSeasonId(e.target.value)}
-                className="w-full bg-white rounded-xl px-4 py-3 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 font-medium cursor-pointer"
+                className="w-full bg-white rounded-xl px-3 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 font-medium cursor-pointer"
               >
                 <option value="">Selecione a referência...</option>
                 {temporadas.map((t) => (
@@ -648,7 +648,7 @@ export default function Module3DivisionPlanning() {
             {/* PARTE F — CENÁRIOS                                            */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div id="tour-m3-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
+            <div id="tour-m3-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl p-5 shadow-sm border-t-4 border-[#F6F3AA]">
               <div className="flex items-center justify-between mb-5">
                 <div className="flex items-center gap-3">
                   <BarChart3 className="w-5 h-5 text-[#28071C]" />
@@ -833,7 +833,7 @@ function DivisionBlockCard({
   const [isProducer, setIsProducer] = useState(true);
 
   const riskValid = isValidRiskMatrix(block.riskMatrix);
-  const riskTotal = block.riskMatrix.basics + block.riskMatrix.fashion + block.riskMatrix.highFashion;
+  const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
 
   return (
     <div className="space-y-2">
@@ -948,14 +948,14 @@ function DivisionBlockCard({
           </span>
         </div>
         <div className="space-y-1.5">
-          <CompactRiskField label="Básicos"   value={block.riskMatrix.basics}      onChange={(v) => onUpdateRiskMatrix({ basics: v })}      color="bg-blue-500" />
-          <CompactRiskField label="Moda"      value={block.riskMatrix.fashion}     onChange={(v) => onUpdateRiskMatrix({ fashion: v })}     color="bg-amber-500" />
-          <CompactRiskField label="Alta Moda" value={block.riskMatrix.highFashion} onChange={(v) => onUpdateRiskMatrix({ highFashion: v })} color="bg-red-500" />
+          <CompactRiskField label="Sustentador de Margem" value={block.riskMatrix.sustentadorMargem} onChange={(v) => onUpdateRiskMatrix({ sustentadorMargem: v })} color="bg-blue-500" />
+          <CompactRiskField label="Motor de Giro"        value={block.riskMatrix.motorGiro}        onChange={(v) => onUpdateRiskMatrix({ motorGiro: v })}        color="bg-amber-500" />
+          <CompactRiskField label="Ícone de Marca"       value={block.riskMatrix.iconeMarca}       onChange={(v) => onUpdateRiskMatrix({ iconeMarca: v })}       color="bg-red-500" />
         </div>
         <div className="mt-2 h-1 rounded-full overflow-hidden flex">
-          <div className="bg-blue-500  transition-all duration-300" style={{ width: `${block.riskMatrix.basics}%` }} />
-          <div className="bg-amber-500 transition-all duration-300" style={{ width: `${block.riskMatrix.fashion}%` }} />
-          <div className="bg-red-500   transition-all duration-300" style={{ width: `${block.riskMatrix.highFashion}%` }} />
+          <div className="bg-blue-500  transition-all duration-300" style={{ width: `${block.riskMatrix.sustentadorMargem}%` }} />
+          <div className="bg-amber-500 transition-all duration-300" style={{ width: `${block.riskMatrix.motorGiro}%` }} />
+          <div className="bg-red-500   transition-all duration-300" style={{ width: `${block.riskMatrix.iconeMarca}%` }} />
         </div>
       </div>
 

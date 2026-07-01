@@ -317,7 +317,7 @@ export default function CycleValidation() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-xl font-semibold">Fashion Mind · Módulo 4</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 4</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Validação de Sazonalidade</span>
             </div>
           </div>
