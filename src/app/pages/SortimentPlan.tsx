@@ -762,10 +762,8 @@ export default function SortimentPlan() {
   // ── Timeline ─────────────────────────────────────────────────────────────────
 
   const timelineMonths = useMemo((): string[] => {
-    if (!activeDivision) return [];
-
-    // Usa o intervalo completo da temporada selecionada (mesInicio → mesFim)
-    const currentSeason = temporadas.find(t => t.id === seasonId);
+    // 1) Usa o intervalo completo da temporada selecionada (mesInicio → mesFim)
+    const currentSeason = seasonId ? temporadas.find(t => t.id === seasonId) : null;
     if (currentSeason?.mesInicio && currentSeason?.mesFim) {
       const months: string[] = [];
       let cur = currentSeason.mesInicio;
@@ -776,19 +774,31 @@ export default function SortimentPlan() {
       return months;
     }
 
-    // Fallback: deriva das datas das coleções cadastradas
-    const allDates = activeDivision.collections
-      .flatMap(c => c.entries.map(e => e.date))
-      .filter(Boolean);
-    if (allDates.length === 0) return [];
-    const sorted = [...allDates].sort();
-    const first = shiftMonth(sorted[0], -1);
-    const last  = shiftMonth(sorted[sorted.length - 1], 1);
+    // 2) Fallback: deriva das datas das coleções cadastradas
+    if (activeDivision) {
+      const allDates = activeDivision.collections
+        .flatMap(c => c.entries.map(e => e.date))
+        .filter(Boolean);
+      if (allDates.length > 0) {
+        const sorted = [...allDates].sort();
+        const first = shiftMonth(sorted[0], -1);
+        const last  = shiftMonth(sorted[sorted.length - 1], 1);
+        const months: string[] = [];
+        let cur = first;
+        while (cur <= last) {
+          months.push(cur);
+          cur = shiftMonth(cur, 1);
+        }
+        return months;
+      }
+    }
+
+    // 3) Último recurso: exibe 8 meses a partir do mês atual
+    const now = new Date();
     const months: string[] = [];
-    let cur = first;
-    while (cur <= last) {
-      months.push(cur);
-      cur = shiftMonth(cur, 1);
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      months.push(d.toISOString().slice(0, 7));
     }
     return months;
   }, [activeDivision, temporadas, seasonId]);
@@ -1660,8 +1670,8 @@ export default function SortimentPlan() {
               Adicionar Coleção / Drop
             </button>
 
-            {/* Timeline */}
-            {timelineMonths.length > 0 && (
+            {/* Timeline — sempre visível na temporada selecionada */}
+            {(
               <div className="bg-white rounded-2xl p-5 mb-4 shadow-sm">
                 <h3 className="text-sm font-medium text-[#28071C] mb-4 flex items-center gap-2">
                   <Calendar className="w-4 h-4" />
