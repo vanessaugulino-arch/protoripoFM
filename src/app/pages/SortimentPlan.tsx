@@ -385,6 +385,12 @@ export default function SortimentPlan() {
   // ── Seasons (for modal selector) ────────────────────────────────────────────
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
 
+  // Temporadas com planejamento completo (Módulo 1 configurado para o anoFiscal)
+  const plannedSeasons = useMemo(
+    () => temporadas.filter(t => t.anoFiscal != null && getPlanCycle(t.anoFiscal) !== null),
+    [temporadas]
+  );
+
   // ── Coleções bloqueadas (já têm produtos em produção no ERP) ────────────────
   // Regra: se collection_name existe em products, apenas datas de entrada podem
   // ser alteradas (postergação de lançamento). Nome, tipo, peso, entradas: bloqueados.
@@ -418,30 +424,20 @@ export default function SortimentPlan() {
         listSeasonsDb(parsed.tenant_id)
           .then(list => {
             setTemporadas(list);
-            // Se não há temporada selecionada (primeira vez), abre o picker
+            // Apenas temporadas com planejamento Módulo 1 completo
+            const planned = list.filter(t => t.anoFiscal != null && getPlanCycle(t.anoFiscal) !== null);
             const saved = localStorage.getItem(LAST_SEASON_KEY);
-            if (!saved && list.length > 0) setShowSeasonPicker(true);
-            // Valida que a temporada salva ainda existe
-            if (saved && list.length > 0 && !list.find(t => t.id === saved)) {
-              localStorage.removeItem(LAST_SEASON_KEY);
-              setSeasonIdRaw(null);
-              setShowSeasonPicker(true);
+            // Se não há temporada selecionada, ou a salva não é planejada → abre picker
+            const savedIsPlanned = saved ? planned.some(t => t.id === saved) : false;
+            if (!savedIsPlanned) {
+              if (saved) { localStorage.removeItem(LAST_SEASON_KEY); setSeasonIdRaw(null); }
+              if (planned.length > 0) setShowSeasonPicker(true);
             }
           })
           .catch(err => console.error("Erro ao carregar temporadas:", err));
         loadLockedCollections(parsed.tenant_id);
       }
-      // Carrega metas macro do planejamento estratégico (Módulo 1)
-      // Perfis sem acesso ao plano macro: apenas visualizam dados de divisão
-      const canSeeMacro = ["CEO", "Diretor", "Planejador"].includes(parsed.profile) ||
-        parsed.system_role === "client_admin" || parsed.system_role === "support";
-      if (canSeeMacro) {
-        // Busca o ano fiscal mais recente planejado
-        const years = getPlannedYears();
-        const latestYear = years.length > 0 ? Math.max(...years) : new Date().getFullYear() + 1;
-        const cycle = getPlanCycle(latestYear);
-        setMacroPlan(cycle);
-      }
+      // macroPlan é carregado reativamente via useEffect abaixo (por seasonId + temporadas)
     } else {
       navigate("/");
     }
@@ -453,6 +449,17 @@ export default function SortimentPlan() {
     if (!seasonId) return;
     localStorage.setItem(`fashionmind_sortiment_${seasonId}`, JSON.stringify(divisions));
   }, [divisions, seasonId]);
+
+  // Carrega macroPlan do anoFiscal da temporada selecionada
+  useEffect(() => {
+    if (!seasonId || temporadas.length === 0) { setMacroPlan(null); return; }
+    const season = temporadas.find(t => t.id === seasonId);
+    if (season?.anoFiscal) {
+      setMacroPlan(getPlanCycle(season.anoFiscal));
+    } else {
+      setMacroPlan(null);
+    }
+  }, [seasonId, temporadas]);
 
   const activeDivision = divisions.find(d => d.id === activeDivId) ?? divisions[0];
 
@@ -756,6 +763,20 @@ export default function SortimentPlan() {
 
   const timelineMonths = useMemo((): string[] => {
     if (!activeDivision) return [];
+
+    // Usa o intervalo completo da temporada selecionada (mesInicio → mesFim)
+    const currentSeason = temporadas.find(t => t.id === seasonId);
+    if (currentSeason?.mesInicio && currentSeason?.mesFim) {
+      const months: string[] = [];
+      let cur = currentSeason.mesInicio;
+      while (cur <= currentSeason.mesFim) {
+        months.push(cur);
+        cur = shiftMonth(cur, 1);
+      }
+      return months;
+    }
+
+    // Fallback: deriva das datas das coleções cadastradas
     const allDates = activeDivision.collections
       .flatMap(c => c.entries.map(e => e.date))
       .filter(Boolean);
@@ -770,7 +791,7 @@ export default function SortimentPlan() {
       cur = shiftMonth(cur, 1);
     }
     return months;
-  }, [activeDivision]);
+  }, [activeDivision, temporadas, seasonId]);
 
   // ── Budget projection (Mix view) ─────────────────────────────────────────────
 
@@ -1082,60 +1103,77 @@ export default function SortimentPlan() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5">
 
-        {/* ── Guard: nenhuma temporada selecionada ─────────────────────────── */}
+        {/* ── Guard: nenhuma temporada planejada selecionada ──────────────── */}
         {!seasonId && (
           <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
             <div className="bg-white rounded-2xl shadow-md border border-[#28071C]/8 p-10 max-w-lg w-full">
-              <Calendar className="w-12 h-12 text-[#7598CF] mx-auto mb-4" />
-              <h2 className="text-xl font-bold text-[#28071C] mb-2">
-                Escolha a temporada para planejar
-              </h2>
-              <p className="text-sm text-[#28071C]/50 mb-6 leading-relaxed">
-                Você pode planejar uma temporada futura ou ajustar coleções de uma temporada em andamento — por exemplo, para capturar oportunidades de estoque ou corrigir a curva de vendas.
-              </p>
-              {temporadas.length === 0 ? (
-                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                  <span>
-                    Nenhuma temporada cadastrada. Configure em{" "}
-                    <button onClick={() => navigate("/operation-settings")} className="underline font-semibold">
-                      Configurações de Operação
-                    </button>.
-                  </span>
-                </div>
+              {plannedSeasons.length === 0 ? (
+                <>
+                  <AlertTriangle className="w-12 h-12 text-amber-400 mx-auto mb-4" />
+                  <h2 className="text-xl font-bold text-[#28071C] mb-2">
+                    Nenhuma temporada planejada
+                  </h2>
+                  <p className="text-sm text-[#28071C]/50 mb-6 leading-relaxed">
+                    O Plano de Sortimento exige que a temporada tenha sido planejada nos{" "}
+                    <strong>Módulos 1 a 4</strong> — Planejamento Estratégico, Receita, Divisões e Pirâmide de Preços.
+                    Complete o planejamento e volte aqui.
+                  </p>
+                  <button
+                    onClick={() => navigate("/planning")}
+                    className="w-full py-3 rounded-xl bg-[#28071C] text-white text-sm font-semibold hover:bg-[#28071C]/80 transition-colors"
+                  >
+                    Ir para Planejamento
+                  </button>
+                </>
               ) : (
-                <div className="space-y-2">
-                  {temporadas.map(t => {
-                    const past = isTemporadaPast(t);
-                    return (
-                      <button
-                        key={t.id}
-                        onClick={() => selectSeason(t.id)}
-                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 border-[#28071C]/10 hover:border-[#7598CF] hover:bg-[#7598CF]/5 transition-all text-left group"
-                      >
-                        <div className="flex items-center gap-3">
-                          <Calendar className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
-                          <div>
-                            <p className="font-semibold text-[#28071C] text-sm">{t.nome}</p>
-                            <p className="text-xs text-[#28071C]/40">{t.mesInicio} → {t.mesFim}</p>
+                <>
+                  <Calendar className="w-12 h-12 text-[#7598CF] mx-auto mb-4" />
+                  <h2 className="text-xl font-bold text-[#28071C] mb-2">
+                    Escolha a temporada para planejar
+                  </h2>
+                  <p className="text-sm text-[#28071C]/50 mb-6 leading-relaxed">
+                    Somente temporadas com planejamento completo (Módulos 1–4) estão disponíveis.
+                  </p>
+                  <div className="space-y-2">
+                    {plannedSeasons.map(t => {
+                      const past = isTemporadaPast(t);
+                      const plan = getPlanCycle(t.anoFiscal!);
+                      const focus = plan?.focus;
+                      return (
+                        <button
+                          key={t.id}
+                          onClick={() => selectSeason(t.id)}
+                          className="w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 border-[#28071C]/10 hover:border-[#7598CF] hover:bg-[#7598CF]/5 transition-all text-left group"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Calendar className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
+                            <div>
+                              <p className="font-semibold text-[#28071C] text-sm">{t.nome}</p>
+                              <p className="text-xs text-[#28071C]/40">{t.mesInicio} → {t.mesFim}</p>
+                            </div>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {past ? (
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#28071C]/30 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
-                              Encerrada
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">
-                              {t.anoFiscal ? `Fiscal ${t.anoFiscal}` : "Ativa"}
-                            </span>
-                          )}
-                          <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                          <div className="flex items-center gap-2">
+                            {focus && (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                                {STRATEGIC_FOCUS_LABELS[focus]}
+                              </span>
+                            )}
+                            {past ? (
+                              <span className="text-[10px] font-bold uppercase tracking-widest text-[#28071C]/30 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                                Encerrada
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold uppercase tracking-widest text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">
+                                Fiscal {t.anoFiscal}
+                              </span>
+                            )}
+                            <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -1176,105 +1214,102 @@ export default function SortimentPlan() {
               })}
             </div>
 
-            {/* ── Card de Metas Macro Estratégicas — FIXO durante a rolagem ────── */}
-            {/* Guide card — abaixo do header (~100px) + tab bar (~52px) */}
+            {/* ── Card de Metas da Divisão — FIXO durante a rolagem ──────────────── */}
             <div className="sticky top-[156px] z-30 mb-4">
               <div className="bg-white rounded-xl shadow-md border border-[#28071C]/8 overflow-hidden">
-                {macroPlan ? (() => {
-                  // Lê valores da versão mais recente (cenário aplicado)
-                  const latestVals = macroPlan.versions[0]?.values ?? {};
-                  const receita    = latestVals["receitaBruta"]  as number | null ?? null;
-                  const margem     = latestVals["margemBruta"]   as number | null ?? null;
-                  const otb        = latestVals["otbCompra"]     as number | null ?? null;
-                  const pmv        = latestVals["pmv"]           as number | null ?? null;
-                  const focus      = macroPlan.focus;
-                  const focusColor = STRATEGIC_FOCUS_COLORS[focus];
+                {(() => {
+                  // macroPlan é sempre definido quando seasonId está ativo (temporada planejada)
+                  const focus        = macroPlan?.focus ?? "cash";
+                  const focusColor   = STRATEGIC_FOCUS_COLORS[focus];
+                  const ciaMargemPct = (macroPlan?.versions[0]?.values?.["margemBruta"] as number | null) ?? null;
+
+                  // Dados reais da divisão ativa (Módulos 3 e 4)
+                  const divReceita = activeDivision.revenueTarget;
+                  const divMargem  = activeDivision.targetMarginPct;
+                  const divOtb     = divReceita * (1 - divMargem / 100);
+                  const p          = activeDivision.pricePyramid;
+                  const divPmv     = (activeDivision.avgPriceP1 * p.p1 + activeDivision.avgPriceP2 * p.p2 + activeDivision.avgPriceP3 * p.p3) / 100;
+
                   return (
                     <>
-                      {/* Cabeçalho: foco estratégico do ano fiscal */}
-                      <div className={`flex items-center justify-between px-4 py-2 ${focusColor.card} border-b border-[#28071C]/8`}>
+                      {/* Linha 1: foco estratégico da cia */}
+                      <div className={`flex items-center justify-between px-4 py-2 border-b border-[#28071C]/8 ${focusColor.card}`}>
                         <div className="flex items-center gap-2">
                           <span className="text-base leading-none">{STRATEGIC_FOCUS_ICONS[focus]}</span>
                           <span className="text-xs font-bold text-[#28071C]/70 uppercase tracking-widest">
-                            Metas Estratégicas {macroPlan.year}
+                            Metas Estratégicas {macroPlan?.year ?? ""}
                           </span>
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${focusColor.badge}`}>
                             {STRATEGIC_FOCUS_LABELS[focus]}
                           </span>
                         </div>
-                        <Tooltip text="Metas macro definidas no planejamento estratégico anual da organização. Use como balizador para o plano de sortimento de cada divisão." side="bottom">
+                        <Tooltip text="Indicadores da divisão selecionada. Receita, margem e OTB são específicos desta divisão na temporada, calculados a partir do Módulo 3 — Plano por Divisão." side="bottom">
                           <span className="flex items-center gap-1 text-[10px] text-[#28071C]/40 cursor-default">
                             Planejamento Estratégico <Info className="w-3 h-3" />
                           </span>
                         </Tooltip>
                       </div>
 
-                      {/* Indicadores macro */}
+                      {/* Linha 2: KPIs reais da divisão ativa */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-0 divide-x divide-[#28071C]/8">
-                        <Tooltip text="Receita bruta total da organização definida no planejamento estratégico anual. É o teto global que todas as divisões somadas devem atingir.">
-                          <div className="px-4 py-3 cursor-default">
+                        <Tooltip text="Receita bruta planejada para esta divisão na temporada selecionada. Definida no Módulo 3 — Plano por Divisão." side="bottom">
+                          <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               Receita Bruta Alvo <Info className="w-3 h-3 opacity-40" />
                             </div>
-                            <div className="text-lg font-bold text-[#28071C]">
-                              {receita != null ? fmtCurrency(receita) : <span className="text-sm text-[#28071C]/30 font-normal">Não definido</span>}
-                            </div>
+                            <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divReceita)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Margem bruta mínima aceitável para a organização neste exercício. Define o limite de custo de produto para todo o mix.">
-                          <div className="px-4 py-3 cursor-default">
+                        <Tooltip text="Margem bruta alvo desta divisão na temporada. Define o limite de custo de produto para o mix da divisão, conforme Módulo 3." side="bottom">
+                          <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               Margem Bruta Alvo <Info className="w-3 h-3 opacity-40" />
                             </div>
-                            <div className="text-lg font-bold text-[#28071C]">
-                              {margem != null ? fmtPct(margem) : <span className="text-sm text-[#28071C]/30 font-normal">Não definido</span>}
-                            </div>
+                            <div className="text-lg font-bold text-[#28071C]">{fmtPct(divMargem)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Orçamento disponível para compras e produção no período. Controla o investimento total em estoque da organização.">
-                          <div className="px-4 py-3 cursor-default">
+                        <Tooltip text="Orçamento de compra estimado para esta divisão na temporada. Calculado como receita alvo × (1 − margem%). Em modelos híbridos, representa a soma de compra e produção." side="bottom">
+                          <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               OTB de Compra <Info className="w-3 h-3 opacity-40" />
                             </div>
-                            <div className="text-lg font-bold text-[#28071C]">
-                              {otb != null ? fmtCurrency(otb) : <span className="text-sm text-[#28071C]/30 font-normal">Não definido</span>}
-                            </div>
+                            <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOtb)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Preço médio de venda médio esperado para a organização. Referência para calibrar a pirâmide de preços de cada divisão.">
-                          <div className="px-4 py-3 cursor-default">
+                        <Tooltip text="Preço médio de venda ponderado pelas faixas P1, P2 e P3 desta divisão. Calculado a partir da pirâmide de preços e dos preços médios definidos no Módulo 3." side="bottom">
+                          <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               PMV Médio <Info className="w-3 h-3 opacity-40" />
                             </div>
-                            <div className="text-lg font-bold text-[#28071C]">
-                              {pmv != null ? fmtCurrency(pmv) : <span className="text-sm text-[#28071C]/30 font-normal">Não definido</span>}
-                            </div>
+                            <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divPmv)}</div>
                           </div>
                         </Tooltip>
                       </div>
 
-                      {/* Linha secundária: referência da divisão ativa */}
+                      {/* Linha 3: detalhes da divisão — participação, margem cia, pirâmide, PMVs */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-0 divide-x divide-[#28071C]/5 bg-[#28071C]/2 border-t border-[#28071C]/6">
                         <div className="px-4 py-2 flex items-center gap-2">
                           <span className="text-[9px] text-[#7598CF] font-bold uppercase tracking-widest">
                             ↳ {activeDivision.name}
                           </span>
                         </div>
-                        <Tooltip text="Participação desta divisão na receita total e margem alvo definida no Módulo 3.">
-                          <div className="px-4 py-2 cursor-default flex items-center gap-3">
+                        <Tooltip text="Participação desta divisão na receita total da empresa. A margem da cia é a meta global definida no Planejamento Estratégico para toda a organização." side="bottom">
+                          <div className="px-4 py-2 cursor-default flex items-center gap-2 w-full">
                             <span className="text-[10px] text-[#28071C]/40">Participação</span>
                             <span className="text-xs font-semibold text-[#28071C]">{fmtPct(activeDivision.participationPct)}</span>
                             <span className="text-[10px] text-[#28071C]/30">·</span>
-                            <span className="text-[10px] text-[#28071C]/40">Margem</span>
-                            <span className="text-xs font-semibold text-[#28071C]">{fmtPct(activeDivision.targetMarginPct)}</span>
+                            <span className="text-[10px] text-[#28071C]/40">Margem cia:</span>
+                            <span className="text-xs font-semibold text-[#28071C]">
+                              {ciaMargemPct != null ? fmtPct(ciaMargemPct) : "—"}
+                            </span>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Pirâmide de preços da divisão: proporção de receita por faixa P1 / P2 / P3.">
-                          <div className="px-4 py-2 cursor-default flex items-center gap-2">
+                        <Tooltip text="Pirâmide de preços da divisão: proporção de receita por faixa P1 / P2 / P3 na temporada selecionada." side="bottom">
+                          <div className="px-4 py-2 cursor-default flex items-center gap-2 w-full">
                             {([
-                              { tier: "P1", pct: activeDivision.pricePyramid.p1, color: "text-blue-600" },
-                              { tier: "P2", pct: activeDivision.pricePyramid.p2, color: "text-violet-600" },
-                              { tier: "P3", pct: activeDivision.pricePyramid.p3, color: "text-rose-600" },
+                              { tier: "P1", pct: p.p1, color: "text-blue-600" },
+                              { tier: "P2", pct: p.p2, color: "text-violet-600" },
+                              { tier: "P3", pct: p.p3, color: "text-rose-600" },
                             ]).map(({ tier, pct, color }) => (
                               <span key={tier} className="flex items-center gap-1">
                                 <span className={`text-[9px] font-bold ${color}`}>{tier}</span>
@@ -1283,8 +1318,8 @@ export default function SortimentPlan() {
                             ))}
                           </div>
                         </Tooltip>
-                        <Tooltip text="PMV alvo por faixa de preço desta divisão, definido no Módulo 3.">
-                          <div className="px-4 py-2 cursor-default flex items-center gap-2">
+                        <Tooltip text="PMV alvo por faixa de preço desta divisão na temporada, definido no Módulo 3." side="bottom">
+                          <div className="px-4 py-2 cursor-default flex items-center gap-2 w-full">
                             {([
                               { tier: "P1", price: activeDivision.avgPriceP1, color: "text-blue-600" },
                               { tier: "P2", price: activeDivision.avgPriceP2, color: "text-violet-600" },
@@ -1300,61 +1335,7 @@ export default function SortimentPlan() {
                       </div>
                     </>
                   );
-                })() : (
-                  // Fallback: sem acesso ao plano macro ou plano não criado
-                  <>
-                    <div className="flex items-center justify-between px-4 py-2 bg-[#28071C]/3 border-b border-[#28071C]/8">
-                      <div className="flex items-center gap-2">
-                        <BarChart2 className="w-4 h-4 text-[#7598CF]" />
-                        <span className="text-xs font-bold text-[#28071C]/60 uppercase tracking-widest">
-                          Referência de Divisão — {activeDivision.name}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-0 divide-x divide-[#28071C]/8">
-                      <Tooltip text="Receita total planejada para esta divisão no período.">
-                        <div className="px-4 py-3 cursor-default">
-                          <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">Meta de Receita <Info className="w-3 h-3 opacity-40" /></div>
-                          <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(activeDivision.revenueTarget)}</div>
-                        </div>
-                      </Tooltip>
-                      <Tooltip text="Peso desta divisão no total de receita da marca.">
-                        <div className="px-4 py-3 cursor-default">
-                          <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">Participação <Info className="w-3 h-3 opacity-40" /></div>
-                          <div className="text-lg font-bold text-[#28071C]">{fmtPct(activeDivision.participationPct)}</div>
-                        </div>
-                      </Tooltip>
-                      <Tooltip text="Margem de contribuição alvo. O custo máximo dos produtos deve respeitar este percentual.">
-                        <div className="px-4 py-3 cursor-default">
-                          <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">Margem Alvo <Info className="w-3 h-3 opacity-40" /></div>
-                          <div className="text-lg font-bold text-[#28071C]">{fmtPct(activeDivision.targetMarginPct)}</div>
-                        </div>
-                      </Tooltip>
-                      <Tooltip text="Pirâmide de preços: proporção de receita por faixa P1 / P2 / P3.">
-                        <div className="px-4 py-3 cursor-default">
-                          <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-2 flex items-center gap-1">Pirâmide P1/P2/P3 <Info className="w-3 h-3 opacity-40" /></div>
-                          <div className="flex h-3 rounded overflow-hidden gap-px mb-1.5">
-                            <div className="bg-blue-400" style={{ width: `${activeDivision.pricePyramid.p1}%` }} />
-                            <div className="bg-violet-400" style={{ width: `${activeDivision.pricePyramid.p2}%` }} />
-                            <div className="bg-rose-400" style={{ width: `${activeDivision.pricePyramid.p3}%` }} />
-                          </div>
-                          <div className="flex gap-2 text-[10px]">
-                            {([
-                              { tier: "P1", pct: activeDivision.pricePyramid.p1, color: "text-blue-600" },
-                              { tier: "P2", pct: activeDivision.pricePyramid.p2, color: "text-violet-600" },
-                              { tier: "P3", pct: activeDivision.pricePyramid.p3, color: "text-rose-600" },
-                            ]).map(({ tier, pct, color }) => (
-                              <span key={tier} className="flex items-center gap-0.5">
-                                <span className={`font-bold ${color}`}>{tier}</span>
-                                <span className={`font-semibold ${color}`}>{fmtPct(pct)}</span>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </Tooltip>
-                    </div>
-                  </>
-                )}
+                })()}
               </div>
             </div>
 
@@ -1680,14 +1661,14 @@ export default function SortimentPlan() {
             </button>
 
             {/* Timeline */}
-            {timelineMonths.length > 0 && (
+            {timelineMonths.length > 0 && activeDivision.collections.length > 0 && (
               <div className="bg-white rounded-2xl p-5 mb-4 shadow-sm">
                 <h3 className="text-sm font-medium text-[#28071C] mb-4 flex items-center gap-2">
                   <Calendar className="w-4 h-4" />
-                  Mapa de Coleções — {activeDivision.name}
+                  Mapa de Lançamentos — {activeDivision.name}
                 </h3>
                 <div className="overflow-x-auto">
-                  <div style={{ minWidth: `${timelineMonths.length * 80}px` }}>
+                  <div style={{ minWidth: `${timelineMonths.length * 60}px` }}>
                     {/* Month headers */}
                     <div
                       className="grid mb-1"
@@ -2344,25 +2325,28 @@ export default function SortimentPlan() {
               </p>
             </div>
 
-            {/* Lista de temporadas */}
+            {/* Lista de temporadas — apenas planejadas (Módulos 1-4) */}
             <div className="px-6 pb-6 space-y-2 max-h-[50vh] overflow-y-auto">
-              {temporadas.length === 0 ? (
+              {plannedSeasons.length === 0 ? (
                 <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 mt-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0" />
                   <span>
-                    Nenhuma temporada cadastrada. Configure em{" "}
+                    Nenhuma temporada com planejamento completo. Finalize os{" "}
                     <button
-                      onClick={() => navigate("/operation-settings")}
+                      onClick={() => navigate("/planning")}
                       className="underline font-semibold"
                     >
-                      Configurações de Operação
-                    </button>.
+                      Módulos 1–4
+                    </button>{" "}
+                    para liberar o Sortiment.
                   </span>
                 </div>
               ) : (
-                temporadas.map(t => {
-                  const past    = isTemporadaPast(t);
-                  const active  = t.id === seasonId;
+                plannedSeasons.map(t => {
+                  const past   = isTemporadaPast(t);
+                  const active = t.id === seasonId;
+                  const plan   = getPlanCycle(t.anoFiscal!);
+                  const focus  = plan?.focus;
                   return (
                     <button
                       key={t.id}
@@ -2381,6 +2365,11 @@ export default function SortimentPlan() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        {focus && (
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STRATEGIC_FOCUS_COLORS[focus].badge}`}>
+                            {STRATEGIC_FOCUS_LABELS[focus]}
+                          </span>
+                        )}
                         {active && (
                           <span className="text-[10px] font-bold uppercase tracking-widest text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">
                             Atual
@@ -2393,7 +2382,7 @@ export default function SortimentPlan() {
                         )}
                         {!active && !past && (
                           <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                            {t.anoFiscal ? `Fiscal ${t.anoFiscal}` : "Ativa"}
+                            Fiscal {t.anoFiscal}
                           </span>
                         )}
                         {!active && <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />}
@@ -2828,10 +2817,22 @@ function Tooltip({
   side?: "top" | "bottom";
 }) {
   const [show, setShow] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pos,  setPos]  = useState({ top: 0, left: 0 });
+  const timerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wrapRef         = useRef<HTMLDivElement>(null);
 
   const handleEnter = () => {
-    timerRef.current = setTimeout(() => setShow(true), 2000);
+    timerRef.current = setTimeout(() => {
+      if (wrapRef.current) {
+        const r = wrapRef.current.getBoundingClientRect();
+        if (side === "bottom") {
+          setPos({ top: r.bottom + 8, left: r.left + r.width / 2 });
+        } else {
+          setPos({ top: r.top - 8,   left: r.left + r.width / 2 });
+        }
+      }
+      setShow(true);
+    }, 2000);
   };
   const handleLeave = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -2839,29 +2840,31 @@ function Tooltip({
   };
 
   return (
-    <div
-      className="relative inline-flex"
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
-      {children}
+    <>
+      <div ref={wrapRef} className="inline-flex" onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
+        {children}
+      </div>
       {show && (
         <div
-          className={`absolute z-[9000] ${
-            side === "bottom" ? "top-full mt-2" : "bottom-full mb-2"
-          } left-1/2 -translate-x-1/2 w-60 bg-[#28071C] text-white text-xs rounded-xl px-3 py-2.5 shadow-xl pointer-events-none leading-relaxed whitespace-normal`}
+          style={{
+            position:  "fixed",
+            top:       side === "bottom" ? pos.top : undefined,
+            bottom:    side === "top"    ? `calc(100vh - ${pos.top}px)` : undefined,
+            left:      pos.left,
+            transform: "translateX(-50%)",
+            zIndex:    99999,
+          }}
+          className="w-64 bg-[#28071C] text-white text-xs rounded-xl px-3 py-2.5 shadow-2xl pointer-events-none leading-relaxed whitespace-normal"
         >
           {text}
           <div
             className={`absolute left-1/2 -translate-x-1/2 w-0 h-0 border-4 border-transparent ${
-              side === "bottom"
-                ? "bottom-full border-b-[#28071C]"
-                : "top-full border-t-[#28071C]"
+              side === "bottom" ? "bottom-full border-b-[#28071C]" : "top-full border-t-[#28071C]"
             }`}
           />
         </div>
       )}
-    </div>
+    </>
   );
 }
 
