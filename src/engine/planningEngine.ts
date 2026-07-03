@@ -163,13 +163,13 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // ── PASSO 2: Escala Proporcional pela Receita (Fator de Crescimento) ─────
   // Aplica SOMENTE quando receitaBruta é o ÚNICO campo principal tocado.
   //
-  // Novos comportamentos:
+  // Comportamentos:
   //   • estoqueMediao, otbCompra, producaoPecas, pecasVendidas → valor escalado, estado FREE
   //     (editável no painel — o usuário pode sobrescrever sem travar o campo)
   //   • cobertura, giro → mantêm valor do baseline (índices relativos), estado FREE
   //   • estoqueInicial  → valor escalado, estado CALCULATED (campo interno, não exibido)
-  //   • PMV             → valor NÃO recalculado, estado LOCKED (cadeado âmbar)
-  //     └── Se usuário desbloquear PMV → pecasVendidas passa a CALCULATED (ver unlockField)
+  //   • PMV             → NÃO é alterado nem bloqueado; como peças também escala pelo
+  //                       mesmo fator, PMV = RL/peças se mantém matematicamente consistente
   const CAMPOS_PRINCIPAIS: FieldKey[] = [
     'pmv', 'pecasVendidas', 'margemBruta', 'custoMedio',
     'giro', 'cobertura', 'estoqueMediao', 'otbCompra', 'producaoPecas',
@@ -194,9 +194,8 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     // EstoqueInicial: campo interno, escala mas permanece CALCULATED
     if (base.estoqueInicial != null) { v.estoqueInicial = base.estoqueInicial * fator; s.estoqueInicial = 'calculated' }
 
-    // PMV: NÃO é recalculado — apenas exibe cadeado (locked âmbar)
-    // O valor permanece o que estava; usuário pode desbloquear (ver unlockField)
-    if (v.pmv !== null) { s.pmv = 'locked' }
+    // PMV: NÃO é alterado nem bloqueado — peças e RL escalam pelo mesmo fator,
+    // portanto PMV = RL/peças permanece igual ao baseline (matematicamente consistente).
   }
 
   // ── PASSO 3: Triângulo T1 — Receita ↔ PMV ↔ Peças ───────────────────────
@@ -247,11 +246,11 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     // Bug 4: se pecasVendidas ainda é null, deriva localmente de RL/PMV
     const pec      = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
 
-    // Regra selection-aware: ambos mkdPct e custoMedio selecionados como indicadores ativos
-    const ambosAtivos =
-      activeKeys !== undefined &&
-      activeKeys.includes('mkdPct') &&
-      activeKeys.includes('custoMedio')
+    // Regra selection-aware: quais indicadores estão ativos
+    const hasMkdSelected   = activeKeys?.includes('mkdPct')    ?? false
+    const hasCustoSelected = activeKeys?.includes('custoMedio') ?? false
+    // Ambos selecionados: ao editar margem → trava custo, deriva mkdPct
+    const ambosAtivos      = hasMkdSelected && hasCustoSelected
 
     // Helper: ao editar Margem com custo fixo, deriva mkdPct pelo delta de CPV
     // targetCPV = RL × (1 - novaMargemPct/100); cpvDelta = targetCPV - custoAtual×peças
@@ -317,6 +316,20 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
       const cpv    = v.custoMedio * pec
       v.margemBruta = ((rl - cpv) / rl) * 100
       s.margemBruta = 'calculated'
+    }
+
+    // ── Regra mkdPct → custoMedio ─────────────────────────────────────────
+    // Quando mkdPct é editado E custoMedio está nos indicadores ativos:
+    // → manter a margem atual, derivar custo a partir de RL e margem
+    //   (menos desconto = espaço para custo maior e vice-versa)
+    const hasMkd = touched.has('mkdPct')
+    if (hasMkd && !hasMarg && !hasCusto && hasCustoSelected && rl && pec && pec > 0) {
+      const margem = v.margemBruta
+      if (margem !== null) {
+        const targetCPV = rl * (1 - margem / 100)
+        v.custoMedio = Math.max(0, targetCPV / pec)
+        s.custoMedio = 'locked'
+      }
     }
   }
 

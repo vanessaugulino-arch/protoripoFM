@@ -14,16 +14,17 @@ export type FieldFormat =
   | 'index'      // 4,37x
 
 interface PlanningFieldProps {
-  label:       string
-  fieldKey:    FieldKey
-  value:       number | null
-  state:       FieldState
-  format?:     FieldFormat
-  baseValue?:  number | null   // valor histórico — exibido como referência
-  helpText?:   string          // texto de ajuda contextual (tooltip/descrição)
-  onEdit:      (field: FieldKey, value: number | null) => void
-  onUnlock:    (field: FieldKey) => void
-  className?:  string
+  label:          string
+  fieldKey:       FieldKey
+  value:          number | null
+  state:          FieldState
+  format?:        FieldFormat
+  baseValue?:     number | null   // valor histórico — exibido como referência
+  helpText?:      string          // texto de ajuda contextual (tooltip/descrição)
+  onEdit:         (field: FieldKey, value: number | null) => void
+  onUnlock:       (field: FieldKey) => void
+  className?:     string
+  highlightCalc?: boolean         // campo calculado selecionado como indicador chave → visual proeminente
 }
 
 // ─── Formatação de valores ─────────────────────────────────────────────────
@@ -64,10 +65,14 @@ export function PlanningField({
   onEdit,
   onUnlock,
   className = '',
+  highlightCalc = false,
 }: PlanningFieldProps) {
   const isFree       = state === 'free'
   const isLocked     = state === 'locked'
   const isCalculated = state === 'calculated'
+
+  // Campo calculado selecionado como indicador chave: visual proeminente (branco)
+  const isHighlight  = isCalculated && highlightCalc
 
   const variation = calcVariation(value, baseValue ?? null)
 
@@ -82,9 +87,10 @@ export function PlanningField({
     <div
       className={`
         relative rounded-xl p-4 border-2 transition-all duration-200
-        ${isFree       ? 'bg-white border-transparent shadow-sm'        : ''}
-        ${isLocked     ? 'bg-amber-50 border-amber-400 shadow-amber-100' : ''}
-        ${isCalculated ? 'bg-[#F2F2F2] border-transparent'              : ''}
+        ${isFree       ? 'bg-white border-transparent shadow-sm'                  : ''}
+        ${isLocked     ? 'bg-amber-50 border-amber-400 shadow-amber-100'          : ''}
+        ${isHighlight  ? 'bg-white border-[#7598CF]/25 shadow-sm'                 : ''}
+        ${isCalculated && !isHighlight ? 'bg-[#F2F2F2] border-transparent'        : ''}
         ${className}
       `}
     >
@@ -93,7 +99,7 @@ export function PlanningField({
         <span
           className={`
             text-xs uppercase tracking-wide font-semibold leading-tight
-            ${isCalculated ? 'text-[#28071C]/40' : 'text-[#28071C]/60'}
+            ${isCalculated && !isHighlight ? 'text-[#28071C]/40' : 'text-[#28071C]/60'}
           `}
         >
           {label}
@@ -113,11 +119,11 @@ export function PlanningField({
           <div className="flex-shrink-0 w-3 h-3 rounded-full border-2 border-[#28071C]/25" />
         )}
         {isCalculated && (
-          <div className="flex-shrink-0 w-3 h-3 rounded-full bg-[#28071C]/20" />
+          <div className={`flex-shrink-0 w-3 h-3 rounded-full ${isHighlight ? 'bg-[#7598CF]/40' : 'bg-[#28071C]/20'}`} />
         )}
       </div>
 
-      {/* Input ou valor calculado */}
+      {/* Input (free) ou valor exibido (locked / calculated) */}
       {isFree ? (
         <input
           type="number"
@@ -139,8 +145,9 @@ export function PlanningField({
         <p
           className={`
             text-lg font-bold
-            ${isLocked     ? 'text-amber-700'     : ''}
-            ${isCalculated ? 'text-[#28071C]/50'   : ''}
+            ${isLocked                    ? 'text-amber-700'   : ''}
+            ${isHighlight                 ? 'text-[#28071C]/80': ''}
+            ${isCalculated && !isHighlight? 'text-[#28071C]/50': ''}
           `}
         >
           {formatValue(value, format)}

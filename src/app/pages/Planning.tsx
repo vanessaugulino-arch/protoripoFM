@@ -740,6 +740,7 @@ export default function Planning() {
                               helpText={f.getHelp(referenceYear, histRef, baseline)}
                               onEdit={setField}
                               onUnlock={unlock}
+                              highlightCalc={!!f.isCalc}
                             />
                           </div>
                         )}
