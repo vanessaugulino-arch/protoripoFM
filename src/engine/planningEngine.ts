@@ -162,7 +162,14 @@ export function recalculate(state: PlanningState): PlanningState {
 
   // ── PASSO 2: Escala Proporcional pela Receita (Fator de Crescimento) ─────
   // Aplica SOMENTE quando receitaBruta é o ÚNICO campo principal tocado.
-  // Os campos escalados ficam como 'calculated' (sem cadeado).
+  //
+  // Novos comportamentos:
+  //   • estoqueMediao, otbCompra, producaoPecas, pecasVendidas → valor escalado, estado FREE
+  //     (editável no painel — o usuário pode sobrescrever sem travar o campo)
+  //   • cobertura, giro → mantêm valor do baseline (índices relativos), estado FREE
+  //   • estoqueInicial  → valor escalado, estado CALCULATED (campo interno, não exibido)
+  //   • PMV             → valor NÃO recalculado, estado LOCKED (cadeado âmbar)
+  //     └── Se usuário desbloquear PMV → pecasVendidas passa a CALCULATED (ver unlockField)
   const CAMPOS_PRINCIPAIS: FieldKey[] = [
     'pmv', 'pecasVendidas', 'margemBruta', 'custoMedio',
     'giro', 'cobertura', 'estoqueMediao', 'otbCompra', 'producaoPecas',
@@ -174,15 +181,22 @@ export function recalculate(state: PlanningState): PlanningState {
   if (soAlterouReceita && v.receitaBruta && base.receitaBruta) {
     const fator = v.receitaBruta / base.receitaBruta
 
-    if (base.estoqueMediao  != null) { v.estoqueMediao  = base.estoqueMediao  * fator;                       s.estoqueMediao  = 'calculated' }
-    if (base.estoqueInicial != null) { v.estoqueInicial = base.estoqueInicial * fator;                       s.estoqueInicial = 'calculated' }
-    if (base.otbCompra      != null) { v.otbCompra      = base.otbCompra      * fator;                       s.otbCompra      = 'calculated' }
-    if (base.producaoPecas  != null) { v.producaoPecas  = Math.round(base.producaoPecas * fator);            s.producaoPecas  = 'calculated' }
-    if (base.pecasVendidas  != null) { v.pecasVendidas  = Math.round((base.pecasVendidas ?? 0) * fator);     s.pecasVendidas  = 'calculated' }
-    // Cobertura e Giro mantêm valor do baseline (índices relativos, não escalam com receita)
-    if (base.cobertura != null) { v.cobertura = base.cobertura; s.cobertura = 'calculated' }
-    if (base.giro      != null) { v.giro      = base.giro;      s.giro      = 'calculated' }
-    if (base.pmv       != null) { v.pmv       = base.pmv;       s.pmv       = 'calculated' }
+    // Campos escalados → FREE (valor atualizado, mas editável pelo usuário)
+    if (base.estoqueMediao != null) { v.estoqueMediao  = base.estoqueMediao  * fator;                   s.estoqueMediao  = 'free' }
+    if (base.otbCompra     != null) { v.otbCompra      = base.otbCompra      * fator;                   s.otbCompra      = 'free' }
+    if (base.producaoPecas != null) { v.producaoPecas  = Math.round(base.producaoPecas * fator);        s.producaoPecas  = 'free' }
+    if (base.pecasVendidas != null) { v.pecasVendidas  = Math.round((base.pecasVendidas ?? 0) * fator); s.pecasVendidas  = 'free' }
+
+    // Cobertura e Giro: índices relativos — mantêm valor do baseline, ficam FREE
+    if (base.cobertura != null) { v.cobertura = base.cobertura; s.cobertura = 'free' }
+    if (base.giro      != null) { v.giro      = base.giro;      s.giro      = 'free' }
+
+    // EstoqueInicial: campo interno, escala mas permanece CALCULATED
+    if (base.estoqueInicial != null) { v.estoqueInicial = base.estoqueInicial * fator; s.estoqueInicial = 'calculated' }
+
+    // PMV: NÃO é recalculado — apenas exibe cadeado (locked âmbar)
+    // O valor permanece o que estava; usuário pode desbloquear (ver unlockField)
+    if (v.pmv !== null) { s.pmv = 'locked' }
   }
 
   // ── PASSO 3: Triângulo T1 — Receita ↔ PMV ↔ Peças ───────────────────────
@@ -394,13 +408,28 @@ export function unlockField(state: PlanningState, field: FieldKey): PlanningStat
 
   const baselineValue = state.baseline[field] ?? null
 
-  const values = {
+  const values: PlanningValues = {
     ...state.values,
     [field]: baselineValue,
   }
-  const states = {
+  const states: Record<FieldKey, FieldState> = {
     ...state.states,
     [field]: 'free' as FieldState,
+  }
+
+  // ── Regra especial: desbloquear PMV ─────────────────────────────────────
+  // Quando o usuário clica no cadeado do PMV (que estava locked pela escala proporcional),
+  // PMV restaura ao histórico e Peças Vendidas passa imediatamente a CALCULATED (RL ÷ PMV).
+  if (field === 'pmv' && baselineValue !== null && baselineValue > 0) {
+    const rl =
+      values.receitaLiquida ??
+      (values.receitaBruta != null
+        ? values.receitaBruta - (values.devolucoes ?? 0)
+        : null)
+    if (rl !== null && rl > 0) {
+      values.pecasVendidas = rl / baselineValue
+      states.pecasVendidas = 'calculated'
+    }
   }
 
   return recalculate({ ...state, values, states, touched })
@@ -409,6 +438,31 @@ export function unlockField(state: PlanningState, field: FieldKey): PlanningStat
 // ─── Reseta tudo ao baseline ───────────────────────────────────────────────
 export function resetToBaseline(baseline: Partial<PlanningValues>): PlanningState {
   return buildStateFromBaseline(baseline)
+}
+
+// ─── Commita o estado ao salvar cenário ────────────────────────────────────
+// Regra: ao salvar, todos os campos visíveis ao usuário voltam a 'free' com
+// os valores atualizados da simulação. Apenas ALWAYS_CALCULATED permanece
+// 'calculated'. O set de touched é zerado para iniciar nova simulação limpa.
+export function commitScenarioState(state: PlanningState): PlanningState {
+  const s: Record<FieldKey, FieldState> = { ...state.states }
+
+  for (const key of Object.keys(s) as FieldKey[]) {
+    if (!ALWAYS_CALCULATED.includes(key)) {
+      // locked (ex: PMV após escala) e calculated (ex: pecasVendidas derivada)
+      // ambos voltam a 'free' — valor mantido, campo editável
+      if (s[key] === 'locked' || s[key] === 'calculated') {
+        s[key] = 'free'
+      }
+    }
+    // ALWAYS_CALCULATED: permanecem 'calculated' (mkdRS, gmroi, totalPecas…)
+  }
+
+  return {
+    ...state,
+    states:  s,
+    touched: new Set<FieldKey>(),  // limpa marcadores de toque — slate em branco
+  }
 }
 
 // ─── Gera nome do cenário: "2027-V1", "2027-V2" etc. ──────────────────────

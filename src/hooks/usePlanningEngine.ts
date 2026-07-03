@@ -10,6 +10,7 @@ import {
   recalculate,
   unlockField,
   resetToBaseline,
+  commitScenarioState,
   generateScenarioName,
   buildStateFromBaseline,
   MOCK_BASELINE,
@@ -117,17 +118,23 @@ export function usePlanningEngine(
     const yearScenarios = scenarios.filter(s => s.year === targetYear)
     const name = customName?.trim() || generateScenarioName(targetYear, yearScenarios.length)
 
+    // Commita o estado atual: locked/calculated → free, touched zerado.
+    // O snapshot salvo já reflete os valores da simulação com campos livres —
+    // ao recarregar, o usuário retoma editando a partir de um slate limpo.
+    const committed = commitScenarioState(current)
+
     const scenario: SavedScenario = {
       name,
       year:    targetYear,
       version: yearScenarios.length + 1,
       savedAt: new Date().toISOString(),
-      state:   serializeState(current),
+      state:   serializeState(committed),
     }
 
     const updated = [...scenarios, scenario]
     setScenarios(updated)
     setActive(scenario)
+    setCurrent(committed)   // painel: todos os campos voltam a free com valores atualizados
     setIsDirty(false)
 
     // Persiste — troque sessionStorage por supabase.from('scenarios').insert(...)
