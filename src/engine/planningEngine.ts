@@ -148,7 +148,7 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
 //   9. MKD
 //  10. GMROI
 //  11. Enforce ALWAYS_CALCULATED
-export function recalculate(state: PlanningState): PlanningState {
+export function recalculate(state: PlanningState, activeKeys?: string[]): PlanningState {
   const v = { ...state.values }
   const s = { ...state.states }
   const touched = new Set(state.touched)
@@ -234,6 +234,10 @@ export function recalculate(state: PlanningState): PlanningState {
 
   // ── PASSO 4: Triângulo T3 — Margem ↔ CustoMédio ↔ Receita ───────────────
   // Fórmula: Margem% = ((RL - CustoMédio * PeçasVendidas) / RL) * 100
+  //
+  // Lógica selection-aware (activeKeys):
+  //   • mkdPct E custoMedio ambos selecionados → ao alterar Margem: trava custo, deriva mkdPct
+  //   • caso contrário → comportamento padrão (deriva custoMedio)
   {
     const hasRL    = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasMarg  = touched.has('margemBruta')
@@ -242,6 +246,31 @@ export function recalculate(state: PlanningState): PlanningState {
     const rl       = v.receitaLiquida
     // Bug 4: se pecasVendidas ainda é null, deriva localmente de RL/PMV
     const pec      = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
+
+    // Regra selection-aware: ambos mkdPct e custoMedio selecionados como indicadores ativos
+    const ambosAtivos =
+      activeKeys !== undefined &&
+      activeKeys.includes('mkdPct') &&
+      activeKeys.includes('custoMedio')
+
+    // Helper: ao editar Margem com custo fixo, deriva mkdPct pelo delta de CPV
+    // targetCPV = RL × (1 - novaMargemPct/100); cpvDelta = targetCPV - custoAtual×peças
+    // Redução de CPV necessária → reduz mkd no mesmo montante (menos desconto = mais margem)
+    const applyMkdFromMargem = () => {
+      if (v.margemBruta === null || v.custoMedio === null || !rl || !pec || pec <= 0) return
+      const targetCPV  = rl * (1 - v.margemBruta / 100)
+      const currentCPV = v.custoMedio * pec
+      const cpvDelta   = targetCPV - currentCPV        // negativo quando margem aumenta
+      const curMkdRS   = v.mkdRS ?? (v.receitaBruta ? v.receitaBruta * (v.mkdPct ?? 0) / 100 : 0)
+      const newMkdRS   = Math.max(0, curMkdRS + cpvDelta)
+      if (v.receitaBruta && v.receitaBruta > 0) {
+        v.mkdPct = (newMkdRS / v.receitaBruta) * 100
+        s.mkdPct = 'calculated'
+        v.mkdRS  = newMkdRS
+        s.mkdRS  = 'calculated'
+      }
+      s.margemBruta = 'locked'
+    }
 
     if (t3 >= 2 && rl && pec && pec > 0) {
       if (hasMarg && hasCusto && v.margemBruta !== null && v.custoMedio) {
@@ -254,11 +283,17 @@ export function recalculate(state: PlanningState): PlanningState {
         s.receitaBruta   = 'calculated'
         s.margemBruta    = 'locked'
       } else if (hasRL && hasMarg && v.margemBruta !== null) {
-        // Receita + Margem → calcula CustoMédio e trava-o (locked)
-        const cpv    = rl * (1 - v.margemBruta / 100)
-        v.custoMedio = cpv / pec
-        s.custoMedio = 'locked'
-        s.margemBruta = 'locked'
+        if (ambosAtivos && v.custoMedio !== null) {
+          // Ambos selecionados: travar custo, derivar mkdPct
+          s.custoMedio = 'locked'
+          applyMkdFromMargem()
+        } else {
+          // Receita + Margem → calcula CustoMédio e trava-o (locked)
+          const cpv    = rl * (1 - v.margemBruta / 100)
+          v.custoMedio = cpv / pec
+          s.custoMedio = 'locked'
+          s.margemBruta = 'locked'
+        }
       } else if (hasRL && hasCusto && v.custoMedio) {
         // Receita + Custo → calcula Margem
         const cpv    = v.custoMedio * pec
@@ -267,10 +302,16 @@ export function recalculate(state: PlanningState): PlanningState {
         s.custoMedio  = 'locked'
       }
     } else if (hasMarg && !hasCusto && !hasRL && v.margemBruta !== null && rl && pec && pec > 0) {
-      // Apenas margemBruta tocada: calcula custoMedio silenciosamente e trava
-      const cpv    = rl * (1 - v.margemBruta / 100)
-      v.custoMedio = cpv / pec
-      s.custoMedio = 'locked'
+      if (ambosAtivos && v.custoMedio !== null) {
+        // Ambos selecionados: travar custo, derivar mkdPct
+        s.custoMedio = 'locked'
+        applyMkdFromMargem()
+      } else {
+        // Apenas margemBruta tocada: calcula custoMedio silenciosamente e trava
+        const cpv    = rl * (1 - v.margemBruta / 100)
+        v.custoMedio = cpv / pec
+        s.custoMedio = 'locked'
+      }
     } else if (hasCusto && !hasMarg && !hasRL && v.custoMedio && rl && pec && pec > 0) {
       // Apenas custoMedio tocado: recalcula margem
       const cpv    = v.custoMedio * pec
@@ -402,7 +443,7 @@ export function recalculate(state: PlanningState): PlanningState {
 }
 
 // ─── Reverte campo ao valor do baseline (clique no cadeado) ───────────────
-export function unlockField(state: PlanningState, field: FieldKey): PlanningState {
+export function unlockField(state: PlanningState, field: FieldKey, activeKeys?: string[]): PlanningState {
   const touched = new Set(state.touched)
   touched.delete(field)
 
@@ -432,7 +473,7 @@ export function unlockField(state: PlanningState, field: FieldKey): PlanningStat
     }
   }
 
-  return recalculate({ ...state, values, states, touched })
+  return recalculate({ ...state, values, states, touched }, activeKeys)
 }
 
 // ─── Reseta tudo ao baseline ───────────────────────────────────────────────

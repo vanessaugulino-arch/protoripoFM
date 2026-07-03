@@ -47,7 +47,8 @@ function deserializeState(
 // ─── Hook principal ────────────────────────────────────────────────────────
 export function usePlanningEngine(
   targetYear: number,
-  externalBaseline?: Partial<PlanningValues>  // quando vier do banco real, passa aqui
+  externalBaseline?: Partial<PlanningValues>,  // quando vier do banco real, passa aqui
+  activeKeys?: string[]                         // indicadores ativos (para engine selection-aware)
 ) {
   const storageKey = `fashionmind_planning_${targetYear}`
 
@@ -96,16 +97,16 @@ export function usePlanningEngine(
         values: { ...prev.values, [field]: value },
         states: { ...prev.states, [field]: 'free' },
         touched,
-      })
+      }, activeKeys)
     })
     setIsDirty(true)
-  }, [])
+  }, [activeKeys])
 
   // ── Usuário clica no cadeado: restaura ao valor histórico ────────────────
   const unlock = useCallback((field: FieldKey) => {
-    setCurrent(prev => unlockField(prev, field))
+    setCurrent(prev => unlockField(prev, field, activeKeys))
     setIsDirty(true)
-  }, [])
+  }, [activeKeys])
 
   // ── Reseta tudo ao baseline ──────────────────────────────────────────────
   const reset = useCallback(() => {

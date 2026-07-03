@@ -230,10 +230,21 @@ export default function Planning() {
     ticketMedio:   histRef.ticketMedio,
   }), [histRef, referenceYear])
 
+  // activeKeysList deve vir ANTES do hook (hook fecha sobre ela)
+  const activeKeysList = useMemo(() => {
+    if (fieldPriorities.length === 0) return undefined
+    const isActiveFP = (fp: PlanFieldPriority) =>
+      fp.status ? fp.status !== 'inactive' && fp.status !== 'dismissed' : fp.isPriority
+    return fieldPriorities
+      .filter(isActiveFP)
+      .sort((a, b) => a.rank - b.rank)
+      .map(fp => fp.key)
+  }, [fieldPriorities])
+
   const {
     current, isDirty, activeScenario, scenarios,
     setField, unlock, saveScenario, loadScenario, reset,
-  } = usePlanningEngine(year, baseline)
+  } = usePlanningEngine(year, baseline, activeKeysList)
 
   const v = current.values
   const s = current.states
@@ -255,28 +266,23 @@ export default function Planning() {
 
   // ── Field split by status ────────────────────────────────────────────────
   const { activeDefs, calcDefs } = useMemo(() => {
-    const calcDefs     = FIELD_DEFS.filter(f => f.isCalc)
-    const editableDefs = FIELD_DEFS.filter(f => !f.isCalc)
-
-    if (fieldPriorities.length === 0) {
-      return { activeDefs: editableDefs, calcDefs }
+    if (!activeKeysList || activeKeysList.length === 0) {
+      return {
+        activeDefs: FIELD_DEFS.filter(f => !f.isCalc),
+        calcDefs:   FIELD_DEFS.filter(f =>  f.isCalc),
+      }
     }
 
-    const isActive = (fp: PlanFieldPriority) =>
-      fp.status ? fp.status !== 'inactive' && fp.status !== 'dismissed' : fp.isPriority
+    // Busca em TODOS os FIELD_DEFS (incluindo isCalc) — ex: gmroi pode ser selecionado
+    const activeDefs = activeKeysList
+      .map(k => FIELD_DEFS.find(d => d.key === k))
+      .filter(Boolean) as FieldDef[]
 
-    const activeKeys = fieldPriorities
-      .filter(isActive)
-      .sort((a, b) => a.rank - b.rank)
-      .map(fp => fp.key)
-
-    const byKey = (keys: string[]) =>
-      keys.map(k => editableDefs.find(d => d.key === k)).filter(Boolean) as FieldDef[]
-
-    const activeDefs = byKey(activeKeys)
+    // calcDefs: apenas campos calculados que NÃO estão na seleção do usuário
+    const calcDefs = FIELD_DEFS.filter(f => f.isCalc && !activeKeysList.includes(f.key))
 
     return { activeDefs, calcDefs }
-  }, [fieldPriorities])
+  }, [activeKeysList])
 
   // ── Field meta helpers ───────────────────────────────────────────────────
   const getFieldPriority = (key: string) => fieldPriorities.find(fp => fp.key === key)
@@ -296,6 +302,9 @@ export default function Planning() {
 
   // Col 2 + Col 3 rows — order follows activeDefs, then the rest
   const { allPlanRows, refRows, planSplitAt, refSplitAt } = useMemo(() => {
+    const histMkdPct = +((histSel.markdown / histSel.receita) * 100).toFixed(1)
+    const histCustoMedio = custoMedioPorAno[selectedHistorical] ?? 87
+
     const planBase = [
       { key: "receitaBruta",  label: "Receita (R$)",       plan: v.receitaBruta,  ref: histSel.receita        },
       { key: "margemBruta",   label: "Margem Bruta (%)",   plan: v.margemBruta,   ref: histSel.margemBruta     },
@@ -306,6 +315,8 @@ export default function Planning() {
       { key: "producaoPecas", label: "Produção (peças)",   plan: v.producaoPecas, ref: histSel.producao        },
       { key: "ticketMedio",   label: "Ticket Médio (R$)",  plan: v.ticketMedio,   ref: histSel.ticketMedio     },
       { key: "estoqueMediao",  label: "Estoque Médio (R$)", plan: v.estoqueMediao,  ref: histSel.estoqueMedioRS  },
+      { key: "custoMedio",    label: "Custo Médio (R$)",   plan: v.custoMedio,    ref: histCustoMedio          },
+      { key: "mkdPct",        label: "Markdown (%)",       plan: v.mkdPct,        ref: histMkdPct             },
       { key: "mkdRS",         label: "Markdown (R$)",      plan: v.mkdRS,         ref: histSel.markdown        },
       { key: "gmroi",         label: "GMROI",              plan: v.gmroi,         ref: histSel.gmroi           },
     ]
@@ -321,6 +332,8 @@ export default function Planning() {
       { key: "ticketMedio",       label: "Ticket Médio (R$)",      value: histSel.ticketMedio,       fmt: "currency"   },
       { key: "estoqueMediao",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
       { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
+      { key: "custoMedio",        label: "Custo Médio (R$)",       value: histCustoMedio,            fmt: "currency"   },
+      { key: "mkdPct",            label: "Markdown (%)",           value: histMkdPct,                fmt: "percent"    },
       { key: "mkdRS",             label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },
       { key: "gmroi",             label: "GMROI",                  value: histSel.gmroi,             fmt: "multiplier" },
     ]
