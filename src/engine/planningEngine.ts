@@ -1,5 +1,5 @@
 // src/engine/planningEngine.ts
-// v3 — triângulos bidirecionais completos + OTB real + escala proporcional
+// v4 — todos indicadores derivados, baseline robusto, T1 com fallback de RL
 
 export type FieldKey =
   | 'receitaBruta'
@@ -11,29 +11,31 @@ export type FieldKey =
   | 'estoqueInicial'
   | 'estoqueFinal'
   | 'estoqueMediao'
-  | 'giro'
+  | 'estoqueMedioPecas'  // Estoque Médio em peças = estoqueMediao / custoMedio
+  | 'giro'               // Giro (R$) = RL / estoqueMediao
+  | 'giroUnidades'       // Giro (peças) = pecasVendidas / estoqueMedioPecas
   | 'cobertura'
   | 'mkdPct'
   | 'mkdRS'
-  | 'otbCompra'       // OTB de COMPRA em R$ (separado da produção)
-  | 'otbTotal'        // OTB total = compra + produção em valor
-  | 'producaoPecas'   // volume de produção em peças (definido pelo usuário ou calculado)
-  | 'producaoValor'   // produção em R$ = producaoPecas * custoMedio (sempre calculado)
-  | 'comprasPecas'    // peças compradas = totalPecas - producaoPecas
+  | 'otbCompra'          // OTB de COMPRA em R$ (separado da produção)
+  | 'otbTotal'           // OTB total = compra + produção em valor
+  | 'producaoPecas'      // volume de produção em peças (definido pelo usuário ou calculado)
+  | 'producaoValor'      // produção em R$ = producaoPecas × custoMedio (sempre calculado)
+  | 'comprasPecas'       // peças compradas = totalPecas - producaoPecas
   | 'totalPecas'
   | 'gmroi'
   | 'custoMedio'
-  | 'ticketMedio'     // Receita Bruta ÷ Nº de clientes — definido pelo usuário, sem cálculo automático
+  | 'ticketMedio'
 
 export type FieldState = 'free' | 'locked' | 'calculated'
 
 export interface PlanningValues extends Record<FieldKey, number | null> {}
 
 export interface PlanningState {
-  values: PlanningValues
-  states: Record<FieldKey, FieldState>
-  touched: Set<FieldKey>
-  baseline: Partial<PlanningValues> // dados históricos — fonte da verdade para unlock
+  values:   PlanningValues
+  states:   Record<FieldKey, FieldState>
+  touched:  Set<FieldKey>
+  baseline: Partial<PlanningValues>
 }
 
 // ─── Campos sempre calculados (nunca livres) ───────────────────────────────
@@ -45,43 +47,47 @@ export const ALWAYS_CALCULATED: FieldKey[] = [
   'producaoValor',
   'otbTotal',
   'comprasPecas',
+  'estoqueMedioPecas',
+  'giroUnidades',
 ]
 
 // ─── Estado inicial de campos ─────────────────────────────────────────────
 export const INITIAL_STATES: Record<FieldKey, FieldState> = {
-  receitaBruta:    'free',
-  devolucoes:      'free',
-  receitaLiquida:  'calculated',
-  margemBruta:     'free',
-  pmv:             'free',
-  pecasVendidas:   'free',
-  estoqueInicial:  'free',
-  estoqueFinal:    'free',
-  estoqueMediao:   'free',
-  giro:            'free',
-  cobertura:       'free',
-  mkdPct:          'free',
-  mkdRS:           'calculated',
-  otbCompra:       'free',
-  otbTotal:        'calculated',
-  producaoPecas:   'free',
-  producaoValor:   'calculated',
-  comprasPecas:    'calculated',
-  totalPecas:      'calculated',
-  gmroi:           'calculated',
-  custoMedio:      'free',
-  ticketMedio:     'free',
+  receitaBruta:      'free',
+  devolucoes:        'free',
+  receitaLiquida:    'calculated',
+  margemBruta:       'free',
+  pmv:               'free',
+  pecasVendidas:     'free',
+  estoqueInicial:    'free',
+  estoqueFinal:      'free',
+  estoqueMediao:     'free',
+  estoqueMedioPecas: 'calculated',
+  giro:              'free',
+  giroUnidades:      'calculated',
+  cobertura:         'free',
+  mkdPct:            'free',
+  mkdRS:             'calculated',
+  otbCompra:         'free',
+  otbTotal:          'calculated',
+  producaoPecas:     'free',
+  producaoValor:     'calculated',
+  comprasPecas:      'calculated',
+  totalPecas:        'calculated',
+  gmroi:             'calculated',
+  custoMedio:        'free',
+  ticketMedio:       'free',
 }
 
 export const INITIAL_VALUES: PlanningValues = {
-  receitaBruta:   null, devolucoes:     null, receitaLiquida: null,
-  margemBruta:    null, pmv:            null, pecasVendidas:  null,
-  estoqueInicial: null, estoqueFinal:   null, estoqueMediao:  null,
-  giro:           null, cobertura:      null, mkdPct:         null,
-  mkdRS:          null, otbCompra:      null, otbTotal:       null,
-  producaoPecas:  null, producaoValor:  null, comprasPecas:   null,
-  totalPecas:     null, gmroi:          null, custoMedio:     null,
-  ticketMedio:    null,
+  receitaBruta:      null, devolucoes:        null, receitaLiquida:    null,
+  margemBruta:       null, pmv:               null, pecasVendidas:     null,
+  estoqueInicial:    null, estoqueFinal:      null, estoqueMediao:     null,
+  estoqueMedioPecas: null, giro:              null, giroUnidades:      null,
+  cobertura:         null, mkdPct:            null, mkdRS:             null,
+  otbCompra:         null, otbTotal:          null, producaoPecas:     null,
+  producaoValor:     null, comprasPecas:      null, totalPecas:        null,
+  gmroi:             null, custoMedio:        null, ticketMedio:       null,
 }
 
 // ─── Dados hipotéticos para validação (substitua por importação real) ──────
@@ -89,13 +95,15 @@ export const MOCK_BASELINE: Partial<PlanningValues> = {
   receitaBruta:   2850000,
   devolucoes:     142500,
   receitaLiquida: 2707500,
-  margemBruta:    52,         // 52%
-  pmv:            189,        // R$ 189 preço médio de venda
+  margemBruta:    52,
+  pmv:            189,
   pecasVendidas:  14327,
-  estoqueInicial: 680000,     // R$ em custo
+  estoqueInicial: 680000,
   estoqueMediao:  620000,
+  estoqueMedioPecas: 7126,  // 620000 / 87
   giro:           4.37,
-  cobertura:      83,         // dias
+  giroUnidades:   2.01,     // 14327 / 7126
+  cobertura:      83,
   mkdPct:         12,
   custoMedio:     87,
   producaoPecas:  4200,
@@ -106,70 +114,83 @@ export const MOCK_BASELINE: Partial<PlanningValues> = {
 export function buildStateFromBaseline(baseline: Partial<PlanningValues>): PlanningState {
   const values: PlanningValues = { ...INITIAL_VALUES }
 
-  // Popula com os dados do baseline
   for (const key of Object.keys(baseline) as FieldKey[]) {
     values[key] = baseline[key] ?? null
   }
 
   const states: Record<FieldKey, FieldState> = { ...INITIAL_STATES }
 
-  // Campos derivados que já conhecemos a partir do baseline
-  if (values.receitaBruta !== null && values.devolucoes !== null) {
-    values.receitaLiquida = values.receitaBruta - values.devolucoes
+  // Reconstrói devolucoes quando apenas receitaBruta + receitaLiquida estão presentes
+  if (values.devolucoes === null && values.receitaBruta !== null && values.receitaLiquida !== null) {
+    values.devolucoes = values.receitaBruta - values.receitaLiquida
+  }
+
+  // Deriva receitaLiquida (devolucoes pode ser 0)
+  if (values.receitaBruta !== null) {
+    values.receitaLiquida = values.receitaBruta - (values.devolucoes ?? 0)
     states.receitaLiquida = 'calculated'
   }
+
   if (values.receitaBruta !== null && values.mkdPct !== null) {
     values.mkdRS = values.receitaBruta * (values.mkdPct / 100)
     states.mkdRS = 'calculated'
   }
+
   if (values.producaoPecas !== null && values.custoMedio !== null) {
     values.producaoValor = values.producaoPecas * values.custoMedio
     states.producaoValor = 'calculated'
   }
+
   if (values.otbCompra !== null && values.producaoValor !== null) {
     values.otbTotal = values.otbCompra + values.producaoValor
     states.otbTotal = 'calculated'
   }
 
-  // touched vazio — baseline não trava nenhum campo
+  if (values.estoqueMediao !== null && values.custoMedio !== null && values.custoMedio > 0) {
+    values.estoqueMedioPecas = values.estoqueMediao / values.custoMedio
+    states.estoqueMedioPecas = 'calculated'
+  }
+
+  if (values.pecasVendidas !== null && values.estoqueMedioPecas !== null && values.estoqueMedioPecas > 0) {
+    values.giroUnidades = values.pecasVendidas / values.estoqueMedioPecas
+    states.giroUnidades = 'calculated'
+  }
+
   return { values, states, touched: new Set<FieldKey>(), baseline }
 }
 
 // ─── Motor de recálculo principal ─────────────────────────────────────────
-// Ordem de prioridade:
-//   1. Receita Líquida
-//   2. Escala proporcional (só receitaBruta tocada)
-//   3. T1 — Receita ↔ PMV ↔ Peças
-//   4. T3 — Margem ↔ CustoMédio ↔ Receita (engenharia reversa)
-//   5. T2 — Giro ↔ EstoqueMédio ↔ Cobertura → OTB silencioso
-//   6. OTB delta: (PeçasVendidas * Custo) + (EstoqueMediao - BaselineEstoqueMediao)
-//   7. Produção em valor, Estoque Final, OTB Total
-//   8. Peças Compradas / Total de Peças
-//   9. MKD
-//  10. GMROI
-//  11. Enforce ALWAYS_CALCULATED
+// Ordem de passes:
+//   1.  Receita Líquida (com fallback devolucoes=0)
+//   2.  Escala proporcional (só receitaBruta tocada)
+//   3.  T1 — Receita ↔ PMV ↔ Peças Vendidas
+//   4.  T3 — Margem ↔ CustoMédio ↔ Receita + regra mkdPct selection-aware
+//   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura
+//   6.  OTB delta
+//   7.  Produção em valor / Estoque Final / OTB Total
+//   8.  Peças Compradas / Total de Peças
+//   9.  MKD (R$)
+//  10.  GMROI
+//  11.  Estoque Médio (peças) + Giro (peças) — campos derivados novos
+//  12.  Enforce ALWAYS_CALCULATED
 export function recalculate(state: PlanningState, activeKeys?: string[]): PlanningState {
-  const v = { ...state.values }
-  const s = { ...state.states }
+  const v       = { ...state.values }
+  const s       = { ...state.states }
   const touched = new Set(state.touched)
-  const base = state.baseline
+  const base    = state.baseline
 
   // ── PASSO 1: Receita Líquida ──────────────────────────────────────────────
-  if (v.receitaBruta !== null && v.devolucoes !== null) {
-    v.receitaLiquida = v.receitaBruta - v.devolucoes
+  // Quando devolucoes é null assume-se 0 (sem devoluções informadas).
+  // Isso garante que RL sempre existe quando receitaBruta existe.
+  if (v.receitaBruta !== null) {
+    v.receitaLiquida = v.receitaBruta - (v.devolucoes ?? 0)
     s.receitaLiquida = 'calculated'
   }
 
-  // ── PASSO 2: Escala Proporcional pela Receita (Fator de Crescimento) ─────
+  // ── PASSO 2: Escala Proporcional pela Receita ─────────────────────────────
   // Aplica SOMENTE quando receitaBruta é o ÚNICO campo principal tocado.
-  //
-  // Comportamentos:
-  //   • estoqueMediao, otbCompra, producaoPecas, pecasVendidas → valor escalado, estado FREE
-  //     (editável no painel — o usuário pode sobrescrever sem travar o campo)
-  //   • cobertura, giro → mantêm valor do baseline (índices relativos), estado FREE
-  //   • estoqueInicial  → valor escalado, estado CALCULATED (campo interno, não exibido)
-  //   • PMV             → NÃO é alterado nem bloqueado; como peças também escala pelo
-  //                       mesmo fator, PMV = RL/peças se mantém matematicamente consistente
+  // PMV NÃO é bloqueado: como peças e RL escalam pelo mesmo fator,
+  // PMV = RL/peças permanece igual ao baseline (matematicamente consistente).
   const CAMPOS_PRINCIPAIS: FieldKey[] = [
     'pmv', 'pecasVendidas', 'margemBruta', 'custoMedio',
     'giro', 'cobertura', 'estoqueMediao', 'otbCompra', 'producaoPecas',
@@ -181,39 +202,33 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   if (soAlterouReceita && v.receitaBruta && base.receitaBruta) {
     const fator = v.receitaBruta / base.receitaBruta
 
-    // Campos escalados → FREE (valor atualizado, mas editável pelo usuário)
-    if (base.estoqueMediao != null) { v.estoqueMediao  = base.estoqueMediao  * fator;                   s.estoqueMediao  = 'free' }
-    if (base.otbCompra     != null) { v.otbCompra      = base.otbCompra      * fator;                   s.otbCompra      = 'free' }
-    if (base.producaoPecas != null) { v.producaoPecas  = Math.round(base.producaoPecas * fator);        s.producaoPecas  = 'free' }
-    if (base.pecasVendidas != null) { v.pecasVendidas  = Math.round((base.pecasVendidas ?? 0) * fator); s.pecasVendidas  = 'free' }
-
-    // Cobertura e Giro: índices relativos — mantêm valor do baseline, ficam FREE
-    if (base.cobertura != null) { v.cobertura = base.cobertura; s.cobertura = 'free' }
-    if (base.giro      != null) { v.giro      = base.giro;      s.giro      = 'free' }
-
-    // EstoqueInicial: campo interno, escala mas permanece CALCULATED
-    if (base.estoqueInicial != null) { v.estoqueInicial = base.estoqueInicial * fator; s.estoqueInicial = 'calculated' }
-
-    // PMV: NÃO é alterado nem bloqueado — peças e RL escalam pelo mesmo fator,
-    // portanto PMV = RL/peças permanece igual ao baseline (matematicamente consistente).
+    if (base.estoqueMediao   != null) { v.estoqueMediao   = base.estoqueMediao   * fator;                   s.estoqueMediao   = 'free' }
+    if (base.otbCompra       != null) { v.otbCompra       = base.otbCompra       * fator;                   s.otbCompra       = 'free' }
+    if (base.producaoPecas   != null) { v.producaoPecas   = Math.round(base.producaoPecas * fator);         s.producaoPecas   = 'free' }
+    if (base.pecasVendidas   != null) { v.pecasVendidas   = Math.round((base.pecasVendidas ?? 0) * fator);  s.pecasVendidas   = 'free' }
+    if (base.cobertura       != null) { v.cobertura       = base.cobertura;                                  s.cobertura       = 'free' }
+    if (base.giro            != null) { v.giro            = base.giro;                                      s.giro            = 'free' }
+    if (base.estoqueInicial  != null) { v.estoqueInicial  = base.estoqueInicial  * fator;                   s.estoqueInicial  = 'calculated' }
   }
 
-  // ── PASSO 3: Triângulo T1 — Receita ↔ PMV ↔ Peças ───────────────────────
-  // Regra: editar PMV impacta pecasVendidas; o volume resultante alimenta T2 e OTB.
+  // ── PASSO 3: Triângulo T1 — Receita ↔ PMV ↔ Peças Vendidas ───────────────
+  // Quando receita + PMV ambos mudaram → deriva peças.
+  // Usa receitaBruta como fallback de RL quando devolucoes não está disponível.
   if (!soAlterouReceita) {
     const hasRL  = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasPMV = touched.has('pmv')
     const hasPec = touched.has('pecasVendidas')
     const t1     = [hasRL, hasPMV, hasPec].filter(Boolean).length
 
+    // RL efetivo: preferir receitaLiquida calculada, cair em receitaBruta se necessário
+    const rlEf = v.receitaLiquida ?? v.receitaBruta
+
     if (t1 >= 2) {
-      if (hasRL && hasPMV && v.receitaLiquida && v.pmv && v.pmv > 0) {
-        // Receita + PMV → calcula Peças (Bug 3: sem travar PMV)
-        v.pecasVendidas = v.receitaLiquida / v.pmv
+      if (hasRL && hasPMV && rlEf && v.pmv && v.pmv > 0) {
+        v.pecasVendidas = rlEf / v.pmv
         s.pecasVendidas = 'calculated'
-      } else if (hasRL && hasPec && v.receitaLiquida && v.pecasVendidas && v.pecasVendidas > 0) {
-        // Receita + Peças → calcula PMV
-        v.pmv           = v.receitaLiquida / v.pecasVendidas
+      } else if (hasRL && hasPec && rlEf && v.pecasVendidas && v.pecasVendidas > 0) {
+        v.pmv           = rlEf / v.pecasVendidas
         s.pmv           = 'calculated'
         s.pecasVendidas = 'locked'
       } else if (hasPMV && hasPec && v.pmv && v.pecasVendidas && v.pmv > 0) {
@@ -224,42 +239,43 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         s.receitaBruta   = 'calculated'
         s.pmv            = 'locked'
       }
-    } else if (hasPMV && v.pmv && v.pmv > 0 && v.receitaLiquida) {
-      // Apenas PMV tocado: deriva pecasVendidas silenciosamente (calculated)
-      v.pecasVendidas = v.receitaLiquida / v.pmv
+    } else if (hasPMV && v.pmv && v.pmv > 0 && rlEf) {
+      // Apenas PMV tocado: deriva peças silenciosamente
+      v.pecasVendidas = rlEf / v.pmv
       s.pecasVendidas = 'calculated'
+    } else if (hasPec && v.pecasVendidas && v.pecasVendidas > 0 && rlEf) {
+      // Apenas peças tocadas: deriva PMV silenciosamente
+      v.pmv = rlEf / v.pecasVendidas
+      s.pmv = 'calculated'
     }
   }
 
   // ── PASSO 4: Triângulo T3 — Margem ↔ CustoMédio ↔ Receita ───────────────
-  // Fórmula: Margem% = ((RL - CustoMédio * PeçasVendidas) / RL) * 100
+  // Margem% = ((RL - CustoMédio × Peças) / RL) × 100
   //
-  // Lógica selection-aware (activeKeys):
-  //   • mkdPct E custoMedio ambos selecionados → ao alterar Margem: trava custo, deriva mkdPct
-  //   • caso contrário → comportamento padrão (deriva custoMedio)
+  // Selection-aware (activeKeys):
+  //   • mkdPct E custoMedio ambos ativos → editar Margem: trava custo, deriva mkdPct
+  //   • mkdPct editado E custoMedio ativo → mantém margem, recalcula custoMedio
   {
     const hasRL    = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasMarg  = touched.has('margemBruta')
     const hasCusto = touched.has('custoMedio')
+    const hasMkd   = touched.has('mkdPct')
     const t3       = [hasRL, hasMarg, hasCusto].filter(Boolean).length
-    const rl       = v.receitaLiquida
-    // Bug 4: se pecasVendidas ainda é null, deriva localmente de RL/PMV
-    const pec      = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
 
-    // Regra selection-aware: quais indicadores estão ativos
+    const rl  = v.receitaLiquida ?? v.receitaBruta  // fallback
+    const pec = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
+
     const hasMkdSelected   = activeKeys?.includes('mkdPct')    ?? false
     const hasCustoSelected = activeKeys?.includes('custoMedio') ?? false
-    // Ambos selecionados: ao editar margem → trava custo, deriva mkdPct
     const ambosAtivos      = hasMkdSelected && hasCustoSelected
 
-    // Helper: ao editar Margem com custo fixo, deriva mkdPct pelo delta de CPV
-    // targetCPV = RL × (1 - novaMargemPct/100); cpvDelta = targetCPV - custoAtual×peças
-    // Redução de CPV necessária → reduz mkd no mesmo montante (menos desconto = mais margem)
+    // Helper: deriva mkdPct mantendo custo fixo
     const applyMkdFromMargem = () => {
       if (v.margemBruta === null || v.custoMedio === null || !rl || !pec || pec <= 0) return
       const targetCPV  = rl * (1 - v.margemBruta / 100)
       const currentCPV = v.custoMedio * pec
-      const cpvDelta   = targetCPV - currentCPV        // negativo quando margem aumenta
+      const cpvDelta   = targetCPV - currentCPV
       const curMkdRS   = v.mkdRS ?? (v.receitaBruta ? v.receitaBruta * (v.mkdPct ?? 0) / 100 : 0)
       const newMkdRS   = Math.max(0, curMkdRS + cpvDelta)
       if (v.receitaBruta && v.receitaBruta > 0) {
@@ -273,9 +289,8 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
 
     if (t3 >= 2 && rl && pec && pec > 0) {
       if (hasMarg && hasCusto && v.margemBruta !== null && v.custoMedio) {
-        // Margem + Custo → força Receita (engenharia reversa)
-        // RL = (CustoMédio * Peças) / (1 - Margem%)
-        const cpv    = v.custoMedio * pec
+        // Margem + Custo → força Receita
+        const cpv        = v.custoMedio * pec
         v.receitaLiquida = cpv / (1 - v.margemBruta / 100)
         v.receitaBruta   = v.receitaLiquida + (v.devolucoes ?? 0)
         s.receitaLiquida = 'calculated'
@@ -283,46 +298,36 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         s.margemBruta    = 'locked'
       } else if (hasRL && hasMarg && v.margemBruta !== null) {
         if (ambosAtivos && v.custoMedio !== null) {
-          // Ambos selecionados: travar custo, derivar mkdPct
           s.custoMedio = 'locked'
           applyMkdFromMargem()
         } else {
-          // Receita + Margem → calcula CustoMédio e trava-o (locked)
           const cpv    = rl * (1 - v.margemBruta / 100)
           v.custoMedio = cpv / pec
           s.custoMedio = 'locked'
           s.margemBruta = 'locked'
         }
       } else if (hasRL && hasCusto && v.custoMedio) {
-        // Receita + Custo → calcula Margem
-        const cpv    = v.custoMedio * pec
+        const cpv     = v.custoMedio * pec
         v.margemBruta = ((rl - cpv) / rl) * 100
         s.margemBruta = 'calculated'
         s.custoMedio  = 'locked'
       }
     } else if (hasMarg && !hasCusto && !hasRL && v.margemBruta !== null && rl && pec && pec > 0) {
       if (ambosAtivos && v.custoMedio !== null) {
-        // Ambos selecionados: travar custo, derivar mkdPct
         s.custoMedio = 'locked'
         applyMkdFromMargem()
       } else {
-        // Apenas margemBruta tocada: calcula custoMedio silenciosamente e trava
         const cpv    = rl * (1 - v.margemBruta / 100)
         v.custoMedio = cpv / pec
         s.custoMedio = 'locked'
       }
     } else if (hasCusto && !hasMarg && !hasRL && v.custoMedio && rl && pec && pec > 0) {
-      // Apenas custoMedio tocado: recalcula margem
-      const cpv    = v.custoMedio * pec
+      const cpv     = v.custoMedio * pec
       v.margemBruta = ((rl - cpv) / rl) * 100
       s.margemBruta = 'calculated'
     }
 
-    // ── Regra mkdPct → custoMedio ─────────────────────────────────────────
-    // Quando mkdPct é editado E custoMedio está nos indicadores ativos:
-    // → manter a margem atual, derivar custo a partir de RL e margem
-    //   (menos desconto = espaço para custo maior e vice-versa)
-    const hasMkd = touched.has('mkdPct')
+    // mkdPct editado + custoMedio ativo → recalcula custo para manter margem
     if (hasMkd && !hasMarg && !hasCusto && hasCustoSelected && rl && pec && pec > 0) {
       const margem = v.margemBruta
       if (margem !== null) {
@@ -333,45 +338,39 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
   }
 
-  // ── PASSO 5: Triângulo T2 — Giro ↔ EstoqueMédio ↔ Cobertura ─────────────
-  // Após resolver T2, EstoqueMédio e OTB são recalculados silenciosamente.
+  // ── PASSO 5: Triângulo T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura ─────
   {
     const hasGiro   = touched.has('giro')
     const hasEstMed = touched.has('estoqueMediao')
     const hasCober  = touched.has('cobertura')
     const t2        = [hasGiro, hasEstMed, hasCober].filter(Boolean).length
-    const rl        = v.receitaLiquida
+    const rl        = v.receitaLiquida ?? v.receitaBruta
 
     if (t2 >= 2 && rl && rl > 0) {
       if (hasGiro && hasEstMed && v.giro && v.giro > 0 && v.estoqueMediao) {
-        // Giro + Estoque → Cobertura (dias)
         v.cobertura = (v.estoqueMediao / rl) * 365
         s.cobertura = 'calculated'
         s.giro      = 'locked'
       } else if (hasGiro && hasCober && v.giro && v.giro > 0 && v.cobertura) {
-        // Giro + Cobertura → EstoqueMédio (R$)
         v.estoqueMediao = rl / v.giro
         s.estoqueMediao = 'calculated'
         s.cobertura     = 'locked'
       } else if (hasEstMed && hasCober && v.estoqueMediao && v.estoqueMediao > 0 && v.cobertura) {
-        // Estoque + Cobertura → Giro
         v.giro          = rl / v.estoqueMediao
         s.giro          = 'calculated'
         s.estoqueMediao = 'locked'
       }
     } else if (!soAlterouReceita && rl && rl > 0) {
-      // Derivações silenciosas (1 vértice tocado)
-      // Bug 5: gangorra — tocar Giro trava Cobertura, tocar Cobertura trava Giro
       if (hasGiro && v.giro && v.giro > 0) {
         v.estoqueMediao = rl / v.giro
         s.estoqueMediao = 'calculated'
         if (v.estoqueMediao > 0) {
           v.cobertura = (v.estoqueMediao / rl) * 365
-          s.cobertura = 'locked'   // Bug 5: trava Cobertura quando Giro é editado
+          s.cobertura = 'locked'
         }
       } else if (hasEstMed && v.estoqueMediao && v.estoqueMediao > 0) {
-        v.giro = rl / v.estoqueMediao
-        s.giro = 'calculated'
+        v.giro      = rl / v.estoqueMediao
+        s.giro      = 'calculated'
         v.cobertura = (v.estoqueMediao / rl) * 365
         s.cobertura = 'calculated'
       } else if (hasCober && v.cobertura && v.cobertura > 0) {
@@ -379,30 +378,25 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         s.estoqueMediao = 'calculated'
         if (v.estoqueMediao > 0) {
           v.giro = rl / v.estoqueMediao
-          s.giro = 'locked'        // Bug 5: trava Giro quando Cobertura é editada
+          s.giro = 'locked'
         }
       }
     }
   }
 
   // ── PASSO 6: OTB com fórmula delta ───────────────────────────────────────
-  // OTB (R$) = (PeçasVendidas × CustoMédio) + (EstoqueMédioPlano − EstoqueMédioBaseline)
-  // Bug 6: OTB só vira 'calculated' quando producaoPecas foi tocado (funil de abastecimento).
-  // Caso contrário, o valor é computado para exibição mas o campo permanece 'free' (editável).
   if (!touched.has('otbCompra')) {
-    const pec       = v.pecasVendidas
-    const custo     = v.custoMedio
-    const estPlan   = v.estoqueMediao
-    const estBase   = base.estoqueMediao ?? 0
+    const pec     = v.pecasVendidas
+    const custo   = v.custoMedio
+    const estPlan = v.estoqueMediao
+    const estBase = base.estoqueMediao ?? 0
 
     if (pec !== null && custo !== null && custo > 0 && estPlan !== null) {
       const otbCalc = (pec * custo) + (estPlan - estBase)
       v.otbCompra   = Math.max(0, otbCalc)
-      // Só trava como 'calculated' se o usuário definiu Produção (funil de abastecimento)
       if (touched.has('producaoPecas')) {
         s.otbCompra = 'calculated'
       }
-      // Caso contrário, mantém 'free' — o valor exibido é uma sugestão editável
     }
   }
 
@@ -434,7 +428,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   v.totalPecas = (v.comprasPecas ?? 0) + (v.producaoPecas ?? 0)
   s.totalPecas = 'calculated'
 
-  // ── PASSO 9: MKD ─────────────────────────────────────────────────────────
+  // ── PASSO 9: MKD (R$) ────────────────────────────────────────────────────
   if (v.receitaBruta && v.mkdPct !== null) {
     v.mkdRS = v.receitaBruta * (v.mkdPct / 100)
     s.mkdRS = 'calculated'
@@ -443,11 +437,21 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // ── PASSO 10: GMROI ───────────────────────────────────────────────────────
   if (v.receitaLiquida && v.margemBruta !== null && v.estoqueMediao && v.estoqueMediao > 0) {
     const lucroBruto = v.receitaLiquida * (v.margemBruta / 100)
-    v.gmroi = lucroBruto / v.estoqueMediao
-    s.gmroi = 'calculated'
+    v.gmroi          = lucroBruto / v.estoqueMediao
+    s.gmroi          = 'calculated'
   }
 
-  // ── PASSO 11: Garante que always-calculated nunca sejam 'free' ───────────
+  // ── PASSO 11: Estoque Médio (peças) + Giro (peças) ───────────────────────
+  if (v.estoqueMediao !== null && custo !== null && custo > 0) {
+    v.estoqueMedioPecas = v.estoqueMediao / custo
+    s.estoqueMedioPecas = 'calculated'
+  }
+  if (v.pecasVendidas !== null && v.estoqueMedioPecas !== null && v.estoqueMedioPecas > 0) {
+    v.giroUnidades = v.pecasVendidas / v.estoqueMedioPecas
+    s.giroUnidades = 'calculated'
+  }
+
+  // ── PASSO 12: Garante que always-calculated nunca sejam 'free' ───────────
   ALWAYS_CALCULATED.forEach(k => {
     if (s[k] === 'free') s[k] = 'calculated'
   })
@@ -461,25 +465,12 @@ export function unlockField(state: PlanningState, field: FieldKey, activeKeys?: 
   touched.delete(field)
 
   const baselineValue = state.baseline[field] ?? null
+  const values: PlanningValues = { ...state.values, [field]: baselineValue }
+  const states: Record<FieldKey, FieldState> = { ...state.states, [field]: 'free' as FieldState }
 
-  const values: PlanningValues = {
-    ...state.values,
-    [field]: baselineValue,
-  }
-  const states: Record<FieldKey, FieldState> = {
-    ...state.states,
-    [field]: 'free' as FieldState,
-  }
-
-  // ── Regra especial: desbloquear PMV ─────────────────────────────────────
-  // Quando o usuário clica no cadeado do PMV (que estava locked pela escala proporcional),
-  // PMV restaura ao histórico e Peças Vendidas passa imediatamente a CALCULATED (RL ÷ PMV).
+  // Ao desbloquear PMV, deriva peças imediatamente (RL / pmvBaseline)
   if (field === 'pmv' && baselineValue !== null && baselineValue > 0) {
-    const rl =
-      values.receitaLiquida ??
-      (values.receitaBruta != null
-        ? values.receitaBruta - (values.devolucoes ?? 0)
-        : null)
+    const rl = values.receitaLiquida ?? values.receitaBruta
     if (rl !== null && rl > 0) {
       values.pecasVendidas = rl / baselineValue
       states.pecasVendidas = 'calculated'
@@ -495,31 +486,21 @@ export function resetToBaseline(baseline: Partial<PlanningValues>): PlanningStat
 }
 
 // ─── Commita o estado ao salvar cenário ────────────────────────────────────
-// Regra: ao salvar, todos os campos visíveis ao usuário voltam a 'free' com
-// os valores atualizados da simulação. Apenas ALWAYS_CALCULATED permanece
-// 'calculated'. O set de touched é zerado para iniciar nova simulação limpa.
 export function commitScenarioState(state: PlanningState): PlanningState {
   const s: Record<FieldKey, FieldState> = { ...state.states }
 
   for (const key of Object.keys(s) as FieldKey[]) {
     if (!ALWAYS_CALCULATED.includes(key)) {
-      // locked (ex: PMV após escala) e calculated (ex: pecasVendidas derivada)
-      // ambos voltam a 'free' — valor mantido, campo editável
       if (s[key] === 'locked' || s[key] === 'calculated') {
         s[key] = 'free'
       }
     }
-    // ALWAYS_CALCULATED: permanecem 'calculated' (mkdRS, gmroi, totalPecas…)
   }
 
-  return {
-    ...state,
-    states:  s,
-    touched: new Set<FieldKey>(),  // limpa marcadores de toque — slate em branco
-  }
+  return { ...state, states: s, touched: new Set<FieldKey>() }
 }
 
-// ─── Gera nome do cenário: "2027-V1", "2027-V2" etc. ──────────────────────
+// ─── Gera nome do cenário ──────────────────────────────────────────────────
 export function generateScenarioName(year: number, existingCount: number): string {
   return `${year}-V${existingCount + 1}`
 }

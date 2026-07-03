@@ -116,9 +116,9 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: (y, h) => `Base ${y}: R$ ${h.otb.toLocaleString("pt-BR")}`,
   },
   {
-    key: "giro", label: "Giro (valor)", format: "index",
+    key: "giro", label: "Giro (R$)", format: "index",
     getValue: v => v.giro, getState: s => s.giro,
-    getHelp: (y, h) => `Base ${y}: ${h.giro}`,
+    getHelp: (y, h) => `Base ${y}: ${h.giro}x — Receita Líquida ÷ Estoque Médio (R$)`,
   },
   {
     key: "cobertura", label: "Cobertura (dias)", format: "days",
@@ -146,19 +146,34 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: (y, h) => `Base ${y}: R$ ${h.ticketMedio} — Receita Bruta ÷ nº de clientes`,
   },
   {
-    key: "mkdRS", label: "MKD (R$)", format: "currency", isCalc: true,
+    key: "pecasVendidas", label: "Peças Vendidas", format: "pieces",
+    getValue: v => v.pecasVendidas, getState: s => s.pecasVendidas,
+    getHelp: (y, _h) => `Base ${y}: Receita Líquida ÷ PMV`,
+  },
+  {
+    key: "mkdRS", label: "Markdown (R$)", format: "currency", isCalc: true,
     getValue: v => v.mkdRS, getState: () => "calculated",
     getHelp: (y, h) => `Base ${y}: R$ ${h.markdown.toLocaleString("pt-BR")}`,
   },
   {
-    key: "totalPecas", label: "Total de Peças", format: "pieces", isCalc: true,
+    key: "totalPecas", label: "Total de Peças (OTB)", format: "pieces", isCalc: true,
     getValue: v => v.totalPecas, getState: () => "calculated",
-    getHelp: (y, h) => `Base ${y}: ${h.producao.toLocaleString("pt-BR")} pç`,
+    getHelp: (y, h) => `Base ${y}: ${h.producao.toLocaleString("pt-BR")} pç — Compras + Produção`,
   },
   {
     key: "gmroi", label: "GMROI", format: "index", isCalc: true,
     getValue: v => v.gmroi, getState: () => "calculated",
     getHelp: (y, h) => `Base ${y}: ${h.gmroi}`,
+  },
+  {
+    key: "estoqueMedioPecas", label: "Estoque Médio (peças)", format: "pieces", isCalc: true,
+    getValue: v => v.estoqueMedioPecas, getState: () => "calculated",
+    getHelp: (y, h) => `Base ${y}: ${h.estoqueMedioPecas.toLocaleString("pt-BR")} pç — Estoque Médio R$ ÷ Custo Médio`,
+  },
+  {
+    key: "giroUnidades", label: "Giro (peças)", format: "index", isCalc: true,
+    getValue: v => v.giroUnidades, getState: () => "calculated",
+    getHelp: (y, h) => `Base ${y}: ${h.giro}x — Peças Vendidas ÷ Estoque Médio (peças)`,
   },
 ]
 
@@ -215,20 +230,30 @@ export default function Planning() {
   const histRef  = getHist(referenceYear)
   const histSel  = getHist(selectedHistorical)
 
-  const baseline = useMemo(() => ({
-    receitaBruta:  histRef.receita,
-    margemBruta:   histRef.margemBruta,
-    pmv:           histRef.pmv,
-    giro:          histRef.giro,
-    cobertura:     histRef.cobertura,
-    otb:           histRef.otb,
-    producaoPecas: histRef.producao,
-    mkdPct:        +((histRef.markdown / histRef.receita) * 100).toFixed(1),
-    custoMedio:    custoMedioPorAno[referenceYear] ?? 87,
-    totalPecas:    histRef.producao,
-    gmroi:         histRef.gmroi,
-    ticketMedio:   histRef.ticketMedio,
-  }), [histRef, referenceYear])
+  const baseline = useMemo(() => {
+    const devolucoes     = Math.round(histRef.receita * 0.05)   // 5% de devoluções estimadas
+    const receitaLiquida = histRef.receita - devolucoes
+    const pecasVendidas  = Math.round(receitaLiquida / histRef.pmv)
+    const custoMedio     = custoMedioPorAno[referenceYear] ?? 87
+    return {
+      receitaBruta:      histRef.receita,
+      devolucoes,
+      receitaLiquida,
+      margemBruta:       histRef.margemBruta,
+      pmv:               histRef.pmv,
+      pecasVendidas,
+      giro:              histRef.giro,
+      cobertura:         histRef.cobertura,
+      otbCompra:         histRef.otb,
+      producaoPecas:     histRef.producao,
+      mkdPct:            +((histRef.markdown / histRef.receita) * 100).toFixed(1),
+      custoMedio,
+      gmroi:             histRef.gmroi,
+      ticketMedio:       histRef.ticketMedio,
+      estoqueMediao:     histRef.estoqueMedioRS,
+      estoqueMedioPecas: histRef.estoqueMedioPecas,
+    }
+  }, [histRef, referenceYear])
 
   // activeKeysList deve vir ANTES do hook (hook fecha sobre ela)
   const activeKeysList = useMemo(() => {
@@ -292,11 +317,15 @@ export default function Planning() {
     plan && hist ? ((plan - hist) / hist) * 100 : 0
   const fmtVar  = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`
   const fmtPlan = (label: string, val: number | null): string => {
-    if (val === null || isNaN(val)) return "—"
-    if (label.includes("R$"))    return `R$ ${val.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
-    if (label.includes("%"))     return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
-    if (label.includes("dias"))  return `${val.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} dias`
-    if (label.includes("peças")) return `${val.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} pç`
+    if (val === null || val === undefined || isNaN(val)) return "—"
+    // Giro (R$ ou peças) e GMROI são índices — checar antes de "R$" e "peças"
+    const lc = label.toLowerCase()
+    if (lc.includes("giro") || lc === "gmroi") return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}x`
+    if (label.includes("R$"))                  return `R$ ${val.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
+    if (label.includes("%"))                   return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+    if (lc.includes("dias"))                   return `${Math.round(val).toLocaleString("pt-BR")} dias`
+    if (lc.includes("peças") || lc.includes("produção") || lc.includes("total de"))
+                                               return `${Math.round(val).toLocaleString("pt-BR")} pç`
     return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
@@ -305,37 +334,51 @@ export default function Planning() {
     const histMkdPct = +((histSel.markdown / histSel.receita) * 100).toFixed(1)
     const histCustoMedio = custoMedioPorAno[selectedHistorical] ?? 87
 
+    // Receita líquida histórica estimada (5% devoluções)
+    const histSelRL         = histSel.receita * 0.95
+    const histSelPecasVend  = Math.round(histSelRL / histSel.pmv)
+    const histSelGiroRS     = histSel.estoqueMedioRS > 0 ? histSelRL / histSel.estoqueMedioRS : null
+    const histSelGiroUnid   = histSel.estoqueMedioPecas > 0
+      ? histSelPecasVend / histSel.estoqueMedioPecas
+      : null
+
+    // ── 16 indicadores do cenário consolidado (todos sempre visíveis) ──────
     const planBase = [
-      { key: "receitaBruta",  label: "Receita (R$)",       plan: v.receitaBruta,  ref: histSel.receita        },
-      { key: "margemBruta",   label: "Margem Bruta (%)",   plan: v.margemBruta,   ref: histSel.margemBruta     },
-      { key: "pmv",           label: "PMV (R$)",           plan: v.pmv,           ref: histSel.pmv             },
-      { key: "otbCompra",     label: "OTB (R$)",           plan: v.otbCompra,     ref: histSel.otb             },
-      { key: "giro",          label: "Giro",               plan: v.giro,          ref: histSel.giro            },
-      { key: "cobertura",     label: "Cobertura (dias)",   plan: v.cobertura,     ref: histSel.cobertura       },
-      { key: "producaoPecas", label: "Produção (peças)",   plan: v.producaoPecas, ref: histSel.producao        },
-      { key: "ticketMedio",   label: "Ticket Médio (R$)",  plan: v.ticketMedio,   ref: histSel.ticketMedio     },
-      { key: "estoqueMediao",  label: "Estoque Médio (R$)", plan: v.estoqueMediao,  ref: histSel.estoqueMedioRS  },
-      { key: "custoMedio",    label: "Custo Médio (R$)",   plan: v.custoMedio,    ref: histCustoMedio          },
-      { key: "mkdPct",        label: "Markdown (%)",       plan: v.mkdPct,        ref: histMkdPct             },
-      { key: "mkdRS",         label: "Markdown (R$)",      plan: v.mkdRS,         ref: histSel.markdown        },
-      { key: "gmroi",         label: "GMROI",              plan: v.gmroi,         ref: histSel.gmroi           },
+      { key: "receitaBruta",      label: "Receita (R$)",            plan: v.receitaBruta,      ref: histSel.receita              },
+      { key: "margemBruta",       label: "Margem Bruta (%)",        plan: v.margemBruta,       ref: histSel.margemBruta          },
+      { key: "mkdPct",            label: "Markdown (%)",            plan: v.mkdPct,            ref: histMkdPct                   },
+      { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: histSel.gmroi                },
+      { key: "pmv",               label: "PMV (R$)",                plan: v.pmv,               ref: histSel.pmv                  },
+      { key: "otbCompra",         label: "OTB (R$)",                plan: v.otbCompra,         ref: histSel.otb                  },
+      { key: "giroUnidades",      label: "Giro (peças)",            plan: v.giroUnidades,      ref: histSelGiroUnid              },
+      { key: "giro",              label: "Giro (R$)",               plan: v.giro,              ref: histSelGiroRS                },
+      { key: "cobertura",         label: "Cobertura (dias)",        plan: v.cobertura,         ref: histSel.cobertura            },
+      { key: "producaoPecas",     label: "Produção (peças)",        plan: v.producaoPecas,     ref: histSel.producao             },
+      { key: "ticketMedio",       label: "Ticket Médio (R$)",       plan: v.ticketMedio,       ref: histSel.ticketMedio          },
+      { key: "estoqueMediao",     label: "Estoque Médio (R$)",      plan: v.estoqueMediao,     ref: histSel.estoqueMedioRS       },
+      { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",   plan: v.estoqueMedioPecas, ref: histSel.estoqueMedioPecas    },
+      { key: "custoMedio",        label: "Custo Médio (R$)",        plan: v.custoMedio,        ref: histCustoMedio               },
+      { key: "mkdRS",             label: "Markdown (R$)",           plan: v.mkdRS,             ref: histSel.markdown             },
+      { key: "pecasVendidas",     label: "Total de Peças Vendidas", plan: v.pecasVendidas,     ref: histSelPecasVend             },
     ]
 
     const refBase = [
-      { key: "receitaBruta",      label: "Receita (R$)",          value: histSel.receita,           fmt: "currency"   },
-      { key: "margemBruta",       label: "Margem Bruta (%)",       value: histSel.margemBruta,       fmt: "percent"    },
-      { key: "pmv",               label: "PMV (R$)",               value: histSel.pmv,               fmt: "currency"   },
-      { key: "otbCompra",         label: "OTB (R$)",               value: histSel.otb,               fmt: "currency"   },
-      { key: "giro",              label: "Giro",                   value: histSel.giro,              fmt: "multiplier" },
-      { key: "cobertura",         label: "Cobertura (dias)",       value: histSel.cobertura,         fmt: "days"       },
-      { key: "producaoPecas",     label: "Produção (peças)",       value: histSel.producao,          fmt: "number"     },
-      { key: "ticketMedio",       label: "Ticket Médio (R$)",      value: histSel.ticketMedio,       fmt: "currency"   },
-      { key: "estoqueMediao",      label: "Estoque Médio (R$)",     value: histSel.estoqueMedioRS,    fmt: "currency"   },
-      { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",  value: histSel.estoqueMedioPecas, fmt: "number"     },
-      { key: "custoMedio",        label: "Custo Médio (R$)",       value: histCustoMedio,            fmt: "currency"   },
-      { key: "mkdPct",            label: "Markdown (%)",           value: histMkdPct,                fmt: "percent"    },
-      { key: "mkdRS",             label: "Markdown (R$)",          value: histSel.markdown,          fmt: "currency"   },
-      { key: "gmroi",             label: "GMROI",                  value: histSel.gmroi,             fmt: "multiplier" },
+      { key: "receitaBruta",      label: "Receita (R$)",            value: histSel.receita,              fmt: "currency"   },
+      { key: "margemBruta",       label: "Margem Bruta (%)",        value: histSel.margemBruta,          fmt: "percent"    },
+      { key: "mkdPct",            label: "Markdown (%)",            value: histMkdPct,                   fmt: "percent"    },
+      { key: "gmroi",             label: "GMROI",                   value: histSel.gmroi,                fmt: "multiplier" },
+      { key: "pmv",               label: "PMV (R$)",                value: histSel.pmv,                  fmt: "currency"   },
+      { key: "otbCompra",         label: "OTB (R$)",                value: histSel.otb,                  fmt: "currency"   },
+      { key: "giroUnidades",      label: "Giro (peças)",            value: histSel.giro,                 fmt: "multiplier" },
+      { key: "giro",              label: "Giro (R$)",               value: histSelGiroRS ?? 0,           fmt: "multiplier" },
+      { key: "cobertura",         label: "Cobertura (dias)",        value: histSel.cobertura,            fmt: "days"       },
+      { key: "producaoPecas",     label: "Produção (peças)",        value: histSel.producao,             fmt: "number"     },
+      { key: "ticketMedio",       label: "Ticket Médio (R$)",       value: histSel.ticketMedio,          fmt: "currency"   },
+      { key: "estoqueMediao",     label: "Estoque Médio (R$)",      value: histSel.estoqueMedioRS,       fmt: "currency"   },
+      { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",   value: histSel.estoqueMedioPecas,    fmt: "number"     },
+      { key: "custoMedio",        label: "Custo Médio (R$)",        value: histCustoMedio,               fmt: "currency"   },
+      { key: "mkdRS",             label: "Markdown (R$)",           value: histSel.markdown,             fmt: "currency"   },
+      { key: "pecasVendidas",     label: "Total de Peças Vendidas", value: histSelPecasVend,             fmt: "number"     },
     ]
 
     const activeKeys = activeDefs.map(d => d.key)
@@ -1097,15 +1140,7 @@ export default function Planning() {
                     <tr key={i} className="border-t border-[#28071C]/5 hover:bg-[#7598CF]/4 transition-colors">
                       <td className="py-2.5 pr-4 text-[#28071C]/60">{row.label}</td>
                       {scenarios.map(sc => {
-                        const keyMap: Record<string, string> = {
-                          "Receita (R$)": "receitaBruta", "Margem Bruta (%)": "margemBruta",
-                          "PMV (R$)": "pmv", "OTB (R$)": "otbCompra",
-                          "Estoque Médio (R$)": "estoqueMediao", "Giro": "giro",
-                          "Cobertura (dias)": "cobertura", "Markdown (R$)": "mkdRS",
-                          "Produção (peças)": "producaoPecas", "GMROI": "gmroi",
-                        }
-                        const k = keyMap[row.label]
-                        const val = k ? sc.state.values[k as keyof typeof sc.state.values] ?? null : null
+                        const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
                         return (
                           <td key={sc.name} className={`py-2.5 px-3 text-right font-mono font-semibold ${activeScenario?.name === sc.name ? "text-[#7598CF]" : "text-[#28071C]"}`}>
                             {fmtPlan(row.label, val as number | null)}
