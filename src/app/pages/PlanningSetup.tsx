@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from "react"
 import { useNavigate, useLocation } from "react-router"
 import {
   ArrowLeft, ArrowRight, Check, Star, Lock, Unlock, ChevronUp, ChevronDown, Info,
-  AlertTriangle, RotateCcw, User, LogOut,
+  AlertTriangle, RotateCcw, User, LogOut, Pencil, X as XIcon,
 } from "lucide-react"
 import { isOnboardingComplete, getStoredProfile, ORIGEM_LABELS } from "../types/onboarding"
 import type { OrigemPecas } from "../types/onboarding"
@@ -17,6 +17,7 @@ import type {
 } from "../types/planCycle"
 
 const ALL_FOCUSES: StrategicFocus[] = ["caixa", "margem", "crescimento", "defensivo"]
+// 'custom' não está na grade de cards — é ativado via link/input inline
 
 // Receita é o único indicador macro obrigatório — presente em todos os planos
 const RECEITA_KEY = 'receitaBruta'
@@ -143,6 +144,13 @@ export default function PlanningSetup() {
     existingCycle?.focus ?? null
   )
 
+  // ── Custom focus name ──────────────────────────────────────────────────────
+  const [customFocusName,   setCustomFocusName]   = useState<string>(
+    (existingCycle as any)?.customFocusName ?? ''
+  )
+  const [customEditOpen,    setCustomEditOpen]    = useState(false)
+  const [customDraft,       setCustomDraft]       = useState('')
+
   // ── Step 2 state ───────────────────────────────────────────────────────────
   const [statuses,      setStatuses]      = useState<Record<string, FieldStatus>>({})
   const [references,    setReferences]    = useState<Set<string>>(new Set())
@@ -200,6 +208,21 @@ export default function PlanningSetup() {
   // ── Apply focus defaults (profile-aware) ──────────────────────────────────
   const applyFocusDefaults = (f: StrategicFocus) => {
     setFocus(f)
+
+    if (f === 'custom') {
+      // Custom: apenas receita ativa por padrão; todo o resto fica inativo (livre para adicionar)
+      const ordered = DEFAULT_PRIORITIES['custom']
+      const initStatuses: Record<string, FieldStatus> = {}
+      for (const k of ordered) {
+        initStatuses[k] = k === RECEITA_KEY ? "suggested" : "inactive"
+      }
+      setStatuses(initStatuses)
+      setActiveOrder([RECEITA_KEY])
+      setReferences(new Set())
+      setDismissCount(0)
+      return
+    }
+
     const { priorities: ordered, count } = adaptPrioritiesForOrigem(
       DEFAULT_PRIORITIES[f],
       SUGGESTED_COUNTS[f],
@@ -221,11 +244,14 @@ export default function PlanningSetup() {
   }
 
   // ── Computed ───────────────────────────────────────────────────────────────
+  const isCustomFocus = focus === 'custom'
+
   const unlockedCount = useMemo(
     () => Object.values(statuses).filter(s => s === "unlocked").length,
     [statuses],
   )
-  const canUnlock  = unlockedCount < MAX_UNLOCK
+  // No modo custom: sem limite de liberar indicadores
+  const canUnlock  = isCustomFocus ? true : unlockedCount < MAX_UNLOCK
   const canDismiss = dismissCount < MAX_DISMISS
 
   // Inclui tanto 'inactive' quanto 'dismissed' na seção somente-leitura
@@ -236,11 +262,12 @@ export default function PlanningSetup() {
     [statuses],
   )
 
-  const systemSuggested = focus ? DEFAULT_PRIORITIES[focus].slice(0, SUGGESTED_COUNTS[focus]) : []
+  const systemSuggested = (focus && !isCustomFocus) ? DEFAULT_PRIORITIES[focus].slice(0, SUGGESTED_COUNTS[focus]) : []
   const isDiverged = useMemo(() => {
+    if (isCustomFocus) return false
     if (activeOrder.length !== systemSuggested.length) return true
     return activeOrder.some((k, i) => k !== systemSuggested[i])
-  }, [activeOrder, systemSuggested])
+  }, [activeOrder, systemSuggested, isCustomFocus])
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const unlock = (key: string) => {
@@ -319,6 +346,9 @@ export default function PlanningSetup() {
       year,
       mode: isReview ? "review" : "new",
       focus,
+      ...(focus === 'custom' && customFocusName.trim()
+        ? { customFocusName: customFocusName.trim() }
+        : {}),
       fieldPriorities,
       indicatorPriorities: [],
       versions: existingCycle ? (JSON.parse(localStorage.getItem(`fashionmind_cycle_${year}`) ?? '{}').versions ?? []) : [],
@@ -333,7 +363,13 @@ export default function PlanningSetup() {
         console.warn("Erro ao gerar temporadas automáticas:", err)
       )
     }
-    navigate("/planning", { state: { year, mode: isReview ? "review" : "new", focus, fieldPriorities } })
+    navigate("/planning", { state: {
+      year,
+      mode: isReview ? "review" : "new",
+      focus,
+      ...(focus === 'custom' && customFocusName.trim() ? { customFocusName: customFocusName.trim() } : {}),
+      fieldPriorities,
+    } })
   }
 
   const focusColors = focus ? STRATEGIC_FOCUS_COLORS[focus] : null
@@ -437,6 +473,91 @@ export default function PlanningSetup() {
                   )
                 })}
               </div>
+
+              {/* ── Custom focus ──────────────────────────────────────────── */}
+              <div className="mt-3">
+                {!customEditOpen && focus !== 'custom' && (
+                  <button
+                    onClick={() => { setCustomEditOpen(true); setCustomDraft(customFocusName) }}
+                    className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#7598CF] transition-colors"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    Criar nome de foco personalizado para este ciclo
+                  </button>
+                )}
+
+                {customEditOpen && (
+                  <div className="flex items-center gap-2 p-3 bg-pink-50 border border-pink-200 rounded-xl">
+                    <Pencil className="w-3.5 h-3.5 text-pink-400 flex-shrink-0" />
+                    <input
+                      autoFocus
+                      value={customDraft}
+                      onChange={e => setCustomDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && customDraft.trim()) {
+                          setCustomFocusName(customDraft.trim())
+                          applyFocusDefaults('custom')
+                          setCustomEditOpen(false)
+                        }
+                        if (e.key === 'Escape') {
+                          setCustomEditOpen(false)
+                          setCustomDraft('')
+                        }
+                      }}
+                      placeholder="Ex: Eficiência Operacional, Expansão Digital…"
+                      className="flex-1 bg-transparent text-sm text-[#28071C] placeholder-[#28071C]/30 focus:outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        if (customDraft.trim()) {
+                          setCustomFocusName(customDraft.trim())
+                          applyFocusDefaults('custom')
+                        }
+                        setCustomEditOpen(false)
+                      }}
+                      className="flex-shrink-0 px-3 py-1 text-xs font-semibold bg-pink-600 text-white rounded-lg hover:bg-pink-700 transition-colors"
+                    >
+                      Confirmar
+                    </button>
+                    <button
+                      onClick={() => { setCustomEditOpen(false); setCustomDraft('') }}
+                      className="flex-shrink-0 p-1 text-[#28071C]/30 hover:text-[#28071C]/60 transition-colors"
+                    >
+                      <XIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {focus === 'custom' && !customEditOpen && (
+                  <div className="flex items-center gap-2 p-3 bg-pink-50 border-2 border-pink-300 rounded-xl">
+                    <span className="text-lg">✏️</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-pink-700">Foco Personalizado</p>
+                      <p className="text-sm text-[#28071C] font-bold truncate">
+                        {customFocusName || 'Sem nome definido'}
+                      </p>
+                    </div>
+                    <div className="w-5 h-5 rounded-full bg-pink-600 flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3 h-3 text-white" />
+                    </div>
+                    <button
+                      onClick={() => { setCustomEditOpen(true); setCustomDraft(customFocusName) }}
+                      className="flex-shrink-0 p-1.5 rounded-lg text-pink-400 hover:text-pink-700 hover:bg-pink-100 transition-colors"
+                      title="Editar nome"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => { setFocus(null); setCustomFocusName(''); setCustomDraft('') }}
+                      className="flex-shrink-0 p-1.5 rounded-lg text-[#28071C]/30 hover:text-red-500 hover:bg-red-50 transition-colors"
+                      title="Remover foco personalizado"
+                    >
+                      <XIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end mt-6">
                 <button
                   onClick={() => setStep(2)}
@@ -478,14 +599,25 @@ export default function PlanningSetup() {
               <div className="flex items-start justify-between gap-4 mb-2">
                 <div>
                   <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold border mb-2 ${focusColors!.card} ${focusColors!.badge}`}>
-                    {STRATEGIC_FOCUS_ICONS[focus]} {STRATEGIC_FOCUS_LABELS[focus]}
+                    {STRATEGIC_FOCUS_ICONS[focus]}
+                    {isCustomFocus
+                      ? (customFocusName || 'Foco Personalizado')
+                      : STRATEGIC_FOCUS_LABELS[focus]}
                   </div>
-                  <p className="text-[#28071C]/55 text-sm leading-relaxed">
-                    O sistema selecionou <strong className="text-[#28071C]">{focus ? SUGGESTED_COUNTS[focus] : 0} indicadores</strong> com base no foco escolhido.
-                    Você pode <strong className="text-violet-700">liberar até {MAX_UNLOCK} adicionais</strong>,{" "}
-                    <strong className="text-red-600">remover até {MAX_DISMISS} sugeridos</strong> que não deseja planejar neste ciclo
-                    (exceto receita) e marcar qualquer indicador ativo como <strong className="text-amber-600">⭐ Referência</strong>.
-                  </p>
+                  {isCustomFocus ? (
+                    <p className="text-[#28071C]/55 text-sm leading-relaxed">
+                      Modo personalizado — apenas <strong className="text-[#28071C]">Receita Bruta</strong> é obrigatória.
+                      Selecione livremente os demais indicadores que deseja planejar neste ciclo,
+                      sem limite de quantidade.
+                    </p>
+                  ) : (
+                    <p className="text-[#28071C]/55 text-sm leading-relaxed">
+                      O sistema selecionou <strong className="text-[#28071C]">{focus ? SUGGESTED_COUNTS[focus] : 0} indicadores</strong> com base no foco escolhido.
+                      Você pode <strong className="text-violet-700">liberar até {MAX_UNLOCK} adicionais</strong>,{" "}
+                      <strong className="text-red-600">remover até {MAX_DISMISS} sugeridos</strong> que não deseja planejar neste ciclo
+                      (exceto receita) e marcar qualquer indicador ativo como <strong className="text-amber-600">⭐ Referência</strong>.
+                    </p>
+                  )}
                 </div>
                 {isDiverged && (
                   <div className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700 font-medium">
@@ -509,9 +641,14 @@ export default function PlanningSetup() {
                     </div>
                     <span className="text-[11px] text-[#28071C]/40 font-medium">
                       {activeOrder.length}
-                      {unlockedCount > 0 && (
+                      {!isCustomFocus && unlockedCount > 0 && (
                         <span className="ml-1.5 text-violet-600">
                           ({unlockedCount}/{MAX_UNLOCK} lib.)
+                        </span>
+                      )}
+                      {isCustomFocus && unlockedCount > 0 && (
+                        <span className="ml-1.5 text-pink-500">
+                          +{unlockedCount} adicionados
                         </span>
                       )}
                     </span>
@@ -637,14 +774,19 @@ export default function PlanningSetup() {
                           {dismissCount}/{MAX_DISMISS} removidos
                         </span>
                       )}
-                      {!canUnlock && (
+                      {!isCustomFocus && !canUnlock && (
                         <span className="text-[9px] text-violet-600 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5 font-semibold">
                           Máx. {MAX_UNLOCK} lib.
                         </span>
                       )}
-                      {canUnlock && (
+                      {!isCustomFocus && canUnlock && (
                         <span className="text-[9px] text-[#28071C]/35">
                           {MAX_UNLOCK - unlockedCount} disp.
+                        </span>
+                      )}
+                      {isCustomFocus && (
+                        <span className="text-[9px] text-pink-500 bg-pink-50 border border-pink-200 rounded-full px-1.5 py-0.5 font-semibold">
+                          Livre
                         </span>
                       )}
                     </div>
@@ -704,15 +846,17 @@ export default function PlanningSetup() {
                           <button
                             onClick={() => canUnlockThis && unlock(key)}
                             disabled={!canUnlockThis}
-                            title={canUnlockThis ? "Liberar para edição" : `Máx. ${MAX_UNLOCK} liberados`}
+                            title={canUnlockThis ? "Adicionar ao plano" : `Máx. ${MAX_UNLOCK} liberados`}
                             className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold border transition-all ${
                               canUnlockThis
-                                ? "border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 opacity-100"
+                                ? isCustomFocus
+                                  ? "border-pink-300 text-pink-700 bg-pink-50 hover:bg-pink-100 opacity-100"
+                                  : "border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 opacity-100"
                                 : "border-[#28071C]/10 text-[#28071C]/25 cursor-not-allowed"
                             }`}
                           >
                             <Unlock className="w-2.5 h-2.5" />
-                            {canUnlockThis ? "Liberar" : "Máx."}
+                            {canUnlockThis ? (isCustomFocus ? "Adicionar" : "Liberar") : "Máx."}
                           </button>
                         )}
                       </div>

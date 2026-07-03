@@ -16,7 +16,7 @@ import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_ICONS, STRATEGIC_FOCUS_COLORS,
-  addVersionToCycle,
+  addVersionToCycle, getPlanCycle,
 } from '../types/planCycle'
 import type { PlanFieldPriority, StrategicFocus, PlanMode } from '../types/planCycle'
 
@@ -53,6 +53,7 @@ interface LocationState {
   year: number
   mode: PlanMode
   focus?: StrategicFocus
+  customFocusName?: string
   fieldPriorities?: PlanFieldPriority[]
 }
 
@@ -187,6 +188,20 @@ export default function Planning() {
   const year          = routeState?.year ?? new Date().getFullYear() + 1
   const mode          = routeState?.mode ?? "new"
   const focus         = routeState?.focus ?? null
+  const isCustomFocus = focus === 'custom'
+
+  // customFocusName: prefer route state, fallback to localStorage
+  const customFocusName = useMemo(() => {
+    if (!isCustomFocus) return ''
+    if (routeState?.customFocusName) return routeState.customFocusName
+    const cycle = getPlanCycle(year)
+    return cycle?.customFocusName ?? ''
+  }, [isCustomFocus, routeState, year])
+
+  const focusDisplayLabel = isCustomFocus
+    ? (customFocusName || 'Foco Personalizado')
+    : (focus ? STRATEGIC_FOCUS_LABELS[focus] : null)
+
   const fieldPriorities: PlanFieldPriority[] = routeState?.fieldPriorities ?? []
 
   const getHist = (yr: string) =>
@@ -594,7 +609,13 @@ export default function Planning() {
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10px] text-[#28071C]/40">
+              {focus && focusColors && (
+                <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border mt-2 mb-1 ${focusColors.card} ${focusColors.badge}`}>
+                  {STRATEGIC_FOCUS_ICONS[focus]}
+                  {focusDisplayLabel}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] text-[#28071C]/40">
                 <span className="flex items-center gap-1">
                   <div className="w-2 h-2 rounded-full border border-[#28071C]/30" />Editável
                 </span>

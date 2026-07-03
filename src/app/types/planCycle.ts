@@ -2,13 +2,14 @@ import type { IndicatorId } from './onboarding'
 
 export type PlanMode = 'new' | 'review'
 
-export type StrategicFocus = 'caixa' | 'margem' | 'crescimento' | 'defensivo'
+export type StrategicFocus = 'caixa' | 'margem' | 'crescimento' | 'defensivo' | 'custom'
 
 export const STRATEGIC_FOCUS_LABELS: Record<StrategicFocus, string> = {
   caixa:       'Foco em Caixa',
   margem:      'Foco em Margem',
   crescimento: 'Foco em Crescimento',
   defensivo:   'Ano Defensivo',
+  custom:      'Foco Personalizado',
 }
 
 export const STRATEGIC_FOCUS_DESC: Record<StrategicFocus, string> = {
@@ -16,6 +17,7 @@ export const STRATEGIC_FOCUS_DESC: Record<StrategicFocus, string> = {
   margem:      'Prioriza mix de produto com maior valor agregado e redução de markdown.',
   crescimento: 'Prioriza volume de receita, expansão de canal e produção.',
   defensivo:   'Preservação de margens mínimas, contenção de risco macro e OTB conservador.',
+  custom:      'Foco estratégico definido pelo usuário. Apenas receita bruta é obrigatória.',
 }
 
 export const STRATEGIC_FOCUS_ICONS: Record<StrategicFocus, string> = {
@@ -23,13 +25,15 @@ export const STRATEGIC_FOCUS_ICONS: Record<StrategicFocus, string> = {
   margem:      '💎',
   crescimento: '🚀',
   defensivo:   '🛡️',
+  custom:      '✏️',
 }
 
 export const STRATEGIC_FOCUS_COLORS: Record<StrategicFocus, { card: string; badge: string }> = {
-  caixa:       { card: 'border-sky-300 bg-sky-50',      badge: 'bg-sky-100 text-sky-700' },
+  caixa:       { card: 'border-sky-300 bg-sky-50',        badge: 'bg-sky-100 text-sky-700'       },
   margem:      { card: 'border-emerald-300 bg-emerald-50', badge: 'bg-emerald-100 text-emerald-700' },
-  crescimento: { card: 'border-violet-300 bg-violet-50',  badge: 'bg-violet-100 text-violet-700' },
-  defensivo:   { card: 'border-amber-300 bg-amber-50',    badge: 'bg-amber-100 text-amber-700' },
+  crescimento: { card: 'border-violet-300 bg-violet-50',   badge: 'bg-violet-100 text-violet-700'  },
+  defensivo:   { card: 'border-amber-300 bg-amber-50',     badge: 'bg-amber-100 text-amber-700'   },
+  custom:      { card: 'border-pink-300 bg-pink-50',       badge: 'bg-pink-100 text-pink-700'     },
 }
 
 // Planning field indicator definitions (used in priority setup)
@@ -63,6 +67,7 @@ export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
   margem:      5,
   crescimento: 5,
   defensivo:   5,
+  custom:      0,   // custom: nenhum indicador pré-sugerido
 }
 
 // Ordem de prioridade por foco — os primeiros N (SUGGESTED_COUNTS[foco]) são os sugeridos.
@@ -80,6 +85,9 @@ export const DEFAULT_PRIORITIES: Record<StrategicFocus, string[]> = {
   // Ano Defensivo: preservar caixa e reduzir risco
   defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'otbCompra', 'pmv',
                  'giro', 'mkdPct', 'producaoPecas', 'gmroi', 'ticketMedio', 'custoMedio'],
+  // Personalizado: apenas receita obrigatória; usuário seleciona livremente o resto
+  custom:      ['receitaBruta', 'margemBruta', 'otbCompra', 'giro', 'cobertura',
+                 'producaoPecas', 'pmv', 'mkdPct', 'ticketMedio', 'gmroi', 'custoMedio'],
 }
 
 export interface IndicatorPriority {
@@ -112,6 +120,7 @@ export interface AnnualPlanCycle {
   year: number
   mode: PlanMode
   focus: StrategicFocus
+  customFocusName?: string          // usado somente quando focus === 'custom'
   fieldPriorities: PlanFieldPriority[]
   indicatorPriorities: IndicatorPriority[]
   versions: AnnualPlanVersion[]
