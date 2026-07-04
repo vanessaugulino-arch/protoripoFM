@@ -28,6 +28,7 @@ import {
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 import ImportWizard from "../components/ImportWizard";
+import { ColorBankCard } from "../components/ColorBankCard";
 import type { ImportDataType, ImportResult } from "../../services/importService";
 import { IMPORT_CONFIG } from "../../services/importService";
 import {
@@ -85,6 +86,11 @@ const OPERATION_SETTINGS_TOUR: TourStep[] = [
     targetId: "tour-op-basicos",
     title: "Sustentador de Margem",
     content: "Sinalize os produtos classificados como Sustentador de Margem — básicos com variações de cor ou detalhe. Podem vir do estoque existente ou ser definidos no plano de sortimento.",
+  },
+  {
+    targetId: "tour-op-banco-cores",
+    title: "Banco de Cores",
+    content: "Classifique as cores dos seus produtos por família (Azul, Verde…) e intensidade (Marinho, Claro…). O sistema guarda no banco global — cores já classificadas por outros clientes aparecem preenchidas automaticamente.",
   },
 ];
 
@@ -1674,6 +1680,13 @@ export default function OperationSettings() {
               </span>
             )}
           </div>
+        </div>
+
+        {/* ── CARD 7: Banco de Cores ──────────────────────────────────────────── */}
+        <div id="tour-op-banco-cores">
+          {user.tenant_id && (
+            <ColorBankCard tenantId={user.tenant_id} />
+          )}
         </div>
 
         {/* Card de importação movido para antes da Hierarquia — ver Card 4 acima */}

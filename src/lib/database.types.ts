@@ -68,6 +68,48 @@ export type Database = {
           },
         ]
       }
+      color_bank: {
+        Row: {
+          id:                    string
+          cor_norm:              string
+          cor_display:           string
+          familia:               string
+          intensidade:           string
+          color_group:           string   // generated: familia + ' ' + intensidade
+          contributed_by_tenant: string | null
+          created_at:            string
+          updated_at:            string
+        }
+        Insert: {
+          id?:                    string
+          cor_norm:               string
+          cor_display:            string
+          familia:                string
+          intensidade:            string
+          contributed_by_tenant?: string | null
+          created_at?:            string
+          updated_at?:            string
+        }
+        Update: {
+          id?:                    string
+          cor_norm?:              string
+          cor_display?:           string
+          familia?:               string
+          intensidade?:           string
+          contributed_by_tenant?: string | null
+          created_at?:            string
+          updated_at?:            string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "color_bank_contributed_by_tenant_fkey"
+            columns: ["contributed_by_tenant"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       approval_logs: {
         Row: {
           action: string
