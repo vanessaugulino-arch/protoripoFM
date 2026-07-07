@@ -175,6 +175,11 @@ const FIELD_DEFS: FieldDef[] = [
     getValue: v => v.giroUnidades, getState: () => "calculated",
     getHelp: (y, h) => `Base ${y}: ${h.giro}x — Peças Vendidas ÷ Estoque Médio (peças)`,
   },
+  {
+    key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", format: "days", isCalc: true,
+    getValue: v => v.idadeMediaEstoque, getState: () => "calculated",
+    getHelp: (y, h) => `Base ${y}: ${Math.round(365 / h.giro)} dias — Σ(dias × qtd SKU) ÷ Qtd Total em Estoque`,
+  },
 ]
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -358,8 +363,9 @@ export default function Planning() {
       { key: "estoqueMediao",     label: "Estoque Médio (R$)",      plan: v.estoqueMediao,     ref: histSel.estoqueMedioRS       },
       { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",   plan: v.estoqueMedioPecas, ref: histSel.estoqueMedioPecas    },
       { key: "custoMedio",        label: "Custo Médio (R$)",        plan: v.custoMedio,        ref: histCustoMedio               },
-      { key: "mkdRS",             label: "Markdown (R$)",           plan: v.mkdRS,             ref: histSel.markdown             },
-      { key: "pecasVendidas",     label: "Total de Peças Vendidas", plan: v.pecasVendidas,     ref: histSelPecasVend             },
+      { key: "mkdRS",             label: "Markdown (R$)",               plan: v.mkdRS,             ref: histSel.markdown             },
+      { key: "pecasVendidas",     label: "Total de Peças Vendidas",     plan: v.pecasVendidas,     ref: histSelPecasVend             },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", plan: v.idadeMediaEstoque, ref: Math.round(365 / histSel.giro) },
     ]
 
     const refBase = [
@@ -377,8 +383,9 @@ export default function Planning() {
       { key: "estoqueMediao",     label: "Estoque Médio (R$)",      value: histSel.estoqueMedioRS,       fmt: "currency"   },
       { key: "estoqueMedioPecas", label: "Estoque Médio (peças)",   value: histSel.estoqueMedioPecas,    fmt: "number"     },
       { key: "custoMedio",        label: "Custo Médio (R$)",        value: histCustoMedio,               fmt: "currency"   },
-      { key: "mkdRS",             label: "Markdown (R$)",           value: histSel.markdown,             fmt: "currency"   },
-      { key: "pecasVendidas",     label: "Total de Peças Vendidas", value: histSelPecasVend,             fmt: "number"     },
+      { key: "mkdRS",             label: "Markdown (R$)",               value: histSel.markdown,             fmt: "currency"   },
+      { key: "pecasVendidas",     label: "Total de Peças Vendidas",     value: histSelPecasVend,             fmt: "number"     },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", value: Math.round(365 / histSel.giro), fmt: "days"    },
     ]
 
     const activeKeys = activeDefs.map(d => d.key)

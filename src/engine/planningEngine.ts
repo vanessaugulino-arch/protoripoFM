@@ -14,6 +14,7 @@ export type FieldKey =
   | 'estoqueMedioPecas'  // Estoque Médio em peças = estoqueMediao / custoMedio
   | 'giro'               // Giro (R$) = RL / estoqueMediao
   | 'giroUnidades'       // Giro (peças) = pecasVendidas / estoqueMedioPecas
+  | 'idadeMediaEstoque'  // Idade Média de Estoque (dias) = (estoqueMedioPecas / pecasVendidas) × 365
   | 'cobertura'
   | 'mkdPct'
   | 'mkdRS'
@@ -49,23 +50,25 @@ export const ALWAYS_CALCULATED: FieldKey[] = [
   'comprasPecas',
   'estoqueMedioPecas',
   'giroUnidades',
+  'idadeMediaEstoque',
 ]
 
 // ─── Estado inicial de campos ─────────────────────────────────────────────
 export const INITIAL_STATES: Record<FieldKey, FieldState> = {
-  receitaBruta:      'free',
-  devolucoes:        'free',
-  receitaLiquida:    'calculated',
-  margemBruta:       'free',
-  pmv:               'free',
-  pecasVendidas:     'free',
-  estoqueInicial:    'free',
-  estoqueFinal:      'free',
-  estoqueMediao:     'free',
-  estoqueMedioPecas: 'calculated',
-  giro:              'free',
-  giroUnidades:      'calculated',
-  cobertura:         'free',
+  receitaBruta:       'free',
+  devolucoes:         'free',
+  receitaLiquida:     'calculated',
+  margemBruta:        'free',
+  pmv:                'free',
+  pecasVendidas:      'free',
+  estoqueInicial:     'free',
+  estoqueFinal:       'free',
+  estoqueMediao:      'free',
+  estoqueMedioPecas:  'calculated',
+  giro:               'free',
+  giroUnidades:       'calculated',
+  idadeMediaEstoque:  'calculated',
+  cobertura:          'free',
   mkdPct:            'free',
   mkdRS:             'calculated',
   otbCompra:         'free',
@@ -80,11 +83,11 @@ export const INITIAL_STATES: Record<FieldKey, FieldState> = {
 }
 
 export const INITIAL_VALUES: PlanningValues = {
-  receitaBruta:      null, devolucoes:        null, receitaLiquida:    null,
-  margemBruta:       null, pmv:               null, pecasVendidas:     null,
-  estoqueInicial:    null, estoqueFinal:      null, estoqueMediao:     null,
-  estoqueMedioPecas: null, giro:              null, giroUnidades:      null,
-  cobertura:         null, mkdPct:            null, mkdRS:             null,
+  receitaBruta:      null, devolucoes:        null, receitaLiquida:     null,
+  margemBruta:       null, pmv:               null, pecasVendidas:      null,
+  estoqueInicial:    null, estoqueFinal:      null, estoqueMediao:      null,
+  estoqueMedioPecas: null, giro:              null, giroUnidades:       null,
+  idadeMediaEstoque: null, cobertura:         null, mkdPct:             null, mkdRS: null,
   otbCompra:         null, otbTotal:          null, producaoPecas:     null,
   producaoValor:     null, comprasPecas:      null, totalPecas:        null,
   gmroi:             null, custoMedio:        null, ticketMedio:       null,
@@ -154,6 +157,11 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
   if (values.pecasVendidas !== null && values.estoqueMedioPecas !== null && values.estoqueMedioPecas > 0) {
     values.giroUnidades = values.pecasVendidas / values.estoqueMedioPecas
     states.giroUnidades = 'calculated'
+  }
+
+  if (values.estoqueMedioPecas !== null && values.pecasVendidas !== null && values.pecasVendidas > 0) {
+    values.idadeMediaEstoque = (values.estoqueMedioPecas / values.pecasVendidas) * 365
+    states.idadeMediaEstoque = 'calculated'
   }
 
   return { values, states, touched: new Set<FieldKey>(), baseline }
@@ -441,7 +449,10 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     s.gmroi          = 'calculated'
   }
 
-  // ── PASSO 11: Estoque Médio (peças) + Giro (peças) ───────────────────────
+  // ── PASSO 11: Estoque Médio (peças) + Giro (peças) + Idade Média de Estoque
+  // Idade Média = Σ(dias_i × qty_i) / Σ(qty_i)
+  // Equivalente agregado: (estoqueMedioPecas / pecasVendidas) × 365
+  // Relação: idadeMedia = 365 / giroUnidades
   if (v.estoqueMediao !== null && custo !== null && custo > 0) {
     v.estoqueMedioPecas = v.estoqueMediao / custo
     s.estoqueMedioPecas = 'calculated'
@@ -449,6 +460,10 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   if (v.pecasVendidas !== null && v.estoqueMedioPecas !== null && v.estoqueMedioPecas > 0) {
     v.giroUnidades = v.pecasVendidas / v.estoqueMedioPecas
     s.giroUnidades = 'calculated'
+  }
+  if (v.estoqueMedioPecas !== null && v.pecasVendidas !== null && v.pecasVendidas > 0) {
+    v.idadeMediaEstoque = (v.estoqueMedioPecas / v.pecasVendidas) * 365
+    s.idadeMediaEstoque = 'calculated'
   }
 
   // ── PASSO 12: Garante que always-calculated nunca sejam 'free' ───────────
