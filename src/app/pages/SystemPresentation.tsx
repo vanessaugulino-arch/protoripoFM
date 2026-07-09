@@ -240,9 +240,9 @@ export default function SystemPresentation() {
               ))}
 
               {/* Resultado */}
-              <div className="bg-gradient-to-r from-[#7598CF] to-[#9B8CD8] rounded-xl px-5 py-3.5 text-white">
-                <p className="font-bold text-sm mb-0.5">Resultado</p>
-                <p className="text-white/85 text-xs leading-relaxed">
+              <div className="bg-[#28071C] rounded-xl px-5 py-3.5">
+                <p className="font-bold text-sm mb-0.5 text-[#F6F3AA]">Resultado</p>
+                <p className="text-white/80 text-xs leading-relaxed">
                   Menos rejeição, mais assertividade — coleções que fecham as metas e um processo até 70% mais rápido.
                 </p>
               </div>

@@ -1,33 +1,31 @@
 // ─── Segmentos de produto ─────────────────────────────────────────────────────
 export type SegmentId =
   | 'vest_fem' | 'vest_masc' | 'vest_inf'
-  | 'acc_bolsas_fem' | 'acc_bolsas_masc' | 'acc_bolsas_inf'
+  | 'acc_fem' | 'acc_masc' | 'acc_inf'
   | 'calc_fem' | 'calc_masc' | 'calc_inf'
   | 'under_fem' | 'under_masc' | 'under_inf'
   | 'fitness_fem' | 'fitness_masc' | 'fitness_inf'
   | 'praia_fem' | 'praia_masc' | 'praia_inf'
-  | 'bijuteria'
 
 export const SEGMENT_LABELS: Record<SegmentId, string> = {
-  vest_fem:        'Vestuário Feminino',
-  vest_masc:       'Vestuário Masculino',
-  vest_inf:        'Vestuário Infantil',
-  acc_bolsas_fem:  'Acessórios (Bolsas e Cintos) Femininos',
-  acc_bolsas_masc: 'Acessórios (Bolsas e Cintos) Masculino',
-  acc_bolsas_inf:  'Acessórios (Bolsas e Cintos) Infantil',
-  calc_fem:        'Calçados Femininos',
-  calc_masc:       'Calçados Masculinos',
-  calc_inf:        'Calçados Infantis',
-  under_fem:       'Underwear Feminino',
-  under_masc:      'Underwear Masculino',
-  under_inf:       'Underwear Infantil',
-  fitness_fem:     'Moda Fitness Feminino',
-  fitness_masc:    'Moda Fitness Masculino',
-  fitness_inf:     'Moda Fitness Infantil',
-  praia_fem:       'Moda Praia Feminino',
-  praia_masc:      'Moda Praia Masculino',
-  praia_inf:       'Moda Praia Infantil',
-  bijuteria:       'Acessórios (Bijuterias / Jóia / Semijóia)',
+  vest_fem:   'Vestuário Feminino',
+  vest_masc:  'Vestuário Masculino',
+  vest_inf:   'Vestuário Infantil',
+  acc_fem:    'Acessórios Feminino',
+  acc_masc:   'Acessórios Masculino',
+  acc_inf:    'Acessórios Infantil',
+  calc_fem:   'Calçados Femininos',
+  calc_masc:  'Calçados Masculinos',
+  calc_inf:   'Calçados Infantis',
+  under_fem:  'Underwear Feminino',
+  under_masc: 'Underwear Masculino',
+  under_inf:  'Underwear Infantil',
+  fitness_fem:  'Moda Fitness Feminino',
+  fitness_masc: 'Moda Fitness Masculino',
+  fitness_inf:  'Moda Fitness Infantil',
+  praia_fem:  'Moda Praia Feminino',
+  praia_masc: 'Moda Praia Masculino',
+  praia_inf:  'Moda Praia Infantil',
 }
 
 // ─── Matérias-primas ──────────────────────────────────────────────────────────

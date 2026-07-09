@@ -34,12 +34,11 @@ import { saveRegraDefaultDb } from '../../services/supabase/seasonService'
 // ── Constantes ────────────────────────────────────────────────────────────────
 const ALL_SEGMENTS: SegmentId[] = [
   'vest_fem', 'vest_masc', 'vest_inf',
-  'acc_bolsas_fem', 'acc_bolsas_masc', 'acc_bolsas_inf',
+  'acc_fem', 'acc_masc', 'acc_inf',
   'calc_fem', 'calc_masc', 'calc_inf',
   'under_fem', 'under_masc', 'under_inf',
   'fitness_fem', 'fitness_masc', 'fitness_inf',
   'praia_fem', 'praia_masc', 'praia_inf',
-  'bijuteria',
 ]
 
 const ORIGENS: OrigemPecas[] = [

@@ -8,9 +8,9 @@ const SEGMENT_INDICATORS: Record<SegmentId, IndicatorId[]> = {
   vest_fem:        ['algodao', 'emprego', 'renda', 'confianca'],
   vest_masc:       ['algodao', 'emprego', 'renda', 'confianca'],
   vest_inf:        ['algodao', 'emprego', 'confianca', 'natalidade'],
-  acc_bolsas_fem:  ['petroleo', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
-  acc_bolsas_masc: ['petroleo', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
-  acc_bolsas_inf:  ['petroleo', 'couro', 'metais', 'emprego', 'confianca', 'natalidade'],
+  acc_fem:  ['petroleo', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
+  acc_masc: ['petroleo', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
+  acc_inf:  ['petroleo', 'couro', 'metais', 'emprego', 'confianca', 'natalidade'],
   calc_fem:        ['nafta', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
   calc_masc:       ['nafta', 'couro', 'metais', 'emprego', 'renda', 'confianca'],
   calc_inf:        ['nafta', 'couro', 'metais', 'emprego', 'confianca', 'natalidade'],
@@ -23,7 +23,6 @@ const SEGMENT_INDICATORS: Record<SegmentId, IndicatorId[]> = {
   praia_fem:       ['petroleo', 'nafta', 'emprego', 'confianca', 'turismo'],
   praia_masc:      ['petroleo', 'nafta', 'emprego', 'confianca', 'turismo'],
   praia_inf:       ['petroleo', 'nafta', 'emprego', 'confianca', 'natalidade', 'turismo'],
-  bijuteria:       ['metais', 'emprego', 'renda', 'confianca'],
 }
 
 // Ordem de exibição preferencial dos indicadores
