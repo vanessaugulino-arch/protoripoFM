@@ -18,8 +18,8 @@ export type FieldKey =
   | 'cobertura'
   | 'mkdPct'
   | 'mkdRS'
-  | 'otbCompra'          // OTB de COMPRA em R$ (separado da produção)
-  | 'otbTotal'           // OTB total = compra + produção em valor
+  | 'orcamento'           // Orçamento de COMPRA em R$ (separado da produção)
+  | 'orcamentoTotal'      // Orçamento total = compra + produção em valor
   | 'producaoPecas'      // volume de produção em peças (definido pelo usuário ou calculado)
   | 'producaoValor'      // produção em R$ = producaoPecas × custoMedio (sempre calculado)
   | 'comprasPecas'       // peças compradas = totalPecas - producaoPecas
@@ -46,7 +46,7 @@ export const ALWAYS_CALCULATED: FieldKey[] = [
   'gmroi',
   'receitaLiquida',
   'producaoValor',
-  'otbTotal',
+  'orcamentoTotal',
   'comprasPecas',
   'estoqueMedioPecas',
   'giroUnidades',
@@ -71,8 +71,8 @@ export const INITIAL_STATES: Record<FieldKey, FieldState> = {
   cobertura:          'free',
   mkdPct:            'free',
   mkdRS:             'calculated',
-  otbCompra:         'free',
-  otbTotal:          'calculated',
+  orcamento:          'free',
+  orcamentoTotal:     'calculated',
   producaoPecas:     'free',
   producaoValor:     'calculated',
   comprasPecas:      'calculated',
@@ -88,7 +88,7 @@ export const INITIAL_VALUES: PlanningValues = {
   estoqueInicial:    null, estoqueFinal:      null, estoqueMediao:      null,
   estoqueMedioPecas: null, giro:              null, giroUnidades:       null,
   idadeMediaEstoque: null, cobertura:         null, mkdPct:             null, mkdRS: null,
-  otbCompra:         null, otbTotal:          null, producaoPecas:     null,
+  orcamento:         null, orcamentoTotal:    null, producaoPecas:     null,
   producaoValor:     null, comprasPecas:      null, totalPecas:        null,
   gmroi:             null, custoMedio:        null, ticketMedio:       null,
 }
@@ -110,7 +110,7 @@ export const MOCK_BASELINE: Partial<PlanningValues> = {
   mkdPct:         12,
   custoMedio:     87,
   producaoPecas:  4200,
-  otbCompra:      890000,
+  orcamento:       890000,
 }
 
 // ─── Constrói o estado inicial a partir do baseline ───────────────────────
@@ -144,9 +144,9 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
     states.producaoValor = 'calculated'
   }
 
-  if (values.otbCompra !== null && values.producaoValor !== null) {
-    values.otbTotal = values.otbCompra + values.producaoValor
-    states.otbTotal = 'calculated'
+  if (values.orcamento !== null && values.producaoValor !== null) {
+    values.orcamentoTotal = values.orcamento + values.producaoValor
+    states.orcamentoTotal = 'calculated'
   }
 
   if (values.estoqueMediao !== null && values.custoMedio !== null && values.custoMedio > 0) {
@@ -174,8 +174,8 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
 //   3.  T1 — Receita ↔ PMV ↔ Peças Vendidas
 //   4.  T3 — Margem ↔ CustoMédio ↔ Receita + regra mkdPct selection-aware
 //   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura
-//   6.  OTB delta
-//   7.  Produção em valor / Estoque Final / OTB Total
+//   6.  Orçamento delta
+//   7.  Produção em valor / Estoque Final / Orçamento Total
 //   8.  Peças Compradas / Total de Peças
 //   9.  MKD (R$)
 //  10.  GMROI
@@ -201,7 +201,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // PMV = RL/peças permanece igual ao baseline (matematicamente consistente).
   const CAMPOS_PRINCIPAIS: FieldKey[] = [
     'pmv', 'pecasVendidas', 'margemBruta', 'custoMedio',
-    'giro', 'cobertura', 'estoqueMediao', 'otbCompra', 'producaoPecas',
+    'giro', 'cobertura', 'estoqueMediao', 'orcamento', 'producaoPecas',
   ]
   const soAlterouReceita =
     touched.has('receitaBruta') &&
@@ -211,7 +211,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     const fator = v.receitaBruta / base.receitaBruta
 
     if (base.estoqueMediao   != null) { v.estoqueMediao   = base.estoqueMediao   * fator;                   s.estoqueMediao   = 'free' }
-    if (base.otbCompra       != null) { v.otbCompra       = base.otbCompra       * fator;                   s.otbCompra       = 'free' }
+    if (base.orcamento       != null) { v.orcamento       = base.orcamento       * fator;                   s.orcamento       = 'free' }
     if (base.producaoPecas   != null) { v.producaoPecas   = Math.round(base.producaoPecas * fator);         s.producaoPecas   = 'free' }
     if (base.pecasVendidas   != null) { v.pecasVendidas   = Math.round((base.pecasVendidas ?? 0) * fator);  s.pecasVendidas   = 'free' }
     if (base.cobertura       != null) { v.cobertura       = base.cobertura;                                  s.cobertura       = 'free' }
@@ -392,23 +392,23 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
   }
 
-  // ── PASSO 6: OTB com fórmula delta ───────────────────────────────────────
-  if (!touched.has('otbCompra')) {
+  // ── PASSO 6: Orçamento com fórmula delta ────────────────────────────────────
+  if (!touched.has('orcamento')) {
     const pec     = v.pecasVendidas
     const custo   = v.custoMedio
     const estPlan = v.estoqueMediao
     const estBase = base.estoqueMediao ?? 0
 
     if (pec !== null && custo !== null && custo > 0 && estPlan !== null) {
-      const otbCalc = (pec * custo) + (estPlan - estBase)
-      v.otbCompra   = Math.max(0, otbCalc)
+      const orcCalc = (pec * custo) + (estPlan - estBase)
+      v.orcamento   = Math.max(0, orcCalc)
       if (touched.has('producaoPecas')) {
-        s.otbCompra = 'calculated'
+        s.orcamento = 'calculated'
       }
     }
   }
 
-  // ── PASSO 7: Produção em valor / Estoque Final / OTB Total ───────────────
+  // ── PASSO 7: Produção em valor / Estoque Final / Orçamento Total ────────────
   const custo = v.custoMedio
 
   if (v.producaoPecas !== null && custo !== null) {
@@ -422,14 +422,14 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   }
 
   const prodVal = v.producaoValor ?? 0
-  if (v.otbCompra !== null) {
-    v.otbTotal = v.otbCompra + prodVal
-    s.otbTotal = 'calculated'
+  if (v.orcamento !== null) {
+    v.orcamentoTotal = v.orcamento + prodVal
+    s.orcamentoTotal = 'calculated'
   }
 
   // ── PASSO 8: Peças Compradas / Total de Peças ─────────────────────────────
-  if (v.otbCompra !== null && custo && custo > 0) {
-    v.comprasPecas = Math.round(v.otbCompra / custo)
+  if (v.orcamento !== null && custo && custo > 0) {
+    v.comprasPecas = Math.round(v.orcamento / custo)
     s.comprasPecas = 'calculated'
   }
 

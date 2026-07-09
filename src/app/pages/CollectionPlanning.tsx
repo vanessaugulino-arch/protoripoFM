@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { supabase } from "../../lib/supabase";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft,
@@ -57,6 +58,7 @@ interface Category {
 export default function CollectionPlanning() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
+  const [tenantId, setTenantId] = useState<string>("");
   const [selectedCycle, setSelectedCycle] = useState("Verão 2026");
   const [hasThemes, setHasThemes] = useState(false);
   const [showSKUPlan, setShowSKUPlan] = useState(false);
@@ -72,7 +74,7 @@ export default function CollectionPlanning() {
     priceRanges: { p1: "119-169", p2: "179-259", p3: "269-389" },
     avgPrice: 195,
     volume: 7706,
-    otb: 1368000,
+    orcamento: 1368000,
     expectedMargin: 48,
   };
 
@@ -104,9 +106,24 @@ export default function CollectionPlanning() {
     if (storedUser) {
       const userData = JSON.parse(storedUser);
       setUser(userData);
+      const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
+      setTenantId(tid);
 
       if (userData.profile !== "Estilo") {
         navigate("/dashboard");
+      }
+
+      // Carregar collections do Supabase para selecionar ciclo
+      if (tid) {
+        supabase
+          .from("collections")
+          .select("id, name, season_id, start_date, end_date")
+          .eq("tenant_id", tid)
+          .order("start_date", { ascending: false })
+          .then(
+            ({ data }) => { if (data && data.length > 0) setSelectedCycle(data[0].name); },
+            () => {/* usa default */}
+          );
       }
     } else {
       navigate("/");

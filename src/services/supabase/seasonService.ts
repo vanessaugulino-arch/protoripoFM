@@ -149,6 +149,62 @@ export async function saveRegraDefaultDb(
   if (error) throw error;
 }
 
+// ─── Canal × Temporada Config (Phase F) ──────────────────────────────────────
+
+export interface CanalConfig {
+  id:         string;
+  canal_id:   string;
+  mes_inicio: string;
+}
+
+export async function listCanalConfigDb(
+  tenantId: string,
+  seasonId: string,
+): Promise<CanalConfig[]> {
+  const { data, error } = await db
+    .from("canal_temporada_config")
+    .select("id, canal_id, mes_inicio")
+    .eq("tenant_id", tenantId)
+    .eq("season_id", seasonId);
+  if (error) throw error;
+  return (data ?? []) as CanalConfig[];
+}
+
+export async function upsertCanalConfigDb(
+  tenantId:  string,
+  seasonId:  string,
+  canalId:   string,
+  mesInicio: string,
+): Promise<void> {
+  const { error } = await db
+    .from("canal_temporada_config")
+    .upsert(
+      {
+        tenant_id:  tenantId,
+        season_id:  seasonId,
+        canal_id:   canalId,
+        mes_inicio: mesInicio,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "tenant_id,season_id,canal_id" },
+    );
+  if (error) throw error;
+}
+
+export async function deleteCanalConfigDb(
+  tenantId: string,
+  seasonId: string,
+  canalId:  string,
+): Promise<void> {
+  const { error } = await db
+    .from("canal_temporada_config")
+    .delete()
+    .eq("tenant_id", tenantId)
+    .eq("season_id", seasonId)
+    .eq("canal_id", canalId);
+  if (error) throw error;
+}
+
 // ─── Auto-geração idempotente ─────────────────────────────────────────────────
 
 /**

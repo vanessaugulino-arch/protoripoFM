@@ -43,7 +43,7 @@ export default function TenantSelector() {
   if (!user) return null;
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#28071C] to-[#7598CF] flex flex-col">
+    <div className="min-h-screen w-full flex flex-col" style={{ background: 'radial-gradient(ellipse 120% 100% at 55% 40%, #87A7E7 0%, #6281B2 40%, #1F416C 70%, #0F2545 90%), radial-gradient(ellipse 60% 60% at 5% 100%, #2E1325 0%, transparent 60%)' }}>
       {/* Top bar */}
       <header className="px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3 text-[#F6F3AA]">

@@ -55,13 +55,13 @@ export interface RiskMatrix {
   // Validação: sustentadorMargem + motorGiro + iconeMarca = 100
 }
 
-// ─── Volume, OTB e Cobertura ─────────────────────────────────────────────────
+// ─── Volume, Orçamento e Cobertura ──────────────────────────────────────────────
 export interface VolumeAndCoverage {
   // Para produtor
   productionVolume?: number;        // Quantidade de peças a produzir
   
   // Para revenda
-  otbBudget?: number;               // Orçamento de compra em R$
+  orcamento?: number;               // Orçamento de compra em R$
   
   // Comum
   coverage: number;                 // Dias de cobertura de estoque
@@ -84,7 +84,7 @@ export interface DivisionPlanBlock {
   // Bloco 3: Matriz de Risco
   riskMatrix: RiskMatrix;
   
-  // Bloco 4: Volume/OTB + Cobertura
+  // Bloco 4: Volume/Orçamento + Cobertura
   volumeCoverage: VolumeAndCoverage;
   
   // Status de validação

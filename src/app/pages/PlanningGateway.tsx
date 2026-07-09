@@ -14,7 +14,7 @@ const PLANNING_GATEWAY_TOUR: TourStep[] = [
   {
     targetId: "tour-pg-title",
     title: "Módulo 1 — Planejamento Estratégico",
-    content: "Aqui você define a meta macro do ciclo: receita, margem e OTB. Os outros módulos partem desses números.",
+    content: "Aqui você define a meta macro do ciclo: receita, margem e Orçamento. Os outros módulos partem desses números.",
   },
   {
     targetId: "tour-pg-acc",
@@ -37,7 +37,7 @@ import {
 // Indica se o indicador é um valor de fluxo (precisa prorate) ou taxa/ratio
 const IS_FLOW: Record<string, boolean> = {
   receitaBruta: true,
-  otbCompra:    true,
+  orcamento:    true,
   margemBruta:  false,
   pmv:          false,
   giro:         false,
@@ -60,8 +60,8 @@ function AccTooltip({ text }: { text: string }) {
 
 // ─── Mock ACC data for current year (May 2026) ────────────────────────────────
 // Reference = prorated 2025 historical; ACC = realistic Jan-Mai 2026 actuals
-const HIST_2025 = { receita: 2_850_000, margemBruta: 42.3, pmv: 155, otb: 1_140_000, gmroi: 1.77, giro: 4.19 }
-const ACC_ACTUAL = { receita: 1_243_750, margemBruta: 41.8, pmv: 162, otb: 498_000, gmroi: 1.82, giro: 1.72 }
+const HIST_2025 = { receita: 2_850_000, margemBruta: 42.3, pmv: 155, orcamento: 1_140_000, gmroi: 1.77, giro: 4.19 }
+const ACC_ACTUAL = { receita: 1_243_750, margemBruta: 41.8, pmv: 162, orcamento: 498_000, gmroi: 1.82, giro: 1.72 }
 
 function delta(actual: number, ref: number, higherIsBetter = true) {
   const pct = ((actual - ref) / Math.abs(ref)) * 100
@@ -126,7 +126,7 @@ export default function PlanningGateway() {
     receita:     prorated(HIST_2025.receita, cycleState.monthsElapsed),
     margemBruta: HIST_2025.margemBruta,
     pmv:         HIST_2025.pmv,
-    otb:         prorated(HIST_2025.otb, cycleState.monthsElapsed),
+    orcamento:   prorated(HIST_2025.orcamento, cycleState.monthsElapsed),
     gmroi:       HIST_2025.gmroi,
   }
 
@@ -160,12 +160,12 @@ export default function PlanningGateway() {
       unit: "%",
     },
     {
-      fieldKey: "otbCompra",
-      label: "OTB de Compra",
+      fieldKey: "orcamento",
+      label: "Orçamento de Compra",
       tooltip: "Orçamento disponível para comprar ou produzir mercadoria no período. Controla o nível de investimento em estoque e o risco financeiro.",
-      ref: fmtBRL(refProrated.otb),
-      acc: fmtBRL(ACC_ACTUAL.otb),
-      ...delta(ACC_ACTUAL.otb, refProrated.otb),
+      ref: fmtBRL(refProrated.orcamento),
+      acc: fmtBRL(ACC_ACTUAL.orcamento),
+      ...delta(ACC_ACTUAL.orcamento, refProrated.orcamento),
       unit: "%",
     },
     {
@@ -233,7 +233,7 @@ export default function PlanningGateway() {
       case 'receitaBruta': return ACC_ACTUAL.receita
       case 'margemBruta':  return ACC_ACTUAL.margemBruta
       case 'pmv':          return ACC_ACTUAL.pmv
-      case 'otbCompra':    return ACC_ACTUAL.otb
+      case 'orcamento':    return ACC_ACTUAL.orcamento
       case 'giro':         return ACC_ACTUAL.giro
       default:             return ACC_ACTUAL.gmroi
     }
@@ -241,7 +241,7 @@ export default function PlanningGateway() {
 
   const fmtVal = (val: number, fieldKey: string): string => {
     if (fieldKey === 'margemBruta') return `${val.toFixed(1)}%`
-    if (fieldKey === 'receitaBruta' || fieldKey === 'otbCompra' || fieldKey === 'pmv') return fmtBRL(val)
+    if (fieldKey === 'receitaBruta' || fieldKey === 'orcamento' || fieldKey === 'pmv') return fmtBRL(val)
     return val.toFixed(2)
   }
 
@@ -288,7 +288,7 @@ export default function PlanningGateway() {
         {/* ─── FRASE DE CONTEXTO ───────────────────────────────────────────── */}
         <div className="bg-gradient-to-r from-[#28071C]/5 to-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-6 py-4 text-center">
           <p className="text-[#28071C] font-semibold text-base leading-snug">
-            Defina a <span className="text-[#7598CF]">meta macro do ciclo</span> — receita, margem e OTB — e mantenha todos os módulos alinhados a um único norte estratégico.
+            Defina a <span className="text-[#7598CF]">meta macro do ciclo</span> — receita, margem e Orçamento — e mantenha todos os módulos alinhados a um único norte estratégico.
           </p>
         </div>
 

@@ -13,10 +13,10 @@ export const STRATEGIC_FOCUS_LABELS: Record<StrategicFocus, string> = {
 }
 
 export const STRATEGIC_FOCUS_DESC: Record<StrategicFocus, string> = {
-  caixa:       'Prioriza liquidez, redução de estoque e eficiência de OTB.',
+  caixa:       'Prioriza liquidez, redução de estoque e eficiência de Orçamento.',
   margem:      'Prioriza mix de produto com maior valor agregado e redução de markdown.',
   crescimento: 'Prioriza volume de receita, expansão de canal e produção.',
-  defensivo:   'Preservação de margens mínimas, contenção de risco macro e OTB conservador.',
+  defensivo:   'Preservação de margens mínimas, contenção de risco macro e Orçamento conservador.',
   custom:      'Foco estratégico definido pelo usuário. Apenas receita bruta é obrigatória.',
 }
 
@@ -48,7 +48,7 @@ export const PLAN_INDICATORS: PlanIndicator[] = [
   { key: 'margemBruta',   label: 'Margem Bruta (%)', description: 'Resultado após custo de produtos' },
   { key: 'gmroi',         label: 'GMROI',            description: 'Retorno bruto sobre investimento em estoque' },
   { key: 'pmv',           label: 'PMV (R$)',          description: 'Preço médio de venda' },
-  { key: 'otbCompra',     label: 'OTB (custo)',       description: 'Orçamento disponível para compras' },
+  { key: 'orcamento',     label: 'Orçamento (custo)', description: 'Orçamento disponível para compras' },
   { key: 'giro',          label: 'Giro de Estoque',  description: 'Velocidade de renovação do estoque' },
   { key: 'cobertura',     label: 'Cobertura (dias)', description: 'Dias de estoque disponível' },
   { key: 'producaoPecas', label: 'Produção (peças)', description: 'Volume total de peças produzidas' },

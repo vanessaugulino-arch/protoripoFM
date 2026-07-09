@@ -238,7 +238,7 @@ export function useModule3(options: UseModule3Options) {
     [options.macroTargets]
   );
 
-  // ─── Atualizar Volume/OTB e Cobertura ─────────────────────────────────────
+  // ─── Atualizar Volume/Orçamento e Cobertura ─────────────────────────────────
   const updateVolumeCoverage = useCallback(
     (divisionId: BusinessDivisionId, volumeCoverage: Partial<VolumeAndCoverage>) => {
       setState((prev) => {

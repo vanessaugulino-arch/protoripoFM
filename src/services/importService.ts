@@ -39,6 +39,8 @@ export interface SystemField {
   valueType: FieldValueType;
   sampleValue: string;
   enumValues?: string[];
+  /** Sinônimos extras para auto-mapeamento de cabeçalho */
+  match?: string[];
 }
 
 export interface ImportTypeConfig {
@@ -411,6 +413,7 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         required: true,
         valueType: "text",
         sampleValue: "SKU001",
+        match: ["codigo do produto", "cod produto", "codigo"],
       },
       {
         key: "sale_date",
@@ -419,14 +422,16 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         required: true,
         valueType: "date",
         sampleValue: "2024-03-15",
+        match: ["data da venda", "data venda"],
       },
       {
         key: "channel",
         label: "Canal de Venda",
         description: "Ex: Loja Física, E-commerce, Marketplace, Atacado, Franquia",
-        required: true,
-        valueType: "text",
+        required: false,
+        valueType: "optional_text",
         sampleValue: "Loja Física",
+        match: ["canal"],
       },
       // Métricas obrigatórias
       {
@@ -436,16 +441,28 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         required: true,
         valueType: "number",
         sampleValue: "3",
+        match: ["quantidade", "qtd", "qty"],
       },
       {
         key: "revenue_gross",
-        label: "Receita Bruta (R$)",
+        label: "Receita Bruta / Valor Bruto (R$)",
         description: "Total bruto da venda (qty × preço cheio). Use ponto decimal.",
         required: true,
         valueType: "number",
         sampleValue: "269.70",
+        match: ["valor bruto", "receita bruta", "vl bruto"],
       },
-      // Métricas opcionais
+      // Métricas calculadas / opcionais
+      {
+        key: "revenue_net",
+        label: "Valor da Venda com Desconto (R$)",
+        description: "Receita após desconto, antes do imposto. Ex: 'Valor da Venda (Com Desconto)'.",
+        required: false,
+        valueType: "optional_number",
+        sampleValue: "242.70",
+        // Frases longas (substring) evitam matchear "Valor Bruto (Sem Desconto)"
+        match: ["valor da venda com desconto", "valor com desconto", "receita liquida pre imposto"],
+      },
       {
         key: "discount_value",
         label: "Desconto (R$)",
@@ -453,23 +470,64 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         required: false,
         valueType: "optional_number",
         sampleValue: "27.00",
+        // SEM "desconto" isolado — evita colisão com "Valor Bruto (Sem Desconto)"
+        match: ["desconto aplicado", "desconto concedido", "valor desconto"],
+      },
+      {
+        key: "tax_value",
+        label: "Imposto (R$)",
+        description: "Valor do imposto incidido sobre a venda.",
+        required: false,
+        valueType: "optional_number",
+        sampleValue: "43.69",
+        match: ["imposto", "tributo"],
+      },
+      {
+        key: "revenue_net_post_tax",
+        label: "Venda Líquida Pós-Imposto (R$)",
+        description: "Receita líquida após desconto e impostos. Também chamado de 'Venda Líquida'.",
+        required: false,
+        valueType: "optional_number",
+        sampleValue: "199.01",
+        match: ["venda liquida", "liquida pos imposto"],
       },
       {
         key: "price_realized",
         label: "Preço Realizado por Unidade (R$)",
         description:
-          "Preço efetivo por unidade após desconto. Se omitido, calculado como (receita_bruta − desconto) / quantidade.",
+          "Preço efetivo por unidade após desconto. Se omitido, calculado como valor_com_desconto / quantidade.",
         required: false,
         valueType: "optional_number",
         sampleValue: "80.90",
+        match: ["preco realizado", "preco unitario realizado"],
+      },
+      {
+        key: "colecao",
+        label: "Coleção / Temporada Ativa",
+        description: "Nome da coleção ou temporada ativa no momento da venda. Ex: PV24, IV25",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "PV24",
+        match: ["temporada ativa", "colecao ativa"],
+      },
+      {
+        key: "category",
+        label: "Categoria",
+        description: "Categoria do produto na hierarquia de sortimento.",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "Vestidos",
+        // Word-boundary: "categoria" isolada não bate com "Subcategoria"
+        match: ["categoria"],
       },
       {
         key: "type",
         label: "Tipo de Venda",
-        description: "Ex: Normal, Markdown, Promoção, Liquidação",
+        description: "venda ou troca. Outros valores são normalizados automaticamente para 'venda'.",
         required: false,
         valueType: "optional_text",
-        sampleValue: "Normal",
+        sampleValue: "venda",
+        match: ["tipo de venda", "tipo"],
       },
     ],
   },
@@ -870,12 +928,142 @@ function getCellValue(
 
 // ─── Persistência no Supabase ──────────────────────────────────────────────────
 
+// ─── Sincronizar hierarquia/temporadas/coleções após import de catálogo ─────────
+async function syncFromCatalogImport(tenantId: string): Promise<void> {
+  try {
+    // 1. Extrair hierarquia única de produtos
+    const { data: prodRows } = await supabase
+      .from("products")
+      .select("division, category, subcategory")
+      .eq("tenant_id", tenantId)
+      .not("division", "is", null);
+
+    if (prodRows && prodRows.length > 0) {
+      // Monta árvore HierNode[]
+      const divMap = new Map<string, Map<string, Set<string>>>();
+      for (const p of prodRows as any[]) {
+        if (!p.division) continue;
+        if (!divMap.has(p.division)) divMap.set(p.division, new Map());
+        const catMap = divMap.get(p.division)!;
+        if (p.category) {
+          if (!catMap.has(p.category)) catMap.set(p.category, new Set());
+          if (p.subcategory) catMap.get(p.category)!.add(p.subcategory);
+        }
+      }
+
+      let nodeId = 1;
+      const hierNodes: any[] = [];
+      for (const [div, cats] of divMap.entries()) {
+        const divId = String(nodeId++);
+        hierNodes.push({ id: divId, label: div, level: 0, children: [] });
+        const divNode = hierNodes[hierNodes.length - 1];
+        for (const [cat, subs] of cats.entries()) {
+          const catId = String(nodeId++);
+          divNode.children.push({ id: catId, label: cat, level: 1, children: [] });
+          const catNode = divNode.children[divNode.children.length - 1];
+          for (const sub of subs) {
+            catNode.children.push({ id: String(nodeId++), label: sub, level: 2, children: [] });
+          }
+        }
+      }
+
+      await supabase.from("operation_settings").upsert(
+        {
+          tenant_id: tenantId,
+          hier_ordem: JSON.stringify(hierNodes),
+          hier_divisao_ativa: true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "tenant_id" }
+      );
+    }
+
+    // 2. Extrair temporadas únicas
+    const { data: seasRows } = await supabase
+      .from("products")
+      .select("season")
+      .eq("tenant_id", tenantId)
+      .not("season", "is", null);
+
+    if (seasRows && seasRows.length > 0) {
+      const uniqueSeasons = [...new Set((seasRows as any[]).map(r => r.season as string).filter(Boolean))];
+      for (const sName of uniqueSeasons) {
+        // Tenta extrair ano do nome da temporada
+        const yearMatch = sName.match(/\d{4}/);
+        const fiscalYear = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
+        const isVerao = /ver[ãa]o/i.test(sName);
+        await (supabase as any).from("seasons").upsert(
+          {
+            tenant_id: tenantId,
+            name: sName,
+            fiscal_year: fiscalYear,
+            tipo: isVerao ? "verao" : "inverno",
+            month_start: isVerao ? "07" : "01",
+            month_end: isVerao ? "12" : "06",
+            auto_generated: false,
+          },
+          { onConflict: "tenant_id,name" }
+        );
+      }
+    }
+
+    // 3. Extrair coleções únicas
+    const { data: collRows } = await supabase
+      .from("products")
+      .select("collection_name, season")
+      .eq("tenant_id", tenantId)
+      .not("collection_name", "is", null);
+
+    if (collRows && collRows.length > 0) {
+      const uniqueColls = [...new Map(
+        (collRows as any[])
+          .filter(r => r.collection_name)
+          .map(r => [`${r.season}|${r.collection_name}`, r])
+      ).values()];
+
+      for (const c of uniqueColls) {
+        // Busca o id da temporada pelo nome
+        const { data: seasData } = await (supabase as any)
+          .from("seasons")
+          .select("id")
+          .eq("tenant_id", tenantId)
+          .eq("name", c.season)
+          .maybeSingle();
+
+        if (!seasData?.id) continue;
+
+        // Datas placeholder — o usuário ajusta em OperationSettings
+        const placeholderStart = `${new Date().getFullYear()}-01-01`;
+        const placeholderEnd   = `${new Date().getFullYear()}-12-31`;
+        await supabase.from("collections").upsert(
+          {
+            tenant_id: tenantId,
+            season_id: seasData.id,
+            name: c.collection_name,
+            start_date: placeholderStart,
+            end_date:   placeholderEnd,
+            lead_time_days: 45,
+          },
+          { onConflict: "tenant_id,season_id,name" }
+        ).then(() => {/* fire-and-forget */}, () => {/* se falhar ignora */});
+      }
+    }
+  } catch (e) {
+    console.warn("[syncFromCatalogImport] erro não crítico:", e);
+  }
+}
+
 export async function persistImport(
   tenantId: string,
   dataType: ImportDataType,
   parsed: ParsedFile,
   mapping: Record<string, string>,
 ): Promise<ImportResult> {
+  // Guard: tenantId obrigatório
+  if (!tenantId || tenantId.length < 10) {
+    throw new Error("Tenant não identificado. Faça login novamente antes de importar dados.");
+  }
+
   const { headers, rows } = parsed;
   const get = (row: string[], key: string) =>
     getCellValue(row, headers, mapping[key]);
@@ -923,37 +1111,58 @@ export async function persistImport(
       else importedRows  += Math.min(BATCH, records.length - i);
     }
 
+    // Sincronizar hierarquia + temporadas + coleções com base nos produtos importados
+    if (importedRows > 0) {
+      await syncFromCatalogImport(tenantId);
+    }
+
   // ── Histórico de Vendas ──────────────────────────────────────────────────
   } else if (dataType === "sales") {
     const records = dataRows
       .map(row => {
         const revenueGross  = parseNum(get(row, "revenue_gross"))  ?? 0;
         const discountValue = parseNum(get(row, "discount_value")) ?? 0;
+        // revenue_net: usa valor mapeado se disponível, senão calcula
+        const revenueNet    = parseNum(get(row, "revenue_net")) ?? (revenueGross - discountValue);
         const quantity      = parseNum(get(row, "quantity"))       ?? 0;
         const priceRealized =
           parseNum(get(row, "price_realized")) ??
-          (quantity > 0 ? (revenueGross - discountValue) / quantity : null);
+          (quantity > 0 ? revenueNet / quantity : null);
+        // type: normaliza para minúsculo para satisfazer check constraint ('venda'|'troca')
+        const rawType = get(row, "type") || null;
+        const typeNorm = rawType
+          ? (rawType.toLowerCase() === "troca" ? "troca" : "venda")
+          : null;
 
         return {
-          tenant_id:      tenantId,
-          sku:            get(row, "sku"),
-          sale_date:      parseDateStr(get(row, "sale_date")) ?? get(row, "sale_date"),
-          channel:        get(row, "channel") || null,
+          tenant_id:            tenantId,
+          sku:                  get(row, "sku"),
+          sale_date:            parseDateStr(get(row, "sale_date")) ?? get(row, "sale_date"),
+          channel:              get(row, "channel") || null,
           quantity,
-          revenue_gross:  revenueGross,
-          discount_value: discountValue,
-          revenue_net:    revenueGross - discountValue,
-          price_realized: priceRealized,
-          type:           get(row, "type") || null,
+          revenue_gross:        revenueGross,
+          discount_value:       discountValue,
+          revenue_net:          revenueNet,
+          price_realized:       priceRealized,
+          type:                 typeNorm,
+          tax_value:            parseNum(get(row, "tax_value")),
+          revenue_net_post_tax: parseNum(get(row, "revenue_net_post_tax")),
+          colecao:              get(row, "colecao") || null,
+          category:             get(row, "category") || null,
         };
       })
       .filter(r => r.sku && r.sale_date);
 
     const BATCH = 500;
     for (let i = 0; i < records.length; i += BATCH) {
+      // ignoreDuplicates: ON CONFLICT DO NOTHING — não atualiza vendas já existentes,
+      // apenas pula silenciosamente registros com mesma (tenant, sku, data, valor, qty)
       const { error } = await supabase
         .from("sales_history")
-        .insert(records.slice(i, i + BATCH));
+        .upsert(records.slice(i, i + BATCH), {
+          onConflict: "tenant_id,sku,sale_date,revenue_gross,quantity",
+          ignoreDuplicates: true,
+        });
       if (error) errors += Math.min(BATCH, records.length - i);
       else importedRows  += Math.min(BATCH, records.length - i);
     }
@@ -980,9 +1189,12 @@ export async function persistImport(
 
     const BATCH = 200;
     for (let i = 0; i < records.length; i += BATCH) {
+      // upsert: atualiza pedido se order_number+sku já existir (ex: status mudou)
       const { error } = await supabase
         .from("purchase_orders")
-        .insert(records.slice(i, i + BATCH));
+        .upsert(records.slice(i, i + BATCH), {
+          onConflict: "tenant_id,order_number,sku",
+        });
       if (error) errors += Math.min(BATCH, records.length - i);
       else importedRows  += Math.min(BATCH, records.length - i);
     }
@@ -1003,9 +1215,12 @@ export async function persistImport(
 
     const BATCH = 200;
     for (let i = 0; i < records.length; i += BATCH) {
+      // upsert: atualiza posição de estoque se (sku, data) já existir (ex: contagem corrigida)
       const { error } = await supabase
         .from("inventory_snapshots")
-        .insert(records.slice(i, i + BATCH));
+        .upsert(records.slice(i, i + BATCH), {
+          onConflict: "tenant_id,sku,snapshot_date",
+        });
       if (error) errors += Math.min(BATCH, records.length - i);
       else importedRows  += Math.min(BATCH, records.length - i);
     }

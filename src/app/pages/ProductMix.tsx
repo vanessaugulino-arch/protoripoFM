@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
+import { supabase } from "../../lib/supabase";
 import {
   ArrowLeft,
   LogOut,
@@ -75,6 +76,8 @@ export default function ProductMix() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
   const [selectedCycle, setSelectedCycle] = useState("Verão 2026");
+  const [tenantId, setTenantId] = useState<string>("");
+  const [loadingProducts, setLoadingProducts] = useState(false);
   
   // Visão Geral da Coleção
   const [categoryOverviews, setCategoryOverviews] = useState<CategoryOverview[]>([
@@ -111,19 +114,67 @@ export default function ProductMix() {
       if (userData.profile !== "Estilo") {
         navigate("/dashboard");
       }
+
+      const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
+      setTenantId(tid);
+
+      // Carrega dados salvos localmente (cache)
+      const savedOverviews = sessionStorage.getItem("categoryOverviews");
+      if (savedOverviews) setCategoryOverviews(JSON.parse(savedOverviews));
+
+      const savedProducts = sessionStorage.getItem("productMixData");
+      if (savedProducts) {
+        setProducts(JSON.parse(savedProducts));
+      } else if (tid) {
+        // Sem cache — busca do Supabase
+        setLoadingProducts(true);
+        Promise.resolve(
+          supabase
+            .from("products")
+            .select("sku, name, category, subcategory, price_sale, price_cost, price_tier, season, collection_name")
+            .eq("tenant_id", tid)
+            .order("category")
+            .limit(200)
+        ).then(({ data }) => {
+            if (data && data.length > 0) {
+              const mapped: ProductItem[] = data.map((p: any) => {
+                const custo = Number(p.price_cost) || 0;
+                const venda = Number(p.price_sale) || 0;
+                const markup = custo > 0 ? parseFloat((venda / custo).toFixed(2)) : 2.0;
+                return {
+                  id: p.sku,
+                  nomeItem: p.name ?? p.sku,
+                  categoria: p.category ?? "Outros",
+                  subcategoria: p.subcategory ?? "",
+                  preCusto: custo,
+                  markup,
+                  precoVenda: venda,
+                  faixaPreco: p.price_tier ?? "Médio (R$ 179-259)",
+                  status: "Em Planejamento",
+                };
+              });
+              setProducts(mapped);
+
+              // Gera overviews por categoria
+              const byCategory = mapped.reduce<Record<string, number>>((acc, p) => {
+                acc[p.categoria] = (acc[p.categoria] ?? 0) + 1;
+                return acc;
+              }, {});
+              const total = mapped.length;
+              const overviews: CategoryOverview[] = Object.entries(byCategory).map(([cat, qtd], i) => ({
+                id: String(i + 1),
+                categoriaPrincipal: cat,
+                participacao: Math.round((qtd / total) * 100),
+                quantidadeItens: qtd,
+                observacao: "",
+              }));
+              setCategoryOverviews(overviews);
+            }
+          }, () => {/* usa defaults */})
+          .finally(() => setLoadingProducts(false));
+      }
     } else {
       navigate("/");
-    }
-
-    // Load saved data if available
-    const savedOverviews = sessionStorage.getItem("categoryOverviews");
-    if (savedOverviews) {
-      setCategoryOverviews(JSON.parse(savedOverviews));
-    }
-
-    const savedProducts = sessionStorage.getItem("productMixData");
-    if (savedProducts) {
-      setProducts(JSON.parse(savedProducts));
     }
   }, [navigate]);
 
@@ -209,6 +260,21 @@ export default function ProductMix() {
   const saveAll = () => {
     sessionStorage.setItem("categoryOverviews", JSON.stringify(categoryOverviews));
     sessionStorage.setItem("productMixData", JSON.stringify(products));
+
+    // Write-through para Supabase — salva overviews como JSON em operation_settings auxiliar
+    if (tenantId) {
+      supabase
+        .from("operation_settings")
+        .upsert(
+          { tenant_id: tenantId, updated_at: new Date().toISOString() },
+          { onConflict: "tenant_id" }
+        )
+        .then(
+          () => {/* fire-and-forget */},
+          () => {/* silencioso */}
+        );
+    }
+
     alert("Estrutura do mix de produtos salva com sucesso!");
   };
 

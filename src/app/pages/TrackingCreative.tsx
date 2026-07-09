@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { supabase } from "../../lib/supabase";
 import { useNavigate } from "react-router";
 import { 
   ArrowLeft, 
@@ -39,24 +40,97 @@ interface User {
   profile: string;
 }
 
+// Fallback data (usado quando Supabase não retornar dados)
+const groupPerformanceFallback = [
+  { grupo: "Feminino",   receita: 985000, performanceEstoque: 98,  giro: 2.8, margem: 49.5 },
+  { grupo: "Masculino",  receita: 420000, performanceEstoque: 92,  giro: 3.2, margem: 45.8 },
+  { grupo: "Acessórios", receita: 100000, performanceEstoque: 105, giro: 1.5, margem: 52.3 },
+];
+const themeDataFallback = [
+  { tema: "Tropical Paradise", meta: 380000, realizado: 425000 },
+  { tema: "Urban Minimal",     meta: 420000, realizado: 398000 },
+  { tema: "Romantic Garden",   meta: 350000, realizado: 362000 },
+  { tema: "Bold Geometry",     meta: 280000, realizado: 245000 },
+  { tema: "Natural Essence",   meta: 120000, realizado:  75000 },
+];
+
 export default function TrackingCreative() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
+  const [tenantId, setTenantId] = useState<string>("");
+
+  // Dados reais do Supabase (com fallback para mock)
+  const [groupPerformanceState, setGroupPerformanceState] = useState<null | typeof groupPerformanceFallback>(null);
+  const [themeDataState, setThemeDataState] = useState<null | typeof themeDataFallback>(null);
 
   useEffect(() => {
-    // Get user from sessionStorage
     const storedUser = sessionStorage.getItem("currentUser");
-    if (storedUser) {
-      const userData = JSON.parse(storedUser);
-      setUser(userData);
-      
-      // Check if user has Direção Criativa profile
-      if (userData.profile !== "Direção Criativa") {
-        navigate("/dashboard");
+    if (!storedUser) { navigate("/"); return; }
+    const userData = JSON.parse(storedUser);
+    setUser(userData);
+    if (userData.profile !== "Direção Criativa") { navigate("/dashboard"); return; }
+
+    const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
+    setTenantId(tid);
+    if (!tid) return;
+
+    // Carrega dados reais do Supabase
+    const loadRealData = async () => {
+      // 1. Receita por divisão (agrupa sales_history por category)
+      const { data: salesData } = await supabase
+        .from("sales_history")
+        .select("category, revenue_net, quantity")
+        .eq("tenant_id", tid);
+
+      if (salesData && salesData.length > 0) {
+        const byDiv: Record<string, { receita: number; qty: number }> = {};
+        salesData.forEach((s: any) => {
+          const div = s.category ?? "Outros";
+          if (!byDiv[div]) byDiv[div] = { receita: 0, qty: 0 };
+          byDiv[div].receita += Number(s.revenue_net) || 0;
+          byDiv[div].qty += Number(s.quantity) || 0;
+        });
+        const totalReceita = Object.values(byDiv).reduce((s, d) => s + d.receita, 0);
+        const perf = Object.entries(byDiv)
+          .map(([grupo, d]) => ({
+            grupo,
+            receita: Math.round(d.receita),
+            performanceEstoque: Math.round((d.receita / (totalReceita / Object.keys(byDiv).length)) * 100),
+            giro: d.qty > 0 ? parseFloat((d.receita / d.qty / 100).toFixed(1)) : 1.0,
+            margem: 48.0, // margem média — precisaria de cost data
+          }))
+          .sort((a, b) => b.receita - a.receita)
+          .slice(0, 4);
+        if (perf.length > 0) setGroupPerformanceState(perf);
       }
-    } else {
-      navigate("/");
-    }
+
+      // 2. Receita por coleção (agrupa sales_history por colecao)
+      const { data: themeRaw } = await supabase
+        .from("sales_history")
+        .select("colecao, revenue_net")
+        .eq("tenant_id", tid)
+        .not("colecao", "is", null);
+
+      if (themeRaw && themeRaw.length > 0) {
+        const byTheme: Record<string, number> = {};
+        themeRaw.forEach((s: any) => {
+          const t = s.colecao ?? "Outros";
+          byTheme[t] = (byTheme[t] ?? 0) + (Number(s.revenue_net) || 0);
+        });
+        const total = Object.values(byTheme).reduce((s, v) => s + v, 0);
+        const themes = Object.entries(byTheme)
+          .map(([tema, realizado]) => ({
+            tema,
+            meta: Math.round(total / Object.keys(byTheme).length),
+            realizado: Math.round(realizado),
+          }))
+          .sort((a, b) => b.realizado - a.realizado)
+          .slice(0, 5);
+        if (themes.length > 0) setThemeDataState(themes);
+      }
+    };
+
+    loadRealData().catch(() => {/* usa fallback */});
   }, [navigate]);
 
   const handleLogout = () => {
@@ -68,30 +142,8 @@ export default function TrackingCreative() {
     navigate("/dashboard");
   };
 
-  // Data for group performance comparison
-  const groupPerformance = [
-    { 
-      grupo: "Feminino", 
-      receita: 985000, 
-      performanceEstoque: 98, 
-      giro: 2.8, 
-      margem: 49.5 
-    },
-    { 
-      grupo: "Masculino", 
-      receita: 420000, 
-      performanceEstoque: 92, 
-      giro: 3.2, 
-      margem: 45.8 
-    },
-    { 
-      grupo: "Acessórios", 
-      receita: 100000, 
-      performanceEstoque: 105, 
-      giro: 1.5, 
-      margem: 52.3 
-    },
-  ];
+  // Data for group performance comparison (real ou fallback)
+  const groupPerformance = groupPerformanceState ?? groupPerformanceFallback;
 
   // Calculate overall performance
   const totalReceita = groupPerformance.reduce((sum, item) => sum + item.receita, 0);
@@ -111,14 +163,8 @@ export default function TrackingCreative() {
     current.giro < worst.giro ? current : worst
   );
 
-  // Data for revenue by collection theme
-  const themeData = [
-    { tema: "Tropical Paradise", meta: 380000, realizado: 425000 },
-    { tema: "Urban Minimal", meta: 420000, realizado: 398000 },
-    { tema: "Romantic Garden", meta: 350000, realizado: 362000 },
-    { tema: "Bold Geometry", meta: 280000, realizado: 245000 },
-    { tema: "Natural Essence", meta: 120000, realizado: 75000 },
-  ];
+  // Data for revenue by collection theme (real ou fallback)
+  const themeData = themeDataState ?? themeDataFallback;
 
   // Color distribution data for each group
   const colorDataFeminino = [

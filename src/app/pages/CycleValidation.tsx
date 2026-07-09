@@ -1,10 +1,13 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
+import { supabase } from "../../lib/supabase";
+import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
 import { useNavigate } from "react-router";
 import {
-  ArrowLeft, LogOut, User, Save, GitCompare, Check,
+  ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
   AlertTriangle, TrendingUp, TrendingDown, X, Info,
   ChevronRight, BarChart3
 } from "lucide-react";
+import { exportToPDF } from "../../utils/exportPDF";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Line
@@ -83,7 +86,7 @@ const BASE = {
   metaReceita:    3120000,
   margemMeta:     45.2,
   estoqueInicio:  2850,
-  otb:            1140000,
+  orcamento:      1140000,
   volumeProducao: 17830,
   avgPrice:       65,
 };
@@ -118,6 +121,8 @@ export default function CycleValidation() {
   // Auth
   const [user, setUser] = useState<CurrentUser | null>(null);
 
+  const [tenantId, setTenantId] = useState<string>("");
+
   // Cycle selector
   const [selectedCycle, setSelectedCycle] = useState("");
 
@@ -140,14 +145,52 @@ export default function CycleValidation() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [appliedScenarioId, setAppliedScenarioId] = useState<string | null>(null);
   const [compareModal, setCompareModal] = useState(false);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [compareIds, setCompareIds] = useState<[string, string] | null>(null);
   const [savingName, setSavingName] = useState("");
   const [showSaveForm, setShowSaveForm] = useState(false);
 
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
-    if (stored) setUser(JSON.parse(stored));
-    else navigate("/");
+    if (!stored) { navigate("/"); return; }
+    const userData = JSON.parse(stored);
+    setUser(userData);
+    const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
+    setTenantId(tid);
+
+    if (!tid) return;
+
+    // Carrega cenários de validação do Supabase (planning_scenarios para o ano atual)
+    const year = new Date().getFullYear();
+    getCycle(tid, year)
+      .then((cycle) => {
+        if (!cycle) return;
+        return dbListScenarios(tid, year).then((rows) => {
+          if (!rows.length) return;
+          const mapped: Scenario[] = rows.map((r) => {
+            const vals = r.values as any;
+            return {
+              id: r.id,
+              name: r.name,
+              timestamp: new Date(r.created_at).toLocaleString("pt-BR"),
+              plannedRevenue: (vals?.plannedRevenue as MonthRevenue[]) ?? INITIAL_PLANNED.map(x => ({ ...x })),
+              entryCurve: (vals?.entryCurve as EntryCurveRow[]) ?? INITIAL_ENTRY.map(x => ({ ...x })),
+              totalPlanned: vals?.totalPlanned ?? 0,
+              coverageDays: vals?.coverageDays ?? 0,
+            };
+          });
+          setScenarios(mapped);
+          // Se houver cenário aplicado, carrega seus dados
+          const applied = rows.find((r) => r.is_applied);
+          if (applied) {
+            setAppliedScenarioId(applied.id);
+            const vals = applied.values as any;
+            if (vals?.plannedRevenue) setPlannedRevenue(vals.plannedRevenue);
+            if (vals?.entryCurve) setEntryCurve(vals.entryCurve);
+          }
+        });
+      })
+      .catch(() => {/* usa defaults */});
   }, [navigate]);
 
   // ── Derived / computed ────────────────────────────────────────────────────────
@@ -169,13 +212,13 @@ export default function CycleValidation() {
     ? ((totalEntryPlanned - totalEntryOriginal) / totalEntryOriginal) * 100
     : 0;
 
-  // OTB consumption
+  // Consumo do Orçamento
   const entryValueTotal = clientProduces
     ? totalEntryPlanned * BASE.avgPrice
     : totalEntryPlanned;
 
-  const otbRemaining = BASE.otb - entryValueTotal;
-  const otbUsagePct = (entryValueTotal / BASE.otb) * 100;
+  const orcamentoRestante = BASE.orcamento - entryValueTotal;
+  const orcamentoUsoPct = (entryValueTotal / BASE.orcamento) * 100;
 
   // Coverage (days) = (starting stock value + total entry value) / avg daily revenue
   const coverageDays = useMemo(() => {
@@ -265,8 +308,9 @@ export default function CycleValidation() {
 
   const handleSaveScenario = () => {
     if (!savingName.trim()) return;
+    const localId = `s-${Date.now()}`;
     const s: Scenario = {
-      id: `s-${Date.now()}`,
+      id: localId,
       name: savingName.trim(),
       timestamp: new Date().toLocaleString("pt-BR"),
       plannedRevenue: plannedRevenue.map(r => ({ ...r })),
@@ -277,6 +321,41 @@ export default function CycleValidation() {
     setScenarios(prev => [...prev, s]);
     setSavingName("");
     setShowSaveForm(false);
+
+    // Write-through para Supabase
+    if (tenantId) {
+      const year = new Date().getFullYear();
+      getCycle(tenantId, year)
+        .then((cycle) => {
+          if (!cycle) return;
+          return supabase
+            .from("planning_scenarios")
+            .insert({
+              tenant_id: tenantId,
+              cycle_id: cycle.id,
+              name: s.name,
+              version: scenarios.length + 1,
+              values: {
+                plannedRevenue: s.plannedRevenue,
+                entryCurve: s.entryCurve,
+                totalPlanned: s.totalPlanned,
+                coverageDays: s.coverageDays,
+              } as unknown as import("../../lib/database.types").Json,
+              is_applied: false,
+            })
+            .select()
+            .single()
+            .then(({ data }) => {
+              if (data?.id) {
+                // Atualiza id local com o id do banco
+                setScenarios(prev => prev.map(sc =>
+                  sc.id === localId ? { ...sc, id: data.id } : sc
+                ));
+              }
+            });
+        })
+        .catch(() => {/* fire-and-forget */});
+    }
   };
 
   const handleApplyScenario = (id: string) => {
@@ -291,6 +370,22 @@ export default function CycleValidation() {
     if (scenarios.length < 2) return;
     setCompareIds([scenarios[0].id, scenarios[scenarios.length - 1].id]);
     setCompareModal(true);
+  };
+
+  const handleExportPDF = async () => {
+    setIsExportingPDF(true);
+    await exportToPDF({
+      elementId: "cycle-scenarios-pdf",
+      fileName:  "cenarios_validacao_ciclo",
+      title:     "Comparação de Cenários — Validação de Ciclo",
+    });
+    setIsExportingPDF(false);
+  };
+
+  const handleApplyMetas = () => {
+    if (appliedScenarioId) return; // já aplicado
+    const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
+    if (latest) handleApplyScenario(latest.id);
   };
 
   const activeChannelKey: ChannelKey | null =
@@ -394,10 +489,10 @@ export default function CycleValidation() {
                     <div className="text-xs text-white/60 mt-1">Estoque Início (pçs)</div>
                   </div>
                   <div className="text-center pl-4">
-                    <div className="text-xl font-bold text-white">{fmtR(BASE.otb)}</div>
-                    <div className="text-xs text-white/60 mt-1">Verba OTB Aprovada</div>
+                    <div className="text-xl font-bold text-white">{fmtR(BASE.orcamento)}</div>
+                    <div className="text-xs text-white/60 mt-1">Orçamento Aprovado</div>
                     <div className="text-xs text-white/40 mt-0.5">
-                      Uso: {otbUsagePct.toFixed(0)}%
+                      Uso: {orcamentoUsoPct.toFixed(0)}%
                     </div>
                   </div>
                   <div className="text-center pl-4">
@@ -669,34 +764,34 @@ export default function CycleValidation() {
                   </div>
                 </div>
 
-                {/* OTB usage alert */}
+                {/* Alerta de uso do Orçamento */}
                 <div className={`flex items-center gap-3 rounded-xl p-3 mb-4 text-sm ${
-                  otbUsagePct > 105 ? "bg-red-50 border border-red-200"
-                  : otbUsagePct > 95 ? "bg-yellow-50 border border-yellow-200"
-                  : otbUsagePct < 85 ? "bg-blue-50 border border-blue-200"
+                  orcamentoUsoPct > 105 ? "bg-red-50 border border-red-200"
+                  : orcamentoUsoPct > 95 ? "bg-yellow-50 border border-yellow-200"
+                  : orcamentoUsoPct < 85 ? "bg-blue-50 border border-blue-200"
                   : "bg-green-50 border border-green-200"
                 }`}>
-                  {otbUsagePct > 100
+                  {orcamentoUsoPct > 100
                     ? <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
-                    : otbUsagePct > 95
+                    : orcamentoUsoPct > 95
                     ? <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0" />
                     : <Info className="w-4 h-4 text-blue-500 flex-shrink-0" />
                   }
                   <span className={`${
-                    otbUsagePct > 105 ? "text-red-800"
-                    : otbUsagePct > 95 ? "text-yellow-800"
-                    : otbUsagePct < 85 ? "text-blue-800"
+                    orcamentoUsoPct > 105 ? "text-red-800"
+                    : orcamentoUsoPct > 95 ? "text-yellow-800"
+                    : orcamentoUsoPct < 85 ? "text-blue-800"
                     : "text-green-800"
                   }`}>
-                    Uso da verba OTB: <strong>{otbUsagePct.toFixed(1)}%</strong> &nbsp;·&nbsp;
+                    Uso do Orçamento: <strong>{orcamentoUsoPct.toFixed(1)}%</strong> &nbsp;·&nbsp;
                     {clientProduces
                       ? `${fmtN(totalEntryPlanned)} pçs planejadas × R$ ${BASE.avgPrice}/pç = ${fmtR(entryValueTotal)}`
                       : `${fmtR(entryValueTotal)} total planejado`
                     }
                     &nbsp;·&nbsp;
-                    {otbRemaining >= 0
-                      ? `Saldo: ${fmtR(otbRemaining)}`
-                      : `Excesso: ${fmtR(Math.abs(otbRemaining))}`
+                    {orcamentoRestante >= 0
+                      ? `Saldo: ${fmtR(orcamentoRestante)}`
+                      : `Excesso: ${fmtR(Math.abs(orcamentoRestante))}`
                     }
                   </span>
                 </div>
@@ -747,7 +842,7 @@ export default function CycleValidation() {
                           </td>
                         ))}
                         <td className={`py-2 px-3 text-center font-bold text-xs ${
-                          otbUsagePct > 105 ? "text-red-600" : otbUsagePct > 95 ? "text-yellow-600" : "text-[#28071C]"
+                          orcamentoUsoPct > 105 ? "text-red-600" : orcamentoUsoPct > 95 ? "text-yellow-600" : "text-[#28071C]"
                         }`}>
                           {clientProduces ? fmtN(totalEntryPlanned) : fmtR(totalEntryPlanned)}
                         </td>
@@ -850,30 +945,13 @@ export default function CycleValidation() {
             {/* ── SECTION: CENÁRIOS ── */}
             <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
               <div className="border-t-4 border-[#28071C]/30 px-6 pt-5 pb-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-[#28071C] font-semibold text-base">Cenários</h3>
-                    <p className="text-sm text-[#28071C]/60 mt-0.5">
-                      Salve, compare e aplique cenários. Apenas o cenário aplicado altera os dados oficiais do ciclo.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => setShowSaveForm(v => !v)}
-                      className="flex items-center gap-2 px-4 py-2 bg-[#7598CF] text-white rounded-xl text-sm font-medium hover:bg-[#7598CF]/90 transition-all shadow-sm"
-                    >
-                      <Save className="w-4 h-4" />
-                      Salvar Cenário
-                    </button>
-                    <button
-                      onClick={handleCompare}
-                      disabled={scenarios.length < 2}
-                      className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-[#7598CF] text-[#7598CF] rounded-xl text-sm font-medium hover:bg-[#7598CF]/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <GitCompare className="w-4 h-4" />
-                      Comparar
-                    </button>
-                  </div>
+                <div className="flex items-center gap-3 mb-4">
+                  <h3 className="text-[#28071C] font-semibold text-base">Cenários</h3>
+                  {scenarios.length > 0 && (
+                    <span className="text-xs text-[#28071C]/40 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                      {scenarios.length} {scenarios.length === 1 ? "salvo" : "salvos"}
+                    </span>
+                  )}
                 </div>
 
                 {/* Save form */}
@@ -992,6 +1070,59 @@ export default function CycleValidation() {
           </>
         )}
       </main>
+
+      {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
+      <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3">
+        <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowSaveForm(v => !v)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm"
+            >
+              <Save className="w-4 h-4" />
+              Salvar cenário
+            </button>
+            <button
+              onClick={handleCompare}
+              disabled={scenarios.length < 2}
+              title={scenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : "Comparar cenários salvos"}
+              className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl text-sm font-semibold hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all"
+            >
+              <GitCompare className="w-4 h-4" />
+              Comparar
+              {scenarios.length >= 2 && (
+                <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">
+                  {scenarios.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={handleExportPDF}
+              disabled={isExportingPDF}
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+            >
+              <FileDown className="w-4 h-4" />
+              {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+            </button>
+          </div>
+          <button
+            onClick={handleApplyMetas}
+            disabled={scenarios.length === 0 || !!appliedScenarioId}
+            title={
+              appliedScenarioId ? "Cenário já aplicado ao ciclo" :
+              scenarios.length === 0 ? "Salve um cenário antes de aplicar" :
+              "Aplicar o cenário mais recente ao ciclo"
+            }
+            className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+          >
+            <CheckCheck className="w-4 h-4" />
+            {appliedScenarioId ? "Metas aplicadas ✓" : "Aplicar metas"}
+          </button>
+        </div>
+        <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
+          Cenários não alteram dados oficiais até "Aplicar metas" ser acionado.
+        </p>
+      </div>
 
       {/* ── COMPARE MODAL ── */}
       {compareModal && compareIds && (
@@ -1139,6 +1270,47 @@ export default function CycleValidation() {
           </div>
         </div>
       )}
+
+      {/* ── PDF: Comparação de Cenários (capturado pelo html2canvas) ─────────── */}
+      <div
+        id="cycle-scenarios-pdf"
+        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
+      >
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>Validação de Ciclo</p>
+        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>Comparação de Cenários</p>
+        {scenarios.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+            {scenarios.map(s => {
+              const isApplied = s.id === appliedScenarioId;
+              const delta = s.totalPlanned - BASE.metaReceita;
+              const deltaPct = BASE.metaReceita ? ((delta / BASE.metaReceita) * 100).toFixed(1) : '—';
+              return (
+                <div key={s.id} style={{ flex: '1 1 220px', minWidth: '200px', maxWidth: '260px', background: 'white', borderRadius: '12px', padding: '16px', borderTop: `4px solid ${isApplied ? '#7598CF' : '#28071C'}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#28071C' }}>{s.name}</span>
+                    {isApplied && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>APLICADO</span>}
+                  </div>
+                  {[
+                    { label: 'Indicador', plan: 'Plano', ref: 'vs Referência', isHeader: true },
+                    { label: 'Receita Total', plan: fmtR(s.totalPlanned), ref: `${delta >= 0 ? '+' : ''}${deltaPct}%` },
+                    { label: 'Meta Receita', plan: fmtR(BASE.metaReceita), ref: '—' },
+                    { label: 'Cobertura', plan: `${Math.round(s.coverageDays)} dias`, ref: s.coverageDays < 60 ? '⚠ Baixa' : s.coverageDays > 120 ? '⚠ Alta' : '✓ OK' },
+                    { label: 'Salvo em', plan: s.timestamp, ref: '' },
+                  ].map((row, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: row.isHeader ? '9px' : '11px', fontWeight: row.isHeader ? 700 : 400, color: row.isHeader ? 'rgba(40,7,28,0.4)' : '#28071C', textTransform: row.isHeader ? 'uppercase' : 'none', letterSpacing: row.isHeader ? '0.05em' : 0 }}>
+                      <span>{row.label}</span>
+                      <span style={{ textAlign: 'center', fontWeight: row.isHeader ? 700 : 600 }}>{row.plan}</span>
+                      <span style={{ textAlign: 'right', color: row.isHeader ? 'rgba(40,7,28,0.4)' : 'rgba(40,7,28,0.6)' }}>{row.ref}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -12,6 +12,8 @@ import {
   SUGGESTED_COUNTS, MAX_UNLOCK, savePlanCycle,
 } from "../types/planCycle"
 import { autoGenerateForYear } from "../../services/temporadaService"
+import { saveCycle } from "../../services/supabase/planningScenarioService"
+import type { PlanMode } from "../types/planCycle"
 import type {
   StrategicFocus, PlanFieldPriority, AnnualPlanCycle, FieldStatus,
 } from "../types/planCycle"
@@ -35,7 +37,7 @@ function classifyOrigem(origem: OrigemPecas | undefined): 'produtor' | 'comprado
  * Adapta a lista de prioridades default conforme o modelo produtivo do cliente.
  *
  * Produtor (própria/white/private label):
- *   - NÃO usa OTB (não compra de terceiros como principal alavanca)
+ *   - NÃO usa Orçamento de Compra (não compra de terceiros como principal alavanca)
  *   - Substitui otbCompra → producaoPecas nos indicadores sugeridos
  *
  * Comprador (multimarca/revenda):
@@ -89,7 +91,7 @@ const INDICATOR_TOOLTIPS: Record<string, string> = {
   cobertura:     'Quantos dias de estoque você tem disponível com base na velocidade de vendas atual. Cobertura alta pode indicar risco de estoque parado.',
   producaoPecas: 'Volume total de peças planejadas para produção ou compra no período. Direciona o plano de coleção e os pedidos de compra.',
   mkdPct:        'Percentual de desconto aplicado sobre o preço original. Controla o impacto do markdown na margem bruta.',
-  custoMedio:    'Custo médio por peça produzida ou comprada. Base para calcular o OTB e a margem bruta do período.',
+  custoMedio:    'Custo médio por peça produzida ou comprada. Base para calcular o Orçamento e a margem bruta do período.',
   gmroi:         'Mostra quanto de lucro bruto a empresa gera para cada real investido em produtos. GMROI > 1 significa retorno positivo sobre o estoque.',
   mkdRS:         'Valor absoluto de desconto aplicado em reais. Complementa o percentual de markdown para entender o impacto financeiro real.',
   totalPecas:    'Total de peças considerando produção própria e compras externas. Visão consolidada do volume do período.',
@@ -362,6 +364,12 @@ export default function PlanningSetup() {
       autoGenerateForYear(tenantId, year).catch(err =>
         console.warn("Erro ao gerar temporadas automáticas:", err)
       )
+      // Persiste ciclo no Supabase (fire-and-forget)
+      saveCycle(tenantId, year, {
+        focus,
+        mode: (isReview ? "review" : "new") as PlanMode,
+        field_priorities: Object.fromEntries(fieldPriorities.map(fp => [fp.key, fp])),
+      }).catch(err => console.warn("Erro ao salvar ciclo no Supabase:", err))
     }
     navigate("/planning", { state: {
       year,
@@ -442,8 +450,8 @@ export default function PlanningSetup() {
                   <p className="text-amber-800/80 leading-snug">
                     <strong>Perfil detectado:</strong> {ORIGEM_LABELS[origemPerfil]}.{' '}
                     {tipoPerfil === 'produtor'
-                      ? 'Os indicadores sugeridos vão priorizar Produção de Peças em vez de OTB de Compra.'
-                      : 'Os indicadores vão priorizar OTB de Compra e não incluir indicadores de produção própria.'}
+                      ? 'Os indicadores sugeridos vão priorizar Produção de Peças em vez de Orçamento de Compra.'
+                      : 'Os indicadores vão priorizar Orçamento de Compra e não incluir indicadores de produção própria.'}
                   </p>
                 </div>
               )}
@@ -589,8 +597,8 @@ export default function PlanningSetup() {
                   <span>{tipoPerfil === 'produtor' ? '🏭' : '🛒'}</span>
                   <span>
                     {tipoPerfil === 'produtor'
-                      ? 'Modelo produtivo: Produção de Peças priorizado em vez de OTB.'
-                      : 'Modelo de revenda: OTB de Compra priorizado — indicadores de produção em somente leitura.'}
+                      ? 'Modelo produtivo: Produção de Peças priorizado em vez de Orçamento.'
+                      : 'Modelo de revenda: Orçamento de Compra priorizado — indicadores de produção em somente leitura.'}
                   </span>
                 </div>
               )}

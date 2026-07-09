@@ -319,34 +319,46 @@ export type Database = {
       }
       inventory_snapshots: {
         Row: {
+          colecao: string | null
           created_at: string
+          data_ult_entrada: string | null
           id: string
           location: string | null
+          mes_referencia: string | null
           quantity: number
           sku: string
           snapshot_date: string
+          temporada: string | null
           tenant_id: string
           value_cost: number | null
           value_sale: number | null
         }
         Insert: {
+          colecao?: string | null
           created_at?: string
+          data_ult_entrada?: string | null
           id?: string
           location?: string | null
+          mes_referencia?: string | null
           quantity?: number
           sku: string
           snapshot_date: string
+          temporada?: string | null
           tenant_id: string
           value_cost?: number | null
           value_sale?: number | null
         }
         Update: {
+          colecao?: string | null
           created_at?: string
+          data_ult_entrada?: string | null
           id?: string
           location?: string | null
+          mes_referencia?: string | null
           quantity?: number
           sku?: string
           snapshot_date?: string
+          temporada?: string | null
           tenant_id?: string
           value_cost?: number | null
           value_sale?: number | null
@@ -574,7 +586,11 @@ export type Database = {
           basicos_ativos: boolean
           basicos_skus: string | null
           basicos_tipo: string | null
+          faixas_categoria: Json | null
+          faixas_preco: Json | null
           hier_divisao_ativa: boolean
+          hier_labels: Json | null
+          hier_labels_pending: boolean
           hier_ordem: string
           id: string
           subcategorias: string[]
@@ -585,7 +601,11 @@ export type Database = {
           basicos_ativos?: boolean
           basicos_skus?: string | null
           basicos_tipo?: string | null
+          faixas_categoria?: Json | null
+          faixas_preco?: Json | null
           hier_divisao_ativa?: boolean
+          hier_labels?: Json | null
+          hier_labels_pending?: boolean
           hier_ordem?: string
           id?: string
           subcategorias?: string[]
@@ -596,7 +616,11 @@ export type Database = {
           basicos_ativos?: boolean
           basicos_skus?: string | null
           basicos_tipo?: string | null
+          faixas_categoria?: Json | null
+          faixas_preco?: Json | null
           hier_divisao_ativa?: boolean
+          hier_labels?: Json | null
+          hier_labels_pending?: boolean
           hier_ordem?: string
           id?: string
           subcategorias?: string[]
@@ -835,8 +859,10 @@ export type Database = {
           color: string | null
           color_group: string | null
           created_at: string
+          data_ultima_entrada: string | null
           division: string | null
           id: string
+          linha: string | null
           material: string | null
           model: string | null
           name: string
@@ -859,8 +885,10 @@ export type Database = {
           color?: string | null
           color_group?: string | null
           created_at?: string
+          data_ultima_entrada?: string | null
           division?: string | null
           id?: string
+          linha?: string | null
           material?: string | null
           model?: string | null
           name: string
@@ -883,8 +911,10 @@ export type Database = {
           color?: string | null
           color_group?: string | null
           created_at?: string
+          data_ultima_entrada?: string | null
           division?: string | null
           id?: string
+          linha?: string | null
           material?: string | null
           model?: string | null
           name?: string
@@ -912,6 +942,7 @@ export type Database = {
       }
       purchase_orders: {
         Row: {
+          colecao: string | null
           created_at: string
           delivery_date: string | null
           expected_delivery: string | null
@@ -923,12 +954,14 @@ export type Database = {
           sku: string
           status: string
           supplier: string | null
+          temporada: string | null
           tenant_id: string
           type: string
           unit_cost: number | null
           updated_at: string
         }
         Insert: {
+          colecao?: string | null
           created_at?: string
           delivery_date?: string | null
           expected_delivery?: string | null
@@ -940,12 +973,14 @@ export type Database = {
           sku: string
           status?: string
           supplier?: string | null
+          temporada?: string | null
           tenant_id: string
           type: string
           unit_cost?: number | null
           updated_at?: string
         }
         Update: {
+          colecao?: string | null
           created_at?: string
           delivery_date?: string | null
           expected_delivery?: string | null
@@ -957,6 +992,7 @@ export type Database = {
           sku?: string
           status?: string
           supplier?: string | null
+          temporada?: string | null
           tenant_id?: string
           type?: string
           unit_cost?: number | null
@@ -1044,21 +1080,26 @@ export type Database = {
         Row: {
           category: string | null
           channel: string | null
+          colecao: string | null
           created_at: string
           discount_value: number
           id: string
           price_realized: number | null
           quantity: number
           revenue_gross: number
-          revenue_net: number | null
+          revenue_net: number | null           // RV: pós-desconto, pré-imposto
+          revenue_net_post_tax: number | null  // RL: pós-desconto e pós-imposto
           sale_date: string
           sku: string
+          tax_value: number | null
+          temporada: string | null
           tenant_id: string
           type: string | null
         }
         Insert: {
           category?: string | null
           channel?: string | null
+          colecao?: string | null
           created_at?: string
           discount_value?: number
           id?: string
@@ -1066,14 +1107,18 @@ export type Database = {
           quantity?: number
           revenue_gross?: number
           revenue_net?: number | null
+          revenue_net_post_tax?: number | null
           sale_date: string
           sku: string
+          tax_value?: number | null
+          temporada?: string | null
           tenant_id: string
           type?: string | null
         }
         Update: {
           category?: string | null
           channel?: string | null
+          colecao?: string | null
           created_at?: string
           discount_value?: number
           id?: string
@@ -1081,8 +1126,11 @@ export type Database = {
           quantity?: number
           revenue_gross?: number
           revenue_net?: number | null
+          revenue_net_post_tax?: number | null
           sale_date?: string
           sku?: string
+          tax_value?: number | null
+          temporada?: string | null
           tenant_id?: string
           type?: string | null
         }

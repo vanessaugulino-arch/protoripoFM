@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { supabase } from "../../lib/supabase";
 import { useNavigate } from "react-router";
 import {
   LogOut, Settings, TrendingUp, BarChart3, Package, FileText,
@@ -181,6 +182,9 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
   const [activeTenantName, setActiveTenantName] = useState<string>("");
+  const [kpis, setKpis] = useState<{
+    products: number; sales: number; inventory: number; orders: number; loaded: boolean;
+  }>({ products: 0, sales: 0, inventory: 0, orders: 0, loaded: false });
   const tour = useTour("dashboard");
 
   const plannedYears = getPlannedYears();
@@ -206,6 +210,29 @@ export default function Dashboard() {
       return;
     }
     setActiveTenantName(sessionStorage.getItem("activeTenantName") ?? "");
+
+    // Carregar KPIs reais do Supabase
+    const storedUserStr = sessionStorage.getItem("currentUser");
+    if (storedUserStr) {
+      const u = JSON.parse(storedUserStr);
+      const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
+      if (tid) {
+        Promise.all([
+          supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+          supabase.from("sales_history").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+          supabase.from("inventory_snapshots").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+          supabase.from("purchase_orders").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+        ]).then(([p, s, i, o]) => {
+          setKpis({
+            products: p.count ?? 0,
+            sales: s.count ?? 0,
+            inventory: i.count ?? 0,
+            orders: o.count ?? 0,
+            loaded: true,
+          });
+        }).catch(() => setKpis(k => ({ ...k, loaded: true })));
+      }
+    }
   }, [navigate]);
 
   const handleLogout = () => {
@@ -236,7 +263,7 @@ export default function Dashboard() {
   if (!user) return null;
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#7598CF] to-[#9B8CD8]">
+    <div className="min-h-screen w-full" style={{ background: 'radial-gradient(ellipse 120% 100% at 55% 40%, #87A7E7 0%, #6281B2 40%, #1F416C 70%, #0F2545 90%), radial-gradient(ellipse 60% 60% at 5% 100%, #2E1325 0%, transparent 60%)' }}>
       {/* Banner de Modo Desenvolvimento */}
       {canUseDevMode && devMode && (
         <div className="bg-violet-600 px-6 py-2 flex items-center justify-between">
@@ -428,6 +455,26 @@ export default function Dashboard() {
             );
           })}
         </div>
+
+        {/* KPI Strip — dados reais do banco */}
+        {kpis.loaded && (kpis.products > 0 || kpis.sales > 0) && (
+          <div className="max-w-4xl mx-auto mt-4 grid grid-cols-4 gap-3">
+            {[
+              { label: "Produtos", value: kpis.products.toLocaleString("pt-BR"), icon: "📦" },
+              { label: "Pedidos",  value: kpis.orders.toLocaleString("pt-BR"),   icon: "🛒" },
+              { label: "Estoques", value: kpis.inventory.toLocaleString("pt-BR"),icon: "📊" },
+              { label: "Vendas",   value: kpis.sales.toLocaleString("pt-BR"),    icon: "📈" },
+            ].map(({ label, value, icon }) => (
+              <div key={label} className="bg-white/15 backdrop-blur-sm rounded-xl px-4 py-3 flex items-center gap-3">
+                <span className="text-xl">{icon}</span>
+                <div>
+                  <p className="text-white/60 text-xs uppercase tracking-wide">{label}</p>
+                  <p className="text-white font-bold text-lg leading-tight">{value}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Painel de debug — visível apenas para Suporte */}
         {isSupport && (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft,
@@ -24,11 +24,47 @@ import {
   Plus,
   ChevronDown,
   HelpCircle,
+  Package,
+  ShoppingCart,
+  Store,
+  BarChart3,
+  TrendingUp,
+  History,
+  Palette,
+  Search,
+  RefreshCw,
+  Shuffle,
+  BookOpen,
+  CheckSquare,
+  Square,
 } from "lucide-react";
+import { supabase } from "../../lib/supabase";
+import {
+  getOperationSettings,
+  saveOperationSettings,
+  saveTierLabels,
+  saveFaixasCategoria,
+  type TierLabel,
+  type FaixaCategoria,
+} from "../../services/supabase/operationSettingsService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 import ImportWizard from "../components/ImportWizard";
 import { ColorBankCard } from "../components/ColorBankCard";
+import { HierarchyConceptSlides } from "../components/HierarchyConceptSlides";
+import {
+  fetchHierarchyPaths,
+  fetchHierDistinct,
+  searchProductsForMigration,
+  migrateProducts as migrateProductsDb,
+  importHierarchyRows,
+  saveHierLabels,
+  DEFAULT_HIER_LABELS,
+  type HierLabels,
+  type HierarchyPath,
+  type ProductForMigration,
+  type HierDistinct,
+} from "../../services/supabase/productHierarchyService";
 import type { ImportDataType, ImportResult } from "../../services/importService";
 import { IMPORT_CONFIG } from "../../services/importService";
 import {
@@ -44,7 +80,21 @@ import {
   deleteSeasonDb,
   getRegraDefaultDb,
   saveRegraDefaultDb,
+  listCanalConfigDb,
+  upsertCanalConfigDb,
+  deleteCanalConfigDb,
+  type CanalConfig,
 } from "../../services/supabase/seasonService";
+
+// Canais configuráveis (início antes do varejo de referência)
+const CANAIS_B2B: { id: string; name: string }[] = [
+  { id: "atacado",         name: "Atacado" },
+  { id: "multimarca",      name: "Multimarca" },
+  { id: "franquia",        name: "Franquia" },
+  { id: "popup",           name: "Pop-up" },
+  { id: "marketplace",     name: "Marketplace" },
+  { id: "social_commerce", name: "Social Commerce" },
+];
 
 const OPERATION_SETTINGS_TOUR: TourStep[] = [
   {
@@ -84,8 +134,8 @@ const OPERATION_SETTINGS_TOUR: TourStep[] = [
   },
   {
     targetId: "tour-op-basicos",
-    title: "Sustentador de Margem",
-    content: "Sinalize os produtos classificados como Sustentador de Margem — básicos com variações de cor ou detalhe. Podem vir do estoque existente ou ser definidos no plano de sortimento.",
+    title: "Cadastro de Básicos",
+    content: "Básicos são um subgrupo dos Sustentadores de Margem — produtos que nunca mudam em estrutura, cor ou atributo. Cadastre os SKUs desses produtos para que o sistema os trate de forma diferenciada no planejamento.",
   },
   {
     targetId: "tour-op-banco-cores",
@@ -114,17 +164,17 @@ interface Colecao {
   dataFim: string;    // YYYY-MM-DD
 }
 
-// ─── Faixas de Preço por Categoria ────────────────────────────────────────────
-interface FaixaPreco {
-  id: number;
-  grupo: string;
-  divisao?: string;
-  categoria: string;
-  faixas: {
-    P1: { inicio: number; fim: number };
-    P2: { inicio: number; fim: number };
-    P3: { inicio: number; fim: number };
-  };
+// FaixaCategoria (P1/P2/P3 por grupo/categoria) importada do serviço
+// FaixaPreco é alias para compatibilidade interna
+type FaixaPreco = FaixaCategoria;
+
+// ─── Faixas import history ────────────────────────────────────────────────────
+const FAIXAS_IMPORT_HISTORY_KEY = 'fm_faixas_import_history_v1';
+interface FaixasImportEntry {
+  id: string;
+  timestamp: string; // ISO
+  fileName: string;
+  rows: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -291,6 +341,65 @@ function HierNodeRow({
   );
 }
 
+// ─── Tipos: histórico de importação ─────────────────────────────────────────
+const IMPORT_HISTORY_KEY = 'fm_import_history_v1';
+export interface ImportHistoryEntry {
+  id: string;
+  dataType: ImportDataType;
+  label: string;
+  importedRows: number;
+  errors: number;
+  fileName: string;
+  timestamp: string; // ISO
+}
+
+// ─── SettingsCard: accordion card reutilizável ────────────────────────────────
+function SettingsCard({
+  id, icon, title, summary, accentColor = "#7598CF",
+  children, defaultOpen = false,
+}: {
+  id?: string;
+  icon: React.ReactNode;
+  title: string;
+  summary?: React.ReactNode;
+  accentColor?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div
+      id={id}
+      className="bg-white/60 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border-t-4"
+      style={{ borderColor: accentColor }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-6 py-4 hover:bg-[#28071C]/2 transition-colors text-left group"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="shrink-0">{icon}</div>
+          <div className="min-w-0">
+            <p className="text-[#28071C] font-bold text-lg leading-tight">{title}</p>
+            {summary && (
+              <div className="mt-0.5">{summary}</div>
+            )}
+          </div>
+        </div>
+        <ChevronDown
+          className={`w-5 h-5 text-[#28071C]/40 transition-transform shrink-0 ml-4 group-hover:text-[#28071C]/60 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="px-6 pb-6 pt-1 border-t border-[#28071C]/6">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Month-range validation ───────────────────────────────────────────────────
 function monthInRange(testIdx: number, startIdx: number, endIdx: number): boolean {
   if (startIdx <= endIdx) return testIdx >= startIdx && testIdx <= endIdx;
@@ -317,6 +426,7 @@ export default function OperationSettings() {
   const [temporadaNome,    setTemporadaNome]    = useState("");
   const [temporadaInicio,  setTemporadaInicio]  = useState("Janeiro");
   const [temporadaFim,     setTemporadaFim]     = useState("Dezembro");
+  const [temporadaAno,     setTemporadaAno]     = useState<number | "">("");
 
   // ── Modal de impacto (editar/excluir temporada automática) ──────────────────
   type ModalAction = "delete" | "edit";
@@ -334,6 +444,13 @@ export default function OperationSettings() {
   const [editingAutoNome,   setEditingAutoNome]   = useState("");
   const [editingAutoInicio, setEditingAutoInicio] = useState("");
   const [editingAutoFim,    setEditingAutoFim]    = useState("");
+
+  // ── Canal × Temporada Config (Phase F) ──────────────────────────────────────
+  const [canalPanelId,    setCanalPanelId]    = useState<string | null>(null);
+  const [canalConfigs,    setCanalConfigs]    = useState<CanalConfig[]>([]);
+  const [canalLoading,    setCanalLoading]    = useState(false);
+  const [editingCanalId,  setEditingCanalId]  = useState<string | null>(null);
+  const [editingCanalMes, setEditingCanalMes] = useState("");
 
   // ── Coleções / Drops ─────────────────────────────────────────────────────────
   const [colecoes, setColecoes] = useState<Colecao[]>(() => {
@@ -381,17 +498,47 @@ export default function OperationSettings() {
   const [fpP3Fim,    setFpP3Fim]    = useState<number>(0);
   const [fpSavedOk,  setFpSavedOk]  = useState(false);
 
-  // ── Sustentador de Margem ────────────────────────────────────────────────────
-  const [basicosAtivos, setBasicosAtivos] = useState<boolean>(() => {
-    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosAtivos ?? false : false; } catch { return false; }
+  // ── Faixas de Preço — aba ativa no card unificado ────────────────────────────
+  const [faixasTab, setFaixasTab] = useState<"categoria" | "catalogo">("categoria");
+
+  // ── Faixas de Preço — histórico de importação ────────────────────────────────
+  const [faixasImportHistory, setFaixasImportHistory] = useState<FaixasImportEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem(FAIXAS_IMPORT_HISTORY_KEY) ?? '[]'); } catch { return []; }
   });
-  const [basicosTipo, setBasicosTipo] = useState<"estoque" | "novos">(() => {
-    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosTipo ?? "novos" : "novos"; } catch { return "novos"; }
+  const [showFaixasHistoryModal, setShowFaixasHistoryModal] = useState(false);
+
+  // ── Faixas de Preço — Catálogo (tier labels simples: nome, min, max) ─────────
+  const TIER_LABELS_KEY = "fashionmind_tier_labels";
+  const [tierLabels, setTierLabels] = useState<TierLabel[]>(() => {
+    try { const r = localStorage.getItem("fashionmind_tier_labels"); return r ? JSON.parse(r) : []; } catch { return []; }
   });
+  const [tlNome,      setTlNome]      = useState("");
+  const [tlMin,       setTlMin]       = useState<number>(0);
+  const [tlMax,       setTlMax]       = useState<number>(0);
+  const [tlSavedOk,   setTlSavedOk]   = useState(false);
+  const [tlImporting, setTlImporting] = useState(false);
+
+  // ── Cadastro de Básicos ──────────────────────────────────────────────────────
   const [basicosSkus, setBasicosSkus] = useState<string>(() => {
     try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosSkus ?? "" : ""; } catch { return ""; }
   });
   const [basicosSavedOk, setBasicosSavedOk] = useState(false);
+
+  // Básicos — busca e seleção de produtos do DB
+  const [basicosSkuArr, setBasicosSkuArr] = useState<string[]>(() => {
+    try {
+      const r = localStorage.getItem("fashionmind_basicos_sustentador");
+      const raw = r ? JSON.parse(r).basicosSkus ?? "" : "";
+      if (!raw) return [];
+      if (raw.startsWith("[")) return JSON.parse(raw) as string[];
+      return raw.split(",").map((s: string) => s.trim()).filter(Boolean);
+    } catch { return []; }
+  });
+  const [basicosProds, setBasicosProds]     = useState<ProductForMigration[]>([]); // detalhes dos SKUs selecionados
+  const [basicosSearch, setBasicosSearch]   = useState("");
+  const [basicosResults, setBasicosResults] = useState<ProductForMigration[]>([]);
+  const [basicosSearching, setBasicosSearching] = useState(false);
+  const [basicosShowDrop, setBasicosShowDrop]   = useState(false);
 
   // ── Hierarquia estruturada (árvore de Divisão → Grupo → Categoria → Subcat.) ──
   const [hierStruct, setHierStruct] = useState<HierNode[]>(() => {
@@ -404,9 +551,94 @@ export default function OperationSettings() {
   const [hierEditLabel, setHierEditLabel] = useState('');
   const [hierSavedStructOk, setHierSavedStructOk] = useState(false);
 
+  // ── Hierarquia: rótulos "de × para" ──────────────────────────────────────────
+  const [hierLabels, setHierLabels] = useState<HierLabels>(DEFAULT_HIER_LABELS);
+  const [hierLabelsPending, setHierLabelsPending] = useState(true);
+  const [hierLabelsSavedOk, setHierLabelsSavedOk] = useState(false);
+
+  // ── Hierarquia: árvore derivada dos produtos reais ───────────────────────────
+  const [hierPaths, setHierPaths]       = useState<HierarchyPath[]>([]);
+  const [hierDistinctVals, setHierDistinctVals] = useState<HierDistinct>({
+    divisions: [], categories: [], subcategories: [], linhas: [], materials: [],
+  });
+  const [hierLoading, setHierLoading]   = useState(false);
+
+  // ── Hierarquia: slides conceito ──────────────────────────────────────────────
+  const [showConceptSlides, setShowConceptSlides] = useState(false);
+
+  // ── Hierarquia: migração inline ──────────────────────────────────────────────
+  const [showMigration, setShowMigration] = useState(false);
+  const [migStep, setMigStep]   = useState<1 | 2 | 3>(1);
+  const [migNewDiv,  setMigNewDiv]  = useState("");
+  const [migNewCat,  setMigNewCat]  = useState("");
+  const [migNewSub,  setMigNewSub]  = useState("");
+  const [migNewLinha, setMigNewLinha] = useState("");
+  const [migMode, setMigMode]   = useState<"manual" | "keyword" | "material">("manual");
+  const [migKeyword, setMigKeyword] = useState("");
+  const [migMaterial, setMigMaterial] = useState("");
+  const [migFilterDiv, setMigFilterDiv] = useState("");
+  const [migFilterCat, setMigFilterCat] = useState("");
+  const [migFilterSub, setMigFilterSub] = useState("");
+  const [migResults, setMigResults]   = useState<ProductForMigration[]>([]);
+  const [migSelected, setMigSelected] = useState<Set<string>>(new Set());
+  const [migSearching, setMigSearching] = useState(false);
+  const [migSaving,    setMigSaving]   = useState(false);
+  const [migDoneCount, setMigDoneCount] = useState<number | null>(null);
+
+  // ── Hierarquia: import de planilha ERP ───────────────────────────────────────
+  const [hierImporting, setHierImporting] = useState(false);
+  const [hierImportResult, setHierImportResult] = useState<{ updated: number; notFound: number; errors: number } | null>(null);
+
   // ── Importação de Planilhas (novo — via ImportWizard) ────────────────────
   const [activeImportType, setActiveImportType] = useState<ImportDataType | null>(null);
   const [lastImportResult, setLastImportResult] = useState<ImportResult | null>(null);
+
+  // ── DB Counts (resumo do banco de dados) ────────────────────────────────────
+  const [dbCounts, setDbCounts] = useState<{
+    products: number; orders: number; inventory: number; sales: number; loaded: boolean;
+  }>({ products: 0, orders: 0, inventory: 0, sales: 0, loaded: false });
+
+  // ── Import History (log de importações, persistido no localStorage) ─────────
+  const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem(IMPORT_HISTORY_KEY) ?? '[]'); } catch { return []; }
+  });
+  const [historyDetailId, setHistoryDetailId] = useState<string | null>(null);
+
+  const saveImportHistory = useCallback((entry: ImportHistoryEntry) => {
+    setImportHistory(prev => {
+      const updated = [entry, ...prev].slice(0, 50); // keep last 50
+      localStorage.setItem(IMPORT_HISTORY_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  // Fetch DB counts — usa RPC SECURITY DEFINER para bypassar RLS em tabelas grandes
+  const fetchDbCounts = useCallback(() => {
+    const tid = user?.tenant_id;
+    if (!tid) return;
+    setDbCounts(c => ({ ...c, loaded: false }));
+    Promise.resolve(
+      (supabase as any).rpc('get_import_summary', { p_tenant_id: tid })
+    ).then(({ data, error }: { data: any; error: any }) => {
+      if (error || !data || !data[0]) {
+        setDbCounts(c => ({ ...c, loaded: true }));
+        return;
+      }
+      const row = data[0];
+      setDbCounts({
+        products:  Number(row.products_count)  || 0,
+        orders:    Number(row.orders_count)    || 0,
+        inventory: Number(row.inventory_count) || 0,
+        sales:     Number(row.sales_count)     || 0,
+        loaded: true,
+      });
+    }).catch(() => setDbCounts(c => ({ ...c, loaded: true })));
+  }, [user?.tenant_id]);
+
+  // Dispara fetch sempre que user.tenant_id ficar disponível (mount + mudança)
+  useEffect(() => {
+    if (user?.tenant_id) fetchDbCounts();
+  }, [user?.tenant_id, fetchDbCounts]);
 
   // Estado legado mantido para não quebrar referências que ainda existem no JSX antigo (card hidden)
   const [importMode, setImportMode]           = useState<ImportMode | null>(null);
@@ -436,6 +668,66 @@ export default function OperationSettings() {
         listSeasonsDb(u.tenant_id)
           .then(setTemporadas)
           .catch(err => console.error("Erro ao carregar temporadas:", err));
+
+        // Carrega operation_settings do Supabase
+        getOperationSettings(u.tenant_id).then(row => {
+          if (!row) return;
+          // Hierarquia
+          try {
+            const nodes = JSON.parse(row.hier_ordem);
+            if (Array.isArray(nodes) && nodes.length > 0) {
+              setHierStruct(nodes);
+              try { localStorage.setItem(HIER_STRUCT_KEY, JSON.stringify(nodes)); } catch { /* */ }
+            }
+          } catch { /* format mismatch — keep localStorage */ }
+          setHierDivisaoAtiva(row.hier_divisao_ativa);
+          setSubcategorias(row.subcategorias ?? SUBCATEGORIAS_DEFAULT);
+          // Básicos — carrega SKUs do DB
+          if (row.basicos_skus) setBasicosSkus(row.basicos_skus);
+          // Faixas de preço — catálogo (tier labels)
+          if (Array.isArray(row.faixas_preco) && row.faixas_preco.length > 0) {
+            const labels = row.faixas_preco as TierLabel[];
+            setTierLabels(labels);
+            try { localStorage.setItem("fashionmind_tier_labels", JSON.stringify(labels)); } catch { /* */ }
+          }
+          // Faixas de preço — por categoria (P1/P2/P3)
+          if (Array.isArray(row.faixas_categoria) && row.faixas_categoria.length > 0) {
+            const cats = row.faixas_categoria as FaixaPreco[];
+            setFaixasPreco(cats);
+            try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(cats)); } catch { /* */ }
+          }
+          // Rótulos de hierarquia
+          if (row.hier_labels) setHierLabels(row.hier_labels as HierLabels);
+          setHierLabelsPending(row.hier_labels_pending ?? true);
+
+          // Básicos — carrega detalhes dos produtos cadastrados
+          const rawSkus = row.basicos_skus ?? "";
+          let skuArr: string[] = [];
+          try {
+            skuArr = rawSkus.startsWith("[")
+              ? JSON.parse(rawSkus)
+              : rawSkus.split(",").map((s: string) => s.trim()).filter(Boolean);
+          } catch { /* ignore */ }
+          if (skuArr.length > 0) {
+            setBasicosSkuArr(skuArr);
+            supabase.from("products")
+              .select("id, sku, name, division, category, subcategory, linha, material")
+              .eq("tenant_id", u.tenant_id)
+              .in("sku", skuArr)
+              .then(({ data }) => { if (data) setBasicosProds(data as ProductForMigration[]); });
+          }
+        }).catch(() => { /* fallback to localStorage already loaded in useState init */ });
+
+        // Carrega hierarquia dos produtos reais
+        const tid = u.tenant_id;
+        setHierLoading(true);
+        Promise.all([fetchHierarchyPaths(tid), fetchHierDistinct(tid)])
+          .then(([paths, distinct]) => {
+            setHierPaths(paths);
+            setHierDistinctVals(distinct);
+          })
+          .catch(() => { /* silently ignore — hierarchy is optional */ })
+          .finally(() => setHierLoading(false));
         // Carrega nomes de coleções que já têm produtos em produção
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (import("../../lib/supabase") as Promise<{ supabase: any }>).then(({ supabase }) => {
@@ -478,9 +770,10 @@ export default function OperationSettings() {
         temporadaNome.trim(),
         temporadaInicio,
         temporadaFim,
+        temporadaAno !== "" ? Number(temporadaAno) : undefined,
       );
       persistTemporadas([...temporadas, nova]);
-      setTemporadaNome(""); setTemporadaInicio("Janeiro"); setTemporadaFim("Dezembro");
+      setTemporadaNome(""); setTemporadaInicio("Janeiro"); setTemporadaFim("Dezembro"); setTemporadaAno("");
     } catch (err) {
       console.error("Erro ao salvar temporada:", err);
       alert("Erro ao salvar temporada. Tente novamente.");
@@ -607,6 +900,54 @@ export default function OperationSettings() {
     setModal(null);
   };
 
+  // ── Handlers: Canal × Temporada (Phase F) ────────────────────────────────────
+  const loadCanalConfigs = async (seasonId: string) => {
+    if (!user?.tenant_id) return;
+    setCanalLoading(true);
+    try {
+      const configs = await listCanalConfigDb(user.tenant_id, seasonId);
+      setCanalConfigs(configs);
+    } catch (err) {
+      console.error("Erro ao carregar config de canais:", err);
+    } finally {
+      setCanalLoading(false);
+    }
+  };
+
+  const toggleCanalPanel = (seasonId: string) => {
+    if (canalPanelId === seasonId) {
+      setCanalPanelId(null);
+      setCanalConfigs([]);
+      setEditingCanalId(null);
+    } else {
+      setCanalPanelId(seasonId);
+      setEditingCanalId(null);
+      loadCanalConfigs(seasonId);
+    }
+  };
+
+  const handleSaveCanalConfig = async (canalId: string) => {
+    if (!user?.tenant_id || !canalPanelId) return;
+    try {
+      await upsertCanalConfigDb(user.tenant_id, canalPanelId, canalId, editingCanalMes);
+      await loadCanalConfigs(canalPanelId);
+    } catch (err) {
+      console.error("Erro ao salvar config de canal:", err);
+    } finally {
+      setEditingCanalId(null);
+    }
+  };
+
+  const handleDeleteCanalConfig = async (canalId: string) => {
+    if (!user?.tenant_id || !canalPanelId) return;
+    try {
+      await deleteCanalConfigDb(user.tenant_id, canalPanelId, canalId);
+      await loadCanalConfigs(canalPanelId);
+    } catch (err) {
+      console.error("Erro ao remover config de canal:", err);
+    }
+  };
+
   // ── Handlers: Coleções ────────────────────────────────────────────────────────
   const handleSaveColecao = () => {
     if (!selectedTemporadaId) { alert("Selecione uma temporada."); return; }
@@ -686,6 +1027,18 @@ export default function OperationSettings() {
     try { localStorage.setItem("fashionmind_hierarquia", JSON.stringify({ hierDivisaoAtiva, hierOrdem, subcategorias })); } catch { /* */ }
     setHierSavedOk(true);
     setTimeout(() => setHierSavedOk(false), 2500);
+    // Write-through → Supabase
+    if (user?.tenant_id) {
+      saveOperationSettings(user.tenant_id, {
+        hier_divisao_ativa: hierDivisaoAtiva,
+        hier_struct: hierStruct,
+        hier_ordem: hierOrdem,
+        subcategorias,
+        basicos_ativos: false,
+        basicos_tipo: null,
+        basicos_skus: basicosSkus,
+      }).catch(err => console.warn("[OpSettings] Supabase save hier:", err));
+    }
   };
 
   // ── Handlers: Hierarquia estruturada ─────────────────────────────────────────
@@ -703,6 +1056,18 @@ export default function OperationSettings() {
     try { localStorage.setItem(HIER_STRUCT_KEY, JSON.stringify(nodes)); } catch { /* */ }
     setHierSavedStructOk(true);
     setTimeout(() => setHierSavedStructOk(false), 2000);
+    // Write-through → Supabase
+    if (user?.tenant_id) {
+      saveOperationSettings(user.tenant_id, {
+        hier_divisao_ativa: hierDivisaoAtiva,
+        hier_struct: nodes,
+        hier_ordem: hierOrdem,
+        subcategorias,
+        basicos_ativos: false,
+        basicos_tipo: null,
+        basicos_skus: basicosSkus,
+      }).catch(err => console.warn("[OpSettings] Supabase save struct:", err));
+    }
   }
 
   function hierAddNode(parentId: string | null) {
@@ -751,6 +1116,166 @@ export default function OperationSettings() {
     });
   }
 
+  // ── Handlers: Hierarquia — rótulos ──────────────────────────────────────────
+  const handleSaveHierLabels = async () => {
+    if (!user?.tenant_id) return;
+    try {
+      await saveHierLabels(user.tenant_id, hierLabels);
+      setHierLabelsPending(false);
+      setHierLabelsSavedOk(true);
+      setTimeout(() => setHierLabelsSavedOk(false), 2500);
+    } catch { /* silently ignore */ }
+  };
+
+  // ── Handlers: Hierarquia — recarregar árvore ─────────────────────────────────
+  const handleRefreshHierarchy = async () => {
+    if (!user?.tenant_id) return;
+    setHierLoading(true);
+    try {
+      const [paths, distinct] = await Promise.all([
+        fetchHierarchyPaths(user.tenant_id),
+        fetchHierDistinct(user.tenant_id),
+      ]);
+      setHierPaths(paths);
+      setHierDistinctVals(distinct);
+    } catch { /* ignore */ }
+    finally { setHierLoading(false); }
+  };
+
+  // ── Handlers: Hierarquia — pesquisa para migração ────────────────────────────
+  const handleMigSearch = async () => {
+    if (!user?.tenant_id) return;
+    setMigSearching(true);
+    try {
+      const results = await searchProductsForMigration(user.tenant_id, {
+        division:    migFilterDiv  || undefined,
+        category:    migFilterCat  || undefined,
+        subcategory: migFilterSub  || undefined,
+        keyword:     migMode === "keyword"  ? migKeyword  : undefined,
+        material:    migMode === "material" ? migMaterial : undefined,
+      });
+      setMigResults(results);
+      setMigSelected(new Set(results.map(r => r.sku)));
+    } catch { /* ignore */ }
+    finally { setMigSearching(false); }
+  };
+
+  const toggleMigSku = (sku: string) => {
+    setMigSelected(prev => {
+      const next = new Set(prev);
+      next.has(sku) ? next.delete(sku) : next.add(sku);
+      return next;
+    });
+  };
+
+  const toggleMigAll = () => {
+    if (migSelected.size === migResults.length) {
+      setMigSelected(new Set());
+    } else {
+      setMigSelected(new Set(migResults.map(r => r.sku)));
+    }
+  };
+
+  // ── Handlers: Hierarquia — executar migração ──────────────────────────────────
+  const handleExecuteMigration = async () => {
+    if (!user?.tenant_id || migSelected.size === 0) return;
+    if (!migNewCat.trim()) { alert("Defina ao menos a Categoria de destino."); return; }
+    setMigSaving(true);
+    try {
+      const count = await migrateProductsDb(
+        user.tenant_id,
+        Array.from(migSelected),
+        {
+          division:    migNewDiv   || undefined,
+          category:    migNewCat   || undefined,
+          subcategory: migNewSub   || undefined,
+          linha:       migNewLinha || undefined,
+        }
+      );
+      setMigDoneCount(count);
+      setMigStep(3);
+      // Recarrega a árvore
+      const [paths, distinct] = await Promise.all([
+        fetchHierarchyPaths(user.tenant_id),
+        fetchHierDistinct(user.tenant_id),
+      ]);
+      setHierPaths(paths);
+      setHierDistinctVals(distinct);
+    } catch { alert("Erro ao migrar produtos. Tente novamente."); }
+    finally { setMigSaving(false); }
+  };
+
+  const resetMigration = () => {
+    setShowMigration(false);
+    setMigStep(1);
+    setMigNewDiv(""); setMigNewCat(""); setMigNewSub(""); setMigNewLinha("");
+    setMigMode("manual");
+    setMigKeyword(""); setMigMaterial("");
+    setMigFilterDiv(""); setMigFilterCat(""); setMigFilterSub("");
+    setMigResults([]); setMigSelected(new Set());
+    setMigDoneCount(null);
+  };
+
+  // ── Handlers: Hierarquia — importar planilha ERP ──────────────────────────────
+  const handleImportHierFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.tenant_id) return;
+    e.target.value = "";
+    setHierImporting(true);
+    setHierImportResult(null);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) return;
+
+      // Detecta separador
+      const sep = lines[0].includes("\t") ? "\t" : ",";
+      const headers = lines[0].split(sep).map(h => h.trim().toLowerCase()
+        .replace(/[áàâã]/g, "a").replace(/[éêè]/g, "e")
+        .replace(/[íì]/g, "i").replace(/[óôõò]/g, "o").replace(/[úù]/g, "u")
+        .replace(/ç/g, "c").replace(/\s+/g, "_")
+      );
+
+      const col = (names: string[]) => {
+        for (const n of names) {
+          const idx = headers.indexOf(n);
+          if (idx >= 0) return idx;
+        }
+        return -1;
+      };
+      const skuIdx = col(["sku", "codigo", "cod", "code"]);
+      const divIdx = col(["divisao", "divisão", "division", "departamento"]);
+      const catIdx = col(["categoria", "categoria", "category", "grupo"]);
+      const subIdx = col(["subcategoria", "subcategory", "familia", "subfamily"]);
+      const linIdx = col(["linha", "line", "collection"]);
+
+      if (skuIdx < 0) { alert("Coluna SKU não encontrada. Use cabeçalho: SKU, Codigo, Code..."); return; }
+
+      const rows = lines.slice(1).map(line => {
+        const cells = line.split(sep);
+        const r: { sku: string; division?: string; category?: string; subcategory?: string; linha?: string } = {
+          sku: (cells[skuIdx] ?? "").trim().replace(/^["']|["']$/g, ""),
+        };
+        if (divIdx >= 0 && cells[divIdx]?.trim()) r.division    = cells[divIdx].trim();
+        if (catIdx >= 0 && cells[catIdx]?.trim()) r.category    = cells[catIdx].trim();
+        if (subIdx >= 0 && cells[subIdx]?.trim()) r.subcategory = cells[subIdx].trim();
+        if (linIdx >= 0 && cells[linIdx]?.trim()) r.linha       = cells[linIdx].trim();
+        return r;
+      }).filter(r => r.sku);
+
+      const result = await importHierarchyRows(user.tenant_id, rows);
+      setHierImportResult(result);
+      // Recarrega a árvore
+      const [paths, distinct] = await Promise.all([
+        fetchHierarchyPaths(user.tenant_id),
+        fetchHierDistinct(user.tenant_id),
+      ]);
+      setHierPaths(paths);
+      setHierDistinctVals(distinct);
+    } catch { alert("Erro ao processar arquivo."); }
+    finally { setHierImporting(false); }
+  };
+
   // ── Handlers: Faixas de Preço ────────────────────────────────────────────────
   const handleSaveFaixaPreco = () => {
     if (!fpGrupo || !fpCategoria) { alert("Selecione Grupo e Categoria."); return; }
@@ -771,25 +1296,256 @@ export default function OperationSettings() {
     const updated = faixasPreco.some(f => `${f.grupo}|${f.categoria}` === key)
       ? faixasPreco.map(f => `${f.grupo}|${f.categoria}` === key ? { ...nova, id: f.id } : f)
       : [...faixasPreco, nova];
-    setFaixasPreco(updated);
-    try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(updated)); } catch { /* */ }
+    persistFaixasCategoria(updated);
     setFpGrupo(""); setFpCategoria(""); setFpDivisao("");
     setFpP1Inicio(0); setFpP1Fim(0); setFpP2Inicio(0); setFpP2Fim(0); setFpP3Inicio(0); setFpP3Fim(0);
     setFpSavedOk(true);
     setTimeout(() => setFpSavedOk(false), 2500);
   };
 
-  const handleDeleteFaixa = (id: number) => {
-    const updated = faixasPreco.filter(f => f.id !== id);
+  const persistFaixasCategoria = (updated: FaixaPreco[]) => {
     setFaixasPreco(updated);
     try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(updated)); } catch { /* */ }
+    if (user?.tenant_id) {
+      saveFaixasCategoria(user.tenant_id, updated)
+        .catch(err => console.warn("[OpSettings] saveFaixasCategoria:", err));
+    }
   };
 
-  // ── Handlers: Sustentador de Margem ─────────────────────────────────────────
+  const handleDeleteFaixa = (id: number) => {
+    persistFaixasCategoria(faixasPreco.filter(f => f.id !== id));
+  };
+
+  // ── Handler: importar planilha de faixas por categoria ───────────────────────
+  const [fpImporting, setFpImporting] = useState(false);
+
+  const handleImportFaixasFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFpImporting(true);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const rows = lines.slice(1); // pula cabeçalho
+        const parsed: FaixaPreco[] = [];
+        for (const line of rows) {
+          const cols = line.split(/[,;\t]/);
+          const parseNum = (v: string) => parseFloat((v ?? "").replace(/[^0-9.,]/g, "").replace(",", "."));
+          // Colunas: Divisão(opt), Grupo, Categoria, P1_min, P1_max, P2_min, P2_max, P3_min, P3_max
+          const hasDiv = cols.length >= 9;
+          const offset = hasDiv ? 1 : 0;
+          const divisao   = hasDiv ? (cols[0] ?? "").replace(/"/g, "").trim() || undefined : undefined;
+          const grupo     = (cols[offset]     ?? "").replace(/"/g, "").trim();
+          const categoria = (cols[offset + 1] ?? "").replace(/"/g, "").trim();
+          const p1min = parseNum(cols[offset + 2] ?? "");
+          const p1max = parseNum(cols[offset + 3] ?? "");
+          const p2min = parseNum(cols[offset + 4] ?? "");
+          const p2max = parseNum(cols[offset + 5] ?? "");
+          const p3min = parseNum(cols[offset + 6] ?? "");
+          const p3max = parseNum(cols[offset + 7] ?? "");
+          if (!grupo || !categoria || isNaN(p1min) || isNaN(p1max)) continue;
+          parsed.push({
+            id: Date.now() + Math.floor(Math.random() * 10000),
+            grupo, categoria, divisao,
+            faixas: {
+              P1: { inicio: p1min, fim: p1max },
+              P2: { inicio: isNaN(p2min) ? 0 : p2min, fim: isNaN(p2max) ? 0 : p2max },
+              P3: { inicio: isNaN(p3min) ? 0 : p3min, fim: isNaN(p3max) ? 0 : p3max },
+            },
+          });
+        }
+        if (parsed.length === 0) {
+          alert("Nenhuma linha válida. Verifique o formato do modelo.");
+          return;
+        }
+        // Merge: atualiza existentes, adiciona novos
+        const merged = [...faixasPreco];
+        for (const p of parsed) {
+          const key = `${p.grupo}|${p.categoria}`;
+          const idx = merged.findIndex(f => `${f.grupo}|${f.categoria}` === key);
+          if (idx >= 0) merged[idx] = { ...p, id: merged[idx].id };
+          else merged.push(p);
+        }
+        persistFaixasCategoria(merged);
+        // Salva no histórico
+        const entry: FaixasImportEntry = {
+          id: `${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          fileName: file.name,
+          rows: parsed.length,
+        };
+        setFaixasImportHistory(prev => {
+          const updated = [entry, ...prev].slice(0, 20);
+          try { localStorage.setItem(FAIXAS_IMPORT_HISTORY_KEY, JSON.stringify(updated)); } catch { /* */ }
+          return updated;
+        });
+        setFpSavedOk(true);
+        setTimeout(() => setFpSavedOk(false), 2500);
+      } catch (err) {
+        console.error(err);
+        alert("Erro ao processar arquivo. Use o modelo fornecido (CSV com cabeçalho).");
+      } finally {
+        setFpImporting(false);
+        e.target.value = "";
+      }
+    };
+    reader.onerror = () => { setFpImporting(false); alert("Erro ao ler arquivo."); };
+    reader.readAsText(file, "utf-8");
+  };
+
+  // ── Helpers: TierLabels persistence ─────────────────────────────────────────
+  const persistTierLabels = (labels: TierLabel[]) => {
+    setTierLabels(labels);
+    try { localStorage.setItem(TIER_LABELS_KEY, JSON.stringify(labels)); } catch { /* */ }
+    if (user?.tenant_id) {
+      saveTierLabels(user.tenant_id, labels)
+        .catch(err => console.warn("[OpSettings] saveTierLabels:", err));
+    }
+  };
+
+  const handleAddTierLabel = () => {
+    const nome = tlNome.trim();
+    if (!nome) { alert("Informe o nome da faixa."); return; }
+    if (tlMin >= tlMax) { alert("O valor mínimo deve ser menor que o máximo."); return; }
+    const nova: TierLabel = { id: `${Date.now()}`, nome, min: tlMin, max: tlMax };
+    const updated = tierLabels.some(t => t.nome.toLowerCase() === nome.toLowerCase())
+      ? tierLabels.map(t => t.nome.toLowerCase() === nome.toLowerCase() ? nova : t)
+      : [...tierLabels, nova];
+    persistTierLabels(updated);
+    setTlNome(""); setTlMin(0); setTlMax(0);
+    setTlSavedOk(true);
+    setTimeout(() => setTlSavedOk(false), 2500);
+  };
+
+  const handleDeleteTierLabel = (id: string) => {
+    persistTierLabels(tierLabels.filter(t => t.id !== id));
+  };
+
+  const handleImportTierLabelsFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setTlImporting(true);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        // Skip header row (first line)
+        const rows = lines.slice(1);
+        const parsed: TierLabel[] = [];
+        for (const line of rows) {
+          const cols = line.split(/[,;\t]/);
+          const nome = (cols[0] ?? "").replace(/"/g, "").trim();
+          const min  = parseFloat((cols[1] ?? "").replace(/[^0-9.,]/g, "").replace(",", "."));
+          const max  = parseFloat((cols[2] ?? "").replace(/[^0-9.,]/g, "").replace(",", "."));
+          if (nome && !isNaN(min) && !isNaN(max) && min < max) {
+            parsed.push({ id: `${Date.now()}_${Math.random()}`, nome, min, max });
+          }
+        }
+        if (parsed.length === 0) { alert("Nenhuma linha válida encontrada. Use colunas: Nome, Preço Mínimo, Preço Máximo"); return; }
+        // Merge: keep existing not in CSV, add/update from CSV
+        const merged = [...tierLabels];
+        for (const p of parsed) {
+          const idx = merged.findIndex(t => t.nome.toLowerCase() === p.nome.toLowerCase());
+          if (idx >= 0) merged[idx] = { ...p, id: merged[idx].id };
+          else merged.push(p);
+        }
+        persistTierLabels(merged);
+        alert(`${parsed.length} faixa(s) importada(s) com sucesso.`);
+      } catch (err) {
+        console.error(err);
+        alert("Erro ao processar o arquivo. Verifique o formato (CSV com colunas: Nome, Mínimo, Máximo).");
+      } finally {
+        setTlImporting(false);
+        e.target.value = "";
+      }
+    };
+    reader.onerror = () => { setTlImporting(false); alert("Erro ao ler o arquivo."); };
+    reader.readAsText(file, "utf-8");
+  };
+
+  // ── Handlers: Cadastro de Básicos ───────────────────────────────────────────
+
+  // Serializa array → string para o campo basicos_skus no DB
+  const basicosSkusSerial = (arr: string[]) => JSON.stringify(arr);
+
+  // Busca produtos por SKU ou nome
+  const handleBasicosSearch = async (query: string) => {
+    setBasicosSearch(query);
+    if (query.trim().length < 2) { setBasicosResults([]); setBasicosShowDrop(false); return; }
+    if (!user?.tenant_id) return;
+    setBasicosSearching(true);
+    try {
+      const { data } = await supabase
+        .from("products")
+        .select("id, sku, name, division, category, subcategory, linha, material")
+        .eq("tenant_id", user.tenant_id)
+        .or(`sku.ilike.%${query}%,name.ilike.%${query}%`)
+        .limit(20);
+      setBasicosResults((data ?? []) as ProductForMigration[]);
+      setBasicosShowDrop(true);
+    } catch { /* ignore */ }
+    finally { setBasicosSearching(false); }
+  };
+
+  // Adiciona produto à lista de básicos
+  const handleAddBasico = (prod: ProductForMigration) => {
+    if (basicosSkuArr.includes(prod.sku)) return;
+    const newArr = [...basicosSkuArr, prod.sku];
+    setBasicosSkuArr(newArr);
+    setBasicosProds(prev => [...prev, prod]);
+    setBasicosSkus(basicosSkusSerial(newArr));
+    setBasicosSearch(""); setBasicosResults([]); setBasicosShowDrop(false);
+  };
+
+  // Remove produto da lista
+  const handleRemoveBasico = (sku: string) => {
+    const newArr = basicosSkuArr.filter(s => s !== sku);
+    setBasicosSkuArr(newArr);
+    setBasicosProds(prev => prev.filter(p => p.sku !== sku));
+    setBasicosSkus(basicosSkusSerial(newArr));
+  };
+
+  // Importa lista de SKUs (paste em bulk)
+  const handleImportBasicosBulk = async (raw: string) => {
+    if (!user?.tenant_id) return;
+    const skus = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+    if (skus.length === 0) return;
+    const newSkus = skus.filter(s => !basicosSkuArr.includes(s));
+    if (newSkus.length === 0) return;
+    const { data } = await supabase
+      .from("products")
+      .select("id, sku, name, division, category, subcategory, linha, material")
+      .eq("tenant_id", user.tenant_id)
+      .in("sku", newSkus);
+    const found = (data ?? []) as ProductForMigration[];
+    const foundSkus = found.map(p => p.sku);
+    const newArr = [...basicosSkuArr, ...foundSkus];
+    setBasicosSkuArr(newArr);
+    setBasicosProds(prev => [...prev, ...found]);
+    setBasicosSkus(basicosSkusSerial(newArr));
+  };
+
   const handleSaveBasicos = () => {
-    try { localStorage.setItem("fashionmind_basicos_sustentador", JSON.stringify({ basicosAtivos, basicosTipo, basicosSkus })); } catch { /* */ }
+    const serial = basicosSkusSerial(basicosSkuArr);
+    setBasicosSkus(serial);
+    try { localStorage.setItem("fashionmind_basicos_sustentador", JSON.stringify({ basicosSkus: serial })); } catch { /* */ }
     setBasicosSavedOk(true);
     setTimeout(() => setBasicosSavedOk(false), 2500);
+    // Write-through → Supabase
+    if (user?.tenant_id) {
+      saveOperationSettings(user.tenant_id, {
+        hier_divisao_ativa: hierDivisaoAtiva,
+        hier_struct: hierStruct,
+        hier_ordem: hierOrdem,
+        subcategorias,
+        basicos_ativos: false,
+        basicos_tipo: null,
+        basicos_skus: serial,
+      }).catch(err => console.warn("[OpSettings] Supabase save basicos:", err));
+    }
   };
 
   const fmtBrl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -843,12 +1599,18 @@ export default function OperationSettings() {
       <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
 
         {/* ── CARD 1: Temporadas de Coleções ─────────────────────────────────── */}
-        <div id="tour-op-temporadas" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
-          <div className="flex items-center gap-3 mb-2">
-            <Calendar className="w-6 h-6 text-[#28071C]" />
-            <h2 className="text-[#28071C] text-xl font-bold">Temporadas de Coleções</h2>
-          </div>
-          <div className="flex items-start gap-2 mb-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+        <SettingsCard
+          id="tour-op-temporadas"
+          icon={<Calendar className="w-6 h-6 text-[#28071C]" />}
+          title="Temporadas de Coleções"
+          accentColor="#7598CF"
+          summary={
+            <span className="text-[#28071C]/50 text-sm">
+              {temporadas.length > 0 ? `${temporadas.length} temporada${temporadas.length !== 1 ? 's' : ''} cadastrada${temporadas.length !== 1 ? 's' : ''}` : 'Nenhuma temporada cadastrada'}
+            </span>
+          }
+        >
+          <div className="flex items-start gap-2 mb-4 mt-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
             <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
             <p className="text-[#28071C]/70 text-sm">
               O sistema cria automaticamente as temporadas padrão ao salvar um Planejamento Estratégico.
@@ -859,11 +1621,21 @@ export default function OperationSettings() {
 
           {/* Formulário — adicionar nova temporada manual */}
           <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-3">Adicionar temporada manual</p>
-          <div className="grid grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-4 gap-4 mb-4">
             <div>
               <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Nome da Temporada</label>
               <input type="text" value={temporadaNome} onChange={e => setTemporadaNome(e.target.value)}
                 placeholder="Ex: Resort 2026"
+                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
+            </div>
+            <div>
+              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Ano</label>
+              <input
+                type="number"
+                value={temporadaAno}
+                onChange={e => setTemporadaAno(e.target.value === "" ? "" : Number(e.target.value))}
+                placeholder="Ex: 2027"
+                min={2000} max={2100}
                 className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
             </div>
             <div>
@@ -893,6 +1665,7 @@ export default function OperationSettings() {
               <thead className="bg-[#7598CF]">
                 <tr>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Nome</th>
+                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Ano</th>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Início</th>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Fim</th>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Coleções</th>
@@ -901,7 +1674,7 @@ export default function OperationSettings() {
               </thead>
               <tbody>
                 {temporadas.length === 0 && (
-                  <tr><td colSpan={5} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
                 )}
                 {temporadas.map(t => {
                   const n      = colecoes.filter(c => c.temporadaId === t.id).length;
@@ -924,13 +1697,16 @@ export default function OperationSettings() {
                                 Auto
                               </span>
                             )}
-                            {t.anoFiscal && (
-                              <span className="text-[10px] text-[#28071C]/35 bg-[#28071C]/6 px-1.5 py-0.5 rounded-full">
-                                {isPast ? `${t.anoFiscal} · encerrado` : `Fiscal ${t.anoFiscal}`}
-                              </span>
-                            )}
                           </div>
                         )}
+                      </td>
+
+                      {/* Ano */}
+                      <td className="px-4 py-3">
+                        {t.anoFiscal
+                          ? <span className={`text-sm font-semibold ${isPast ? "text-[#28071C]/35" : "text-[#28071C]"}`}>{t.anoFiscal}{isPast && <span className="ml-1 text-[10px] text-[#28071C]/30 font-normal">enc.</span>}</span>
+                          : <span className="text-[#28071C]/25 text-sm">—</span>
+                        }
                       </td>
 
                       {/* Início */}
@@ -997,6 +1773,16 @@ export default function OperationSettings() {
                                   <Lock className="w-3.5 h-3.5" />
                                 </span>
                               )}
+                              <button
+                                onClick={() => toggleCanalPanel(t.id)}
+                                title="Configurar mês de início por canal"
+                                className={`p-2 rounded transition-colors ${
+                                  canalPanelId === t.id
+                                    ? "text-[#7598CF] bg-[#7598CF]/12"
+                                    : "text-[#28071C]/40 hover:text-[#28071C] hover:bg-[#28071C]/8"
+                                }`}>
+                                <Store className="w-4 h-4" />
+                              </button>
                               <button onClick={() => handleDeleteTemporada(t)}
                                 title="Excluir temporada"
                                 className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
@@ -1012,7 +1798,109 @@ export default function OperationSettings() {
               </tbody>
             </table>
           </div>
-        </div>
+
+          {/* ── Painel Canal × Temporada ──────────────────────────────────────── */}
+          {canalPanelId && (() => {
+            const season = temporadas.find(t => t.id === canalPanelId);
+            if (!season) return null;
+            const configMap = new Map(canalConfigs.map(c => [c.canal_id, c.mes_inicio]));
+            return (
+              <div className="mt-4 bg-white border border-[#7598CF]/25 rounded-xl overflow-hidden shadow-sm">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-3 bg-[#7598CF]/8 border-b border-[#7598CF]/15">
+                  <div className="flex items-center gap-2">
+                    <Store className="w-4 h-4 text-[#7598CF]" />
+                    <p className="text-sm font-semibold text-[#28071C]">
+                      Início de vendas por canal — <span className="text-[#7598CF]">{season.nome}</span>
+                    </p>
+                  </div>
+                  <button onClick={() => { setCanalPanelId(null); setEditingCanalId(null); }}
+                    className="p-1.5 text-[#28071C]/30 hover:text-[#28071C] rounded-lg transition-colors">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Linha de referência: Varejo */}
+                <div className="flex items-center gap-4 px-5 py-3 border-b border-[#28071C]/6 bg-[#7598CF]/4">
+                  <span className="text-[10px] text-[#7598CF] font-bold uppercase tracking-widest w-32 flex-shrink-0">Referência</span>
+                  <span className="text-sm text-[#28071C]/70 flex-1">Varejo Físico / E-commerce</span>
+                  <span className="text-sm font-semibold text-[#7598CF]">{season.mesInicio}</span>
+                  <span className="text-[10px] text-[#28071C]/30 italic">definido na temporada</span>
+                </div>
+
+                {/* Canais configuráveis */}
+                {canalLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-8 text-[#28071C]/40 text-sm">
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Carregando…
+                  </div>
+                ) : (
+                  <div className="divide-y divide-[#28071C]/5">
+                    {CANAIS_B2B.map(canal => {
+                      const configured = configMap.get(canal.id);
+                      const isEditing  = editingCanalId === canal.id;
+                      return (
+                        <div key={canal.id} className="flex items-center gap-4 px-5 py-3 hover:bg-[#28071C]/2 transition-colors">
+                          <span className="text-xs text-[#28071C]/45 font-semibold uppercase tracking-wide w-32 flex-shrink-0">
+                            {canal.name}
+                          </span>
+
+                          {isEditing ? (
+                            <select
+                              value={editingCanalMes}
+                              onChange={e => setEditingCanalMes(e.target.value)}
+                              className="text-sm border-2 border-[#7598CF]/40 rounded-lg px-2 py-1 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30 flex-1 max-w-[140px] cursor-pointer">
+                              {months.map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                          ) : (
+                            <span className={`text-sm flex-1 ${configured ? "text-[#28071C] font-semibold" : "text-[#28071C]/30 italic"}`}>
+                              {configured ?? "mesmo que varejo"}
+                            </span>
+                          )}
+
+                          <div className="flex items-center gap-1.5">
+                            {isEditing ? (
+                              <>
+                                <button
+                                  onClick={() => handleSaveCanalConfig(canal.id)}
+                                  className="px-3 py-1 bg-[#7598CF] text-white text-xs rounded-lg hover:opacity-90 font-semibold transition-opacity">
+                                  Salvar
+                                </button>
+                                <button onClick={() => setEditingCanalId(null)}
+                                  className="p-1.5 text-[#28071C]/40 hover:text-[#28071C] rounded transition-colors">
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setEditingCanalId(canal.id);
+                                    setEditingCanalMes(configured ?? season.mesInicio);
+                                  }}
+                                  title="Alterar mês de início"
+                                  className="p-1.5 text-[#28071C]/40 hover:text-[#28071C] hover:bg-[#28071C]/8 rounded transition-colors">
+                                  <Edit className="w-3.5 h-3.5" />
+                                </button>
+                                {configured && (
+                                  <button
+                                    onClick={() => handleDeleteCanalConfig(canal.id)}
+                                    title="Remover configuração"
+                                    className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors">
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </SettingsCard>
 
         {/* ── MODAL: Impacto da alteração de temporada automática ─────────────── */}
         {modal && (
@@ -1103,12 +1991,18 @@ export default function OperationSettings() {
         )}
 
         {/* ── CARD 2: Coleções / Drops ────────────────────────────────────────── */}
-        <div id="tour-op-colecoes" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
-          <div className="flex items-center gap-3 mb-2">
-            <Layers className="w-6 h-6 text-[#28071C]" />
-            <h2 className="text-[#28071C] text-xl font-bold">Coleções / Drops</h2>
-          </div>
-          <p className="text-[#28071C]/60 text-sm mb-6">
+        <SettingsCard
+          id="tour-op-colecoes"
+          icon={<Layers className="w-6 h-6 text-[#28071C]" />}
+          title="Coleções / Drops"
+          accentColor="#28071C"
+          summary={
+            <span className="text-[#28071C]/50 text-sm">
+              {colecoes.length > 0 ? `${colecoes.length} coleção${colecoes.length !== 1 ? 'ões' : ''} cadastrada${colecoes.length !== 1 ? 's' : ''}` : 'Nenhuma coleção cadastrada'}
+            </span>
+          }
+        >
+          <p className="text-[#28071C]/60 text-sm mt-2 mb-6">
             Cadastre as coleções e drops dentro de cada temporada. As datas podem ser ajustadas
             a qualquer momento para refletir reagendamentos ou atrasos de produção.
           </p>
@@ -1287,132 +2181,327 @@ export default function OperationSettings() {
               </tbody>
             </table>
           </div>
-        </div>
+        </SettingsCard>
 
-        {/* ── CARD 3 (NEW): Faixas de Preço por Categoria ────────────────────── */}
-        <div id="tour-op-faixas" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
-          <div className="flex items-center gap-3 mb-2">
-            <Tag className="w-6 h-6 text-[#28071C]" />
-            <h2 className="text-[#28071C] text-xl font-bold">Faixas de Preço por Categoria</h2>
-          </div>
+        {/* ── CARD 3: Faixas de Preço (unificado) ─────────────────────────────── */}
 
-          {/* Section A: Selectors */}
-          <div className={`grid gap-4 mb-6 mt-4 ${hierDivisaoAtiva ? "grid-cols-3" : "grid-cols-2"}`}>
-            {hierDivisaoAtiva && (
-              <div>
-                <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Divisão</label>
-                <input type="text" value={fpDivisao} onChange={e => setFpDivisao(e.target.value)}
-                  placeholder="Ex: Feminino Adulto"
-                  className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
+        {/* Modal histórico de importação */}
+        {showFaixasHistoryModal && (
+          <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setShowFaixasHistoryModal(false)} />
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+              <div className="bg-gradient-to-r from-[#28071C] to-[#F6F3AA] px-5 py-4 flex items-center justify-between">
+                <span className="text-[#28071C] font-semibold text-sm">Histórico de importação — Faixas de Preço</span>
+                <button onClick={() => setShowFaixasHistoryModal(false)} className="text-[#28071C]/60 hover:text-[#28071C]"><X className="w-4 h-4" /></button>
               </div>
-            )}
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Grupo</label>
-              <select value={fpGrupo} onChange={e => setFpGrupo(e.target.value)}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                <option value="">Selecione…</option>
-                {grupos.map(g => <option key={g} value={g}>{g}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Categoria</label>
-              <select value={fpCategoria} onChange={e => setFpCategoria(e.target.value)}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                <option value="">Selecione…</option>
-                {categorias.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <div className="px-5 py-4 space-y-2 max-h-80 overflow-y-auto">
+                {faixasImportHistory.length === 0 ? (
+                  <p className="text-[#28071C]/40 text-sm text-center py-6">Nenhuma importação registrada.</p>
+                ) : faixasImportHistory.map(e => (
+                  <div key={e.id} className="flex items-center gap-3 py-2 border-b border-[#28071C]/6 last:border-0">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[#28071C] text-sm font-medium truncate">{e.fileName}</p>
+                      <p className="text-[#28071C]/40 text-xs">{new Date(e.timestamp).toLocaleString('pt-BR')}</p>
+                    </div>
+                    <span className="text-[#28071C] text-sm font-semibold shrink-0">{e.rows} linhas</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
+        )}
 
-          {/* Section B: Band inputs */}
-          <div className="space-y-3 mb-6">
-            {([
-              { label: "P1", color: "bg-green-100 text-green-800",   inicio: fpP1Inicio, setInicio: setFpP1Inicio, fim: fpP1Fim, setFim: setFpP1Fim },
-              { label: "P2", color: "bg-yellow-100 text-yellow-800", inicio: fpP2Inicio, setInicio: setFpP2Inicio, fim: fpP2Fim, setFim: setFpP2Fim },
-              { label: "P3", color: "bg-purple-100 text-purple-800", inicio: fpP3Inicio, setInicio: setFpP3Inicio, fim: fpP3Fim, setFim: setFpP3Fim },
-            ] as const).map(({ label, color, inicio, setInicio, fim, setFim }) => (
-              <div key={label} className="flex items-center gap-4">
-                <span className={`text-xs font-bold px-3 py-1 rounded-full w-10 text-center shrink-0 ${color}`}>{label}</span>
-                <div className="flex items-center gap-3 flex-1">
-                  <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Início</label>
-                  <input type="number" value={inicio} onChange={e => setInicio(Number(e.target.value))} min={0}
-                    className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
-                  <span className="text-[#28071C]/30 font-bold">→</span>
-                  <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Fim</label>
-                  <input type="number" value={fim} onChange={e => setFim(Number(e.target.value))} min={0}
-                    className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
-                </div>
-              </div>
+        <SettingsCard
+          id="tour-op-faixas"
+          icon={<Tag className="w-6 h-6 text-[#28071C]" />}
+          title="Faixas de Preço"
+          accentColor="#F6F3AA"
+          summary={
+            <div className="flex items-center gap-3 flex-wrap mt-0.5">
+              {faixasImportHistory.length > 0 && (
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); setShowFaixasHistoryModal(true); }}
+                  className="text-[#28071C]/40 hover:text-[#7598CF] text-xs underline underline-offset-2 transition-colors"
+                >
+                  Última importação: {new Date(faixasImportHistory[0].timestamp).toLocaleDateString('pt-BR')}
+                </button>
+              )}
+              <span className="text-[#28071C]/40 text-xs">·</span>
+              <span className="text-[#28071C]/50 text-xs">
+                {faixasPreco.length} por categoria · {tierLabels.length} catálogo
+              </span>
+            </div>
+          }
+        >
+
+          {/* Abas */}
+          <div className="flex gap-1 mt-3 mb-5 bg-[#28071C]/5 rounded-xl p-1 w-fit">
+            {(["categoria", "catalogo"] as const).map(tab => (
+              <button key={tab} type="button"
+                onClick={() => setFaixasTab(tab)}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                  faixasTab === tab
+                    ? "bg-white text-[#28071C] shadow-sm"
+                    : "text-[#28071C]/50 hover:text-[#28071C]"
+                }`}
+              >
+                {tab === "categoria" ? "Por Categoria (P1/P2/P3)" : "Catálogo"}
+              </button>
             ))}
           </div>
 
-          {/* Section C: Info banner */}
-          <div className="flex items-start gap-2 mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-            <p className="text-amber-800 text-sm">
-              Alterações nas faixas valem apenas para produtos novos. O histórico de vendas mantém a faixa original de cada produto.
-            </p>
-          </div>
+          {/* ── ABA: Por Categoria ───────────────────────────────────────────── */}
+          {faixasTab === "categoria" && (
+            <div>
+              {/* Ações topo */}
+              <div className="flex items-center gap-3 mb-5 flex-wrap">
+                <label className={`flex items-center gap-2 px-4 py-2.5 bg-[#28071C] text-white rounded-lg cursor-pointer hover:bg-[#28071C]/85 transition-all text-sm font-semibold shadow-sm ${fpImporting ? "opacity-60 pointer-events-none" : ""}`}>
+                  <Upload className="w-4 h-4" />
+                  {fpImporting ? "Importando…" : "Importar Planilha"}
+                  <input type="file" accept=".csv,.tsv,.txt,.xlsx" className="hidden" onChange={handleImportFaixasFile} />
+                </label>
+                <a
+                  href="data:text/csv;charset=utf-8,Grupo,Categoria,P1_Min,P1_Max,P2_Min,P2_Max,P3_Min,P3_Max%0AVestuário,Blusas,50,150,151,300,301,600%0AVestuário,Vestidos,80,200,201,400,401,800"
+                  download="modelo_faixas_preco.csv"
+                  className="flex items-center gap-1.5 px-4 py-2.5 border-2 border-[#28071C]/20 text-[#28071C]/60 rounded-lg hover:border-[#28071C]/40 hover:text-[#28071C] transition-all text-sm"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  Baixar Modelo CSV
+                </a>
+                {fpSavedOk && (
+                  <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    Salvo com sucesso!
+                  </span>
+                )}
+              </div>
 
-          {/* Section D: Save + Table */}
-          <div className="flex items-center gap-3 mb-6">
-            <button onClick={handleSaveFaixaPreco}
-              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md">
-              <Save className="w-5 h-5 mr-2" />Salvar Faixa
-            </button>
-            {fpSavedOk && (
-              <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                Faixa salva com sucesso!
-              </span>
-            )}
-          </div>
-
-          {faixasPreco.length > 0 && (
-            <div className="bg-white rounded-lg overflow-hidden border border-[#F6F3AA]/80">
-              <table className="w-full">
-                <thead className="bg-[#F6F3AA]">
-                  <tr>
-                    {["Grupo","Categoria","P1","P2","P3","Ações"].map(h => (
-                      <th key={h} className={`px-4 py-3 text-[#28071C] text-sm uppercase tracking-wide ${h === "Ações" ? "text-center" : "text-left"}`}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {faixasPreco.map(f => (
-                    <tr key={f.id} className="border-b border-[#28071C]/10 hover:bg-gray-50">
-                      <td className="px-4 py-3 text-[#28071C] font-medium">{f.grupo}</td>
-                      <td className="px-4 py-3 text-[#28071C]">{f.categoria}</td>
-                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P1.inicio)} – {fmtBrl(f.faixas.P1.fim)}</td>
-                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P2.inicio)} – {fmtBrl(f.faixas.P2.fim)}</td>
-                      <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P3.inicio)} – {fmtBrl(f.faixas.P3.fim)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-center">
-                          <button onClick={() => handleDeleteFaixa(f.id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* ── CARD 4: Importação de Planilhas ──────────────────────────────────── */}
-        <div id="tour-op-importacao" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#9B8CD8]">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
-              <div>
-                <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
-                <p className="text-[#28071C]/50 text-sm mt-0.5">
-                  Importe catálogo, vendas, pedidos, estoque ou hierarquia de códigos
+              <div className="flex items-start gap-2 mb-5 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <p className="text-amber-800 text-sm">
+                  Colunas do modelo: <strong>Divisão (opcional), Grupo, Categoria, P1_Min, P1_Max, P2_Min, P2_Max, P3_Min, P3_Max</strong>.
+                  Alterações valem apenas para produtos novos.
                 </p>
               </div>
+
+              {/* Formulário manual */}
+              <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-3">Adicionar manualmente</p>
+              <div className={`grid gap-4 mb-4 ${hierDivisaoAtiva ? "grid-cols-3" : "grid-cols-2"}`}>
+                {hierDivisaoAtiva && (
+                  <div>
+                    <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Divisão</label>
+                    <input type="text" value={fpDivisao} onChange={e => setFpDivisao(e.target.value)}
+                      placeholder="Ex: Feminino Adulto"
+                      className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Grupo</label>
+                  <select value={fpGrupo} onChange={e => setFpGrupo(e.target.value)}
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
+                    <option value="">Selecione…</option>
+                    {grupos.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Categoria</label>
+                  <select value={fpCategoria} onChange={e => setFpCategoria(e.target.value)}
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
+                    <option value="">Selecione…</option>
+                    {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-3 mb-5">
+                {([
+                  { label: "P1", color: "bg-green-100 text-green-800",   inicio: fpP1Inicio, setInicio: setFpP1Inicio, fim: fpP1Fim, setFim: setFpP1Fim },
+                  { label: "P2", color: "bg-yellow-100 text-yellow-800", inicio: fpP2Inicio, setInicio: setFpP2Inicio, fim: fpP2Fim, setFim: setFpP2Fim },
+                  { label: "P3", color: "bg-purple-100 text-purple-800", inicio: fpP3Inicio, setInicio: setFpP3Inicio, fim: fpP3Fim, setFim: setFpP3Fim },
+                ] as const).map(({ label, color, inicio, setInicio, fim, setFim }) => (
+                  <div key={label} className="flex items-center gap-4">
+                    <span className={`text-xs font-bold px-3 py-1 rounded-full w-10 text-center shrink-0 ${color}`}>{label}</span>
+                    <div className="flex items-center gap-3 flex-1">
+                      <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Início</label>
+                      <input type="number" value={inicio} onChange={e => setInicio(Number(e.target.value))} min={0}
+                        className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
+                      <span className="text-[#28071C]/30 font-bold">→</span>
+                      <label className="text-[#28071C]/60 text-sm whitespace-nowrap">R$ Fim</label>
+                      <input type="number" value={fim} onChange={e => setFim(Number(e.target.value))} min={0}
+                        className="w-28 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#F6F3AA] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 text-sm" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button onClick={handleSaveFaixaPreco}
+                className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md mb-6">
+                <Save className="w-5 h-5 mr-2" />Salvar Faixa
+              </button>
+
+              {/* Tabela */}
+              {faixasPreco.length > 0 ? (
+                <div className="bg-white rounded-lg overflow-hidden border border-[#F6F3AA]/80">
+                  <table className="w-full">
+                    <thead className="bg-[#F6F3AA]">
+                      <tr>
+                        {["Grupo","Categoria","P1","P2","P3","Ações"].map(h => (
+                          <th key={h} className={`px-4 py-3 text-[#28071C] text-sm uppercase tracking-wide ${h === "Ações" ? "text-center" : "text-left"}`}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {faixasPreco.map(f => (
+                        <tr key={f.id} className="border-b border-[#28071C]/10 hover:bg-gray-50">
+                          <td className="px-4 py-3 text-[#28071C] font-medium">{f.grupo}</td>
+                          <td className="px-4 py-3 text-[#28071C]">{f.categoria}</td>
+                          <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P1.inicio)} – {fmtBrl(f.faixas.P1.fim)}</td>
+                          <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P2.inicio)} – {fmtBrl(f.faixas.P2.fim)}</td>
+                          <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(f.faixas.P3.inicio)} – {fmtBrl(f.faixas.P3.fim)}</td>
+                          <td className="px-4 py-3 text-center">
+                            <button onClick={() => handleDeleteFaixa(f.id)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-[#28071C]/30 text-sm bg-white rounded-lg border border-dashed border-[#28071C]/15">
+                  Nenhuma faixa cadastrada. Importe o modelo ou adicione manualmente.
+                </div>
+              )}
             </div>
+          )}
+
+          {/* ── ABA: Catálogo ────────────────────────────────────────────────── */}
+          {faixasTab === "catalogo" && (
+            <div>
+              <div className="flex items-start gap-2 mb-5 bg-[#9B8CD8]/8 border border-[#9B8CD8]/20 rounded-xl px-4 py-3">
+                <Info className="w-4 h-4 text-[#9B8CD8] flex-shrink-0 mt-0.5" />
+                <p className="text-[#28071C]/70 text-sm">
+                  Rótulos de faixa usados no catálogo de produtos (campo <code className="bg-[#28071C]/6 px-1 rounded text-xs">price_tier</code>).
+                  Exemplos: <em>Entrada</em>, <em>Médio</em>, <em>Premium</em>.
+                </p>
+              </div>
+
+              <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-3">Adicionar manualmente</p>
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Nome da Faixa</label>
+                  <input type="text" value={tlNome} onChange={e => setTlNome(e.target.value)}
+                    placeholder="Ex: Entrada"
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#9B8CD8]/30 focus:outline-none focus:ring-2 focus:ring-[#9B8CD8]/50" />
+                </div>
+                <div>
+                  <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Preço Mínimo (R$)</label>
+                  <input type="number" min={0} value={tlMin} onChange={e => setTlMin(Number(e.target.value))}
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#9B8CD8]/30 focus:outline-none focus:ring-2 focus:ring-[#9B8CD8]/50" />
+                </div>
+                <div>
+                  <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Preço Máximo (R$)</label>
+                  <input type="number" min={0} value={tlMax} onChange={e => setTlMax(Number(e.target.value))}
+                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#9B8CD8]/30 focus:outline-none focus:ring-2 focus:ring-[#9B8CD8]/50" />
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mb-6 flex-wrap">
+                <button onClick={handleAddTierLabel}
+                  className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md">
+                  <Plus className="w-5 h-5 mr-2" />Adicionar Faixa
+                </button>
+                <label className={`flex items-center gap-2 px-5 py-3 border-2 border-[#9B8CD8]/40 text-[#28071C]/70 rounded-lg cursor-pointer hover:border-[#9B8CD8] hover:text-[#9B8CD8] transition-all ${tlImporting ? "opacity-60 pointer-events-none" : ""}`}>
+                  <Upload className="w-4 h-4" />
+                  {tlImporting ? "Importando…" : "Importar CSV"}
+                  <input type="file" accept=".csv,.tsv,.txt" className="hidden" onChange={handleImportTierLabelsFile} />
+                </label>
+                <span className="text-[#28071C]/35 text-xs">CSV: Nome, Preço Mínimo, Preço Máximo</span>
+                {tlSavedOk && (
+                  <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">Faixa salva!</span>
+                )}
+              </div>
+
+              {tierLabels.length > 0 ? (
+                <div className="bg-white rounded-lg overflow-hidden border border-[#9B8CD8]/20">
+                  <table className="w-full">
+                    <thead className="bg-[#9B8CD8]/15">
+                      <tr>
+                        {["Nome da Faixa","Preço Mínimo","Preço Máximo","Ações"].map(h => (
+                          <th key={h} className={`px-4 py-3 text-[#28071C] text-sm uppercase tracking-wide ${h === "Ações" ? "text-center" : "text-left"}`}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tierLabels.slice().sort((a, b) => a.min - b.min).map(t => (
+                        <tr key={t.id} className="border-b border-[#28071C]/8 hover:bg-gray-50">
+                          <td className="px-4 py-3 text-[#28071C] font-semibold">{t.nome}</td>
+                          <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(t.min)}</td>
+                          <td className="px-4 py-3 text-[#28071C] text-sm">{fmtBrl(t.max)}</td>
+                          <td className="px-4 py-3 text-center">
+                            <button onClick={() => handleDeleteTierLabel(t.id)}
+                              className="p-2 text-red-500 hover:bg-red-50 rounded transition-colors">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-[#28071C]/30 text-sm bg-white rounded-lg border border-dashed border-[#28071C]/15">
+                  Nenhuma faixa cadastrada.
+                </div>
+              )}
+            </div>
+          )}
+        </SettingsCard>
+
+        {/* ── CARD 4: Importação de Planilhas ──────────────────────────────────── */}
+        <SettingsCard
+          id="tour-op-importacao"
+          icon={<FileSpreadsheet className="w-6 h-6 text-[#28071C]" />}
+          title="Importação de Planilhas"
+          accentColor="#9B8CD8"
+          summary={
+            <div className="flex items-center gap-3 flex-wrap mt-0.5">
+              {!dbCounts.loaded ? (
+                <span className="text-xs text-[#28071C]/30 animate-pulse">carregando…</span>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
+                    <Package className="w-3.5 h-3.5" />{dbCounts.products.toLocaleString('pt-BR')} produtos
+                  </span>
+                  <span className="text-[#28071C]/20 text-xs">·</span>
+                  <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
+                    <ShoppingCart className="w-3.5 h-3.5" />{dbCounts.orders.toLocaleString('pt-BR')} pedidos
+                  </span>
+                  <span className="text-[#28071C]/20 text-xs">·</span>
+                  <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
+                    <BarChart3 className="w-3.5 h-3.5" />{dbCounts.inventory.toLocaleString('pt-BR')} estoques
+                  </span>
+                  <span className="text-[#28071C]/20 text-xs">·</span>
+                  <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
+                    <TrendingUp className="w-3.5 h-3.5" />{dbCounts.sales.toLocaleString('pt-BR')} vendas
+                  </span>
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); fetchDbCounts(); }}
+                    className="text-[#28071C]/25 hover:text-[#9B8CD8] transition-colors ml-1"
+                    title="Atualizar contagens"
+                  >
+                    <History className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          }
+        >
+          <div className="flex items-center justify-between mt-1 mb-4">
+            <p className="text-[#28071C]/50 text-sm">
+              Importe catálogo, vendas, pedidos, estoque ou hierarquia de códigos
+            </p>
             {activeImportType && (
               <button
                 onClick={() => setActiveImportType(null)}
@@ -1422,6 +2511,65 @@ export default function OperationSettings() {
               </button>
             )}
           </div>
+
+          {/* Histórico de importações */}
+          {!activeImportType && importHistory.length > 0 && (
+            <div className="mb-5">
+              <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5" /> Histórico de importações
+              </p>
+              <div className="border border-[#9B8CD8]/20 rounded-xl overflow-hidden divide-y divide-[#28071C]/6">
+                {importHistory.slice(0, 5).map(entry => (
+                  <div key={entry.id}>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryDetailId(historyDetailId === entry.id ? null : entry.id)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[#9B8CD8]/4 transition-colors group"
+                    >
+                      {entry.errors === 0
+                        ? <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                        : <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[#28071C] text-sm font-medium truncate">{entry.label}</p>
+                        <p className="text-[#28071C]/40 text-xs truncate">{entry.fileName}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[#28071C] text-sm font-semibold">{entry.importedRows.toLocaleString('pt-BR')} registros</p>
+                        <p className="text-[#28071C]/40 text-xs">{new Date(entry.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                      </div>
+                      <ChevronRight className={`w-4 h-4 text-[#28071C]/20 group-hover:text-[#9B8CD8] transition-all shrink-0 ml-1 ${historyDetailId === entry.id ? 'rotate-90' : ''}`} />
+                    </button>
+                    {historyDetailId === entry.id && (
+                      <div className="px-4 pb-3 bg-[#9B8CD8]/4 border-t border-[#9B8CD8]/10">
+                        <div className="grid grid-cols-3 gap-3 pt-3">
+                          <div>
+                            <p className="text-[#28071C]/50 text-xs uppercase tracking-wide">Tipo</p>
+                            <p className="text-[#28071C] text-sm font-medium mt-0.5">{entry.label}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#28071C]/50 text-xs uppercase tracking-wide">Importados</p>
+                            <p className="text-emerald-600 text-sm font-semibold mt-0.5">{entry.importedRows.toLocaleString('pt-BR')}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#28071C]/50 text-xs uppercase tracking-wide">Erros</p>
+                            <p className={`text-sm font-semibold mt-0.5 ${entry.errors > 0 ? 'text-amber-600' : 'text-[#28071C]/30'}`}>{entry.errors}</p>
+                          </div>
+                          <div className="col-span-3">
+                            <p className="text-[#28071C]/50 text-xs uppercase tracking-wide">Arquivo</p>
+                            <p className="text-[#28071C] text-sm mt-0.5 truncate">{entry.fileName}</p>
+                          </div>
+                          <div className="col-span-3">
+                            <p className="text-[#28071C]/50 text-xs uppercase tracking-wide">Data / Hora</p>
+                            <p className="text-[#28071C] text-sm mt-0.5">{new Date(entry.timestamp).toLocaleString('pt-BR')}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Último resultado importado */}
           {!activeImportType && lastImportResult && (
@@ -1456,6 +2604,17 @@ export default function OperationSettings() {
                 onComplete={(result) => {
                   setLastImportResult({ ...result });
                   setActiveImportType(null);
+                  saveImportHistory({
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    dataType: result.dataType,
+                    label: IMPORT_CONFIG[result.dataType]?.label ?? result.dataType,
+                    importedRows: result.importedRows,
+                    errors: result.errors,
+                    fileName: result.fileName,
+                    timestamp: new Date().toISOString(),
+                  });
+                  // Refresh DB counts after import
+                  fetchDbCounts();
                 }}
                 onCancel={() => setActiveImportType(null)}
               />
@@ -1479,24 +2638,75 @@ export default function OperationSettings() {
               ))}
             </div>
           )}
-        </div>
+        </SettingsCard>
 
-        {/* ── CARD 5: Configuração de Hierarquia de Produtos (editor completo) ── */}
-        <div id="tour-op-hierarquia" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#7598CF]">
-          <div className="flex items-center gap-3 mb-2">
-            <Layers className="w-6 h-6 text-[#28071C]" />
-            <h2 className="text-[#28071C] text-xl font-bold">Configuração de Hierarquia de Produtos</h2>
+        {/* ── CARD 5: Hierarquia de Produtos ───────────────────────────────────── */}
+        {showConceptSlides && <HierarchyConceptSlides onClose={() => setShowConceptSlides(false)} />}
+
+        <SettingsCard
+          id="tour-op-hierarquia"
+          icon={<Layers className="w-6 h-6 text-[#28071C]" />}
+          title="Hierarquia de Produtos"
+          accentColor="#7598CF"
+          summary={(() => {
+            const divs  = new Set(hierPaths.map(p => p.division).filter(Boolean)).size;
+            const cats  = new Set(hierPaths.map(p => p.category).filter(Boolean)).size;
+            const total = hierPaths.reduce((s, p) => s + p.count, 0);
+            if (total === 0) return <span className="text-[#28071C]/40 text-sm">Nenhum produto com hierarquia cadastrada</span>;
+            return <span className="text-[#28071C]/50 text-sm">{divs} {hierLabels.divisao.toLowerCase()}s · {cats} {hierLabels.categoria.toLowerCase()}s · {total} produtos</span>;
+          })()}
+        >
+          {/* Conceito + aviso de rótulos pendentes */}
+          <div className="flex items-center gap-3 mt-1 mb-4">
+            <button onClick={() => setShowConceptSlides(true)}
+              className="flex items-center gap-1.5 text-xs text-[#7598CF] font-semibold hover:text-[#28071C] transition-colors">
+              <BookOpen className="w-3.5 h-3.5" />Entender a hierarquia
+            </button>
+            {hierLabelsPending && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                <AlertCircle className="w-3 h-3" />Configure os rótulos dos níveis abaixo
+              </span>
+            )}
           </div>
-          <p className="text-[#28071C]/50 text-sm mb-6">
-            Cadastre as divisões, grupos, categorias e subcategorias que estruturam o sortimento da marca.
-            A hierarquia é usada no planejamento e na importação de dados.
-          </p>
 
-          {/* Toggle Divisão */}
+          {/* ── Rótulos "de × para" ──────────────────────────────────────────────── */}
+          <div className="mb-5 bg-[#7598CF]/6 border border-[#7598CF]/20 rounded-xl p-4">
+            <p className="text-[#28071C] font-semibold text-sm mb-1">Seus Rótulos</p>
+            <p className="text-[#28071C]/50 text-xs mb-4">
+              Como cada nível da hierarquia aparece na sua marca. O sistema usa os nomes internos (Divisão, Categoria…) mas você pode personalizar a exibição.
+            </p>
+            <div className="grid grid-cols-4 gap-3 mb-3">
+              {(["divisao","categoria","subcategoria","linha"] as const).map((key, i) => {
+                const placeholders = ["Ex: Departamento","Ex: Grupo","Ex: Família","Ex: Linha"];
+                const defaults     = ["Divisão","Categoria","Subcategoria","Linha"];
+                return (
+                  <div key={key}>
+                    <label className="block text-[#28071C]/50 text-xs font-semibold uppercase tracking-wider mb-1.5">{defaults[i]}</label>
+                    <input
+                      type="text"
+                      value={hierLabels[key]}
+                      onChange={e => setHierLabels(prev => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={placeholders[i]}
+                      className="w-full bg-white rounded-lg px-3 py-2 text-[#28071C] text-sm border-2 border-[#7598CF]/25 focus:outline-none focus:border-[#7598CF]/60"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={handleSaveHierLabels}
+                className="flex items-center px-4 py-2 bg-[#7598CF] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity">
+                <Save className="w-3.5 h-3.5 mr-1.5" />Salvar Rótulos
+              </button>
+              {hierLabelsSavedOk && <span className="text-green-700 text-xs font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-1.5">Salvo!</span>}
+            </div>
+          </div>
+
+          {/* ── Toggle Divisão ───────────────────────────────────────────────────── */}
           <div className="mb-5 p-4 bg-[#28071C]/5 rounded-xl border border-[#28071C]/10 flex items-center justify-between">
             <div>
-              <p className="text-[#28071C] font-semibold text-sm">Usar nível Divisão</p>
-              <p className="text-[#28071C]/50 text-xs mt-0.5">Ex: Feminino, Masculino, Infantil — nível acima do Grupo</p>
+              <p className="text-[#28071C] font-semibold text-sm">Usar nível {hierLabels.divisao}</p>
+              <p className="text-[#28071C]/50 text-xs mt-0.5">Nível acima de {hierLabels.categoria} — Ex: Feminino, Masculino, Infantil</p>
             </div>
             <button onClick={() => setHierDivisaoAtiva(!hierDivisaoAtiva)}
               className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${hierDivisaoAtiva ? "bg-[#7598CF]" : "bg-[#28071C]/20"}`}>
@@ -1504,86 +2714,350 @@ export default function OperationSettings() {
             </button>
           </div>
 
-          {/* Árvore de hierarquia */}
-          <div className="mb-5">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest">
-                Estrutura cadastrada
-              </p>
-              <button onClick={() => { setHierAddTarget('root'); setHierAddLabel(''); }}
-                className="flex items-center gap-1.5 text-xs text-[#7598CF] font-semibold hover:text-[#28071C] transition-colors">
-                <Plus className="w-3.5 h-3.5" />
-                Nova {hierDivisaoAtiva ? 'Divisão' : 'Grupo'}
+          {/* ── Árvore de produtos reais ─────────────────────────────────────────── */}
+          {(() => {
+            // Construir árvore a partir dos caminhos
+            type TNode = { label: string; count: number; path: Partial<{ division: string; category: string; subcategory: string; linha: string }>; children: Map<string, TNode> };
+            const makeNode = (label: string, path: TNode["path"]): TNode => ({ label, count: 0, path, children: new Map() });
+
+            const root = new Map<string, TNode>();
+            for (const p of hierPaths) {
+              const d = p.division  ?? "(sem divisão)";
+              const c = p.category  ?? "(sem categoria)";
+              const s = p.subcategory ?? "(sem subcategoria)";
+              const l = p.linha     ?? "(sem linha)";
+
+              if (hierDivisaoAtiva) {
+                if (!root.has(d)) root.set(d, makeNode(d, { division: p.division ?? undefined }));
+                const dn = root.get(d)!; dn.count += p.count;
+                if (!dn.children.has(c)) dn.children.set(c, makeNode(c, { division: p.division ?? undefined, category: p.category ?? undefined }));
+                const cn = dn.children.get(c)!; cn.count += p.count;
+                if (!cn.children.has(s)) cn.children.set(s, makeNode(s, { division: p.division ?? undefined, category: p.category ?? undefined, subcategory: p.subcategory ?? undefined }));
+                const sn = cn.children.get(s)!; sn.count += p.count;
+                if (!sn.children.has(l)) sn.children.set(l, makeNode(l, { division: p.division ?? undefined, category: p.category ?? undefined, subcategory: p.subcategory ?? undefined, linha: p.linha ?? undefined }));
+                sn.children.get(l)!.count += p.count;
+              } else {
+                if (!root.has(c)) root.set(c, makeNode(c, { category: p.category ?? undefined }));
+                const cn = root.get(c)!; cn.count += p.count;
+                if (!cn.children.has(s)) cn.children.set(s, makeNode(s, { category: p.category ?? undefined, subcategory: p.subcategory ?? undefined }));
+                const sn = cn.children.get(s)!; sn.count += p.count;
+                if (!sn.children.has(l)) sn.children.set(l, makeNode(l, { category: p.category ?? undefined, subcategory: p.subcategory ?? undefined, linha: p.linha ?? undefined }));
+                sn.children.get(l)!.count += p.count;
+              }
+            }
+
+            // Gera chave única por nó para controle de expansão
+            const nodeKey = (node: TNode) =>
+              [node.path.division, node.path.category, node.path.subcategory, node.path.linha]
+                .filter(Boolean).join("|");
+
+            const renderNode = (node: TNode, depth: number): React.ReactNode => {
+              const isLeaf = node.children.size === 0;
+              const key    = nodeKey(node);
+              const isOpen = hierExpanded.has(key);
+              const indent = depth * 20;
+              return (
+                <div key={key}>
+                  <div
+                    className="flex items-center gap-2 py-2.5 border-b border-[#28071C]/6 hover:bg-[#7598CF]/4 group transition-colors cursor-pointer select-none"
+                    style={{ paddingLeft: `${16 + indent}px`, paddingRight: "16px" }}
+                    onClick={() => !isLeaf && toggleExpand(key)}
+                  >
+                    {/* Ícone de expansão */}
+                    {!isLeaf ? (
+                      <ChevronRight className={`w-3.5 h-3.5 text-[#28071C]/40 shrink-0 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
+                    ) : (
+                      <span className="w-3.5 shrink-0" />
+                    )}
+
+                    {/* Label */}
+                    <span className={`text-[#28071C] text-sm ${depth === 0 ? "font-bold" : depth === 1 ? "font-semibold" : "font-normal"}`}>
+                      {node.label}
+                    </span>
+
+                    {/* Contagem */}
+                    <span className="ml-auto text-[#28071C]/30 text-xs shrink-0 tabular-nums">{node.count} pç</span>
+
+                    {/* Botão migrar — visível ao hover */}
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        setShowMigration(true); setMigStep(1);
+                        setMigFilterDiv(node.path.division ?? "");
+                        setMigFilterCat(node.path.category ?? "");
+                        setMigFilterSub(node.path.subcategory ?? "");
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity ml-3 shrink-0 flex items-center gap-1 text-[10px] text-[#7598CF] font-semibold px-2 py-0.5 rounded border border-[#7598CF]/40 hover:bg-[#7598CF]/10"
+                    >
+                      <Shuffle className="w-3 h-3" />Migrar
+                    </button>
+                  </div>
+
+                  {/* Filhos — só renderiza se expandido */}
+                  {isOpen && !isLeaf && (
+                    <div>
+                      {Array.from(node.children.values()).map(child => renderNode(child, depth + 1))}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <div className="mb-5">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest">
+                    Estrutura de produtos
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button onClick={handleRefreshHierarchy} disabled={hierLoading}
+                      className="flex items-center gap-1 text-xs text-[#28071C]/50 hover:text-[#7598CF] transition-colors disabled:opacity-40">
+                      <RefreshCw className={`w-3.5 h-3.5 ${hierLoading ? "animate-spin" : ""}`} />
+                      {hierLoading ? "Carregando…" : "Atualizar"}
+                    </button>
+                  </div>
+                </div>
+
+                {hierLoading ? (
+                  <div className="text-center py-10 text-[#28071C]/30 text-sm">Carregando hierarquia…</div>
+                ) : root.size === 0 ? (
+                  <div className="text-center py-10 border-2 border-dashed border-[#28071C]/10 rounded-xl">
+                    <Layers className="w-8 h-8 text-[#28071C]/15 mx-auto mb-2" />
+                    <p className="text-[#28071C]/40 text-sm">Nenhum produto com hierarquia cadastrada.</p>
+                    <p className="text-[#28071C]/30 text-xs mt-1">Importe a planilha do ERP para preencher automaticamente.</p>
+                  </div>
+                ) : (
+                  <div className="border border-[#28071C]/10 rounded-xl overflow-hidden bg-white">
+                    {Array.from(root.values()).map(node => renderNode(node, 0))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Ações: migrar / importar ─────────────────────────────────────────── */}
+          {!showMigration && (
+            <div className="flex items-center gap-3 pt-4 border-t border-[#28071C]/8 flex-wrap">
+              <button onClick={() => { setShowMigration(true); setMigStep(1); setMigFilterDiv(""); setMigFilterCat(""); setMigFilterSub(""); }}
+                className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm">
+                <Plus className="w-4 h-4" />Nova Categoria / Migrar Produtos
               </button>
+              <label className={`flex items-center gap-2 px-4 py-2.5 border-2 border-[#7598CF]/40 text-[#28071C]/70 rounded-lg cursor-pointer hover:border-[#7598CF] hover:text-[#7598CF] transition-all text-sm ${hierImporting ? "opacity-60 pointer-events-none" : ""}`}>
+                <Upload className="w-4 h-4" />
+                {hierImporting ? "Importando…" : "Importar Planilha ERP"}
+                <input type="file" accept=".csv,.tsv,.txt" className="hidden" onChange={handleImportHierFile} />
+              </label>
+              <a href="data:text/csv;charset=utf-8,SKU,Divisao,Categoria,Subcategoria,Linha%0A001234,Feminino,Sapatos,Loafer,Casual%0A001235,Feminino,Sapatos,Salto Alto,Festa"
+                download="modelo_hierarquia.csv"
+                className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors">
+                <FileSpreadsheet className="w-3.5 h-3.5" />Baixar modelo CSV
+              </a>
             </div>
+          )}
 
-            {/* Input de adição na raiz */}
-            {hierAddTarget === 'root' && (
-              <div className="flex gap-2 mb-3">
-                <input autoFocus type="text" value={hierAddLabel} onChange={e => setHierAddLabel(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') hierAddNode(null); if (e.key === 'Escape') setHierAddTarget(null); }}
-                  placeholder={`Nome da ${hierDivisaoAtiva ? 'divisão' : 'grupo'}…`}
-                  className="flex-1 px-3 py-2 border-2 border-[#7598CF]/50 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-                <button onClick={() => hierAddNode(null)} className="px-4 py-2 bg-[#7598CF] text-white rounded-lg text-sm font-semibold hover:opacity-90">Adicionar</button>
-                <button onClick={() => setHierAddTarget(null)} className="px-3 py-2 border border-[#28071C]/20 text-[#28071C]/50 rounded-lg text-sm hover:bg-gray-50"><X className="w-4 h-4" /></button>
-              </div>
-            )}
+          {/* Resultado da importação */}
+          {hierImportResult && (
+            <div className="mt-3 flex items-center gap-3 text-sm">
+              <span className="text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-1.5 font-semibold">{hierImportResult.updated} atualizados</span>
+              {hierImportResult.notFound > 0 && <span className="text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">{hierImportResult.notFound} SKUs não encontrados</span>}
+              <button onClick={() => setHierImportResult(null)} className="text-[#28071C]/30 hover:text-[#28071C]/60"><X className="w-4 h-4" /></button>
+            </div>
+          )}
 
-            {/* Árvore recursiva */}
-            {hierStruct.length === 0 ? (
-              <div className="text-center py-8 border-2 border-dashed border-[#28071C]/10 rounded-xl text-[#28071C]/40 text-sm">
-                Nenhum item cadastrado. Clique em "Nova {hierDivisaoAtiva ? 'Divisão' : 'Grupo'}" para começar.
+          {/* ── Painel de Migração inline ────────────────────────────────────────── */}
+          {showMigration && (
+            <div className="mt-4 border-2 border-[#7598CF]/25 rounded-2xl bg-[#7598CF]/4 p-5">
+              {/* Cabeçalho do painel */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Shuffle className="w-5 h-5 text-[#7598CF]" />
+                  <p className="text-[#28071C] font-bold text-sm">Nova Categoria / Migração de Produtos</p>
+                </div>
+                <button onClick={resetMigration} className="p-1 text-[#28071C]/40 hover:text-[#28071C]/70 rounded-lg"><X className="w-4 h-4" /></button>
               </div>
-            ) : (
-              <div className="border border-[#28071C]/10 rounded-xl overflow-hidden">
-                {hierStruct.map((node, idx) => (
-                  <HierNodeRow
-                    key={node.id} node={node} depth={0}
-                    expanded={hierExpanded} onToggle={toggleExpand}
-                    editId={hierEditId} editLabel={hierEditLabel}
-                    onEditStart={(id, label) => { setHierEditId(id); setHierEditLabel(label); }}
-                    onEditChange={setHierEditLabel} onEditSave={hierSaveEdit}
-                    onEditCancel={() => setHierEditId(null)}
-                    addTarget={hierAddTarget} addLabel={hierAddLabel}
-                    onAddStart={(id) => { setHierAddTarget(id); setHierAddLabel(''); }}
-                    onAddChange={setHierAddLabel} onAddConfirm={hierAddNode}
-                    onAddCancel={() => setHierAddTarget(null)}
-                    onDelete={hierDeleteNode}
-                    levelLabels={LEVEL_LABELS}
-                    isLast={idx === hierStruct.length - 1}
-                  />
+
+              {/* Passos */}
+              <div className="flex items-center gap-2 mb-5 text-xs font-semibold">
+                {[1,2,3].map(s => (
+                  <div key={s} className="flex items-center gap-2">
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all ${migStep === s ? "bg-[#7598CF] border-[#7598CF] text-white" : migStep > s ? "bg-green-500 border-green-500 text-white" : "border-[#28071C]/20 text-[#28071C]/30"}`}>{migStep > s ? "✓" : s}</span>
+                    <span className={migStep === s ? "text-[#7598CF]" : migStep > s ? "text-green-600" : "text-[#28071C]/30"}>
+                      {s === 1 ? "Destino" : s === 2 ? "Produtos" : "Confirmar"}
+                    </span>
+                    {s < 3 && <span className="text-[#28071C]/20">→</span>}
+                  </div>
                 ))}
               </div>
-            )}
-          </div>
 
-          <div className="flex items-center gap-3 pt-4 border-t border-[#28071C]/8">
-            <button onClick={handleSaveHierarquia}
-              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md text-sm">
-              <Save className="w-4 h-4 mr-2" />Salvar Configurações
-            </button>
-            {(hierSavedOk || hierSavedStructOk) && (
-              <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                Salvo!
-              </span>
-            )}
-          </div>
-        </div>
+              {/* ── Passo 1: Definir destino ── */}
+              {migStep === 1 && (
+                <div>
+                  <p className="text-[#28071C]/60 text-xs mb-3">Defina o caminho de hierarquia de destino. Deixe em branco os níveis que não serão alterados.</p>
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    {hierDivisaoAtiva && (
+                      <div>
+                        <label className="block text-[#28071C]/60 text-xs font-semibold uppercase tracking-wider mb-1.5">{hierLabels.divisao}</label>
+                        <input type="text" value={migNewDiv} onChange={e => setMigNewDiv(e.target.value)}
+                          list="mig-div-list" placeholder={`Ex: Feminino`}
+                          className="w-full bg-white rounded-lg px-3 py-2 text-sm text-[#28071C] border-2 border-[#7598CF]/25 focus:outline-none focus:border-[#7598CF]/60" />
+                        <datalist id="mig-div-list">{hierDistinctVals.divisions.map(v => <option key={v} value={v} />)}</datalist>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-[#28071C]/60 text-xs font-semibold uppercase tracking-wider mb-1.5">{hierLabels.categoria} <span className="text-red-400">*</span></label>
+                      <input type="text" value={migNewCat} onChange={e => setMigNewCat(e.target.value)}
+                        list="mig-cat-list" placeholder={`Ex: Loafer`}
+                        className="w-full bg-white rounded-lg px-3 py-2 text-sm text-[#28071C] border-2 border-[#7598CF]/25 focus:outline-none focus:border-[#7598CF]/60" />
+                      <datalist id="mig-cat-list">{hierDistinctVals.categories.map(v => <option key={v} value={v} />)}</datalist>
+                    </div>
+                    <div>
+                      <label className="block text-[#28071C]/60 text-xs font-semibold uppercase tracking-wider mb-1.5">{hierLabels.subcategoria}</label>
+                      <input type="text" value={migNewSub} onChange={e => setMigNewSub(e.target.value)}
+                        list="mig-sub-list" placeholder={`Ex: Salto Baixo`}
+                        className="w-full bg-white rounded-lg px-3 py-2 text-sm text-[#28071C] border-2 border-[#7598CF]/25 focus:outline-none focus:border-[#7598CF]/60" />
+                      <datalist id="mig-sub-list">{hierDistinctVals.subcategories.map(v => <option key={v} value={v} />)}</datalist>
+                    </div>
+                    <div>
+                      <label className="block text-[#28071C]/60 text-xs font-semibold uppercase tracking-wider mb-1.5">{hierLabels.linha}</label>
+                      <input type="text" value={migNewLinha} onChange={e => setMigNewLinha(e.target.value)}
+                        list="mig-lin-list" placeholder={`Ex: Casual`}
+                        className="w-full bg-white rounded-lg px-3 py-2 text-sm text-[#28071C] border-2 border-[#7598CF]/25 focus:outline-none focus:border-[#7598CF]/60" />
+                      <datalist id="mig-lin-list">{hierDistinctVals.linhas.map(v => <option key={v} value={v} />)}</datalist>
+                    </div>
+                  </div>
+                  <button onClick={() => { setMigStep(2); handleMigSearch(); }}
+                    disabled={!migNewCat.trim()}
+                    className="px-5 py-2.5 bg-[#7598CF] text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity">
+                    Próximo: Selecionar Produtos →
+                  </button>
+                </div>
+              )}
 
-        {/* ── CARD 5: Matriz de Abastecimento ──────────────────────────────────── */}
-        <div id="tour-op-leadtimes" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#F6F3AA]">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#F6F3AA] flex items-center justify-center shrink-0">
-                <Truck className="w-5 h-5 text-[#28071C]" />
-              </div>
-              <div>
-                <h2 className="text-[#28071C] text-xl font-bold">Matriz de Abastecimento</h2>
-                <p className="text-[#28071C]/50 text-sm mt-0.5">
-                  Lead time e condições de pagamento por hierarquia de produto × fornecedor
-                </p>
-              </div>
+              {/* ── Passo 2: Selecionar produtos ── */}
+              {migStep === 2 && (
+                <div>
+                  {/* Filtros */}
+                  <div className="mb-3">
+                    <div className="flex gap-1 mb-3 bg-[#28071C]/8 rounded-xl p-1 w-fit">
+                      {(["manual","keyword","material"] as const).map(m => (
+                        <button key={m} onClick={() => { setMigMode(m); if (m !== migMode) { setMigResults([]); setMigSelected(new Set()); } }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${migMode === m ? "bg-white shadow text-[#28071C]" : "text-[#28071C]/50 hover:text-[#28071C]"}`}>
+                          {m === "manual" ? "Por Hierarquia" : m === "keyword" ? "Por Descrição" : "Por Material"}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex gap-2 flex-wrap">
+                      {migMode === "manual" && (
+                        <>
+                          {hierDivisaoAtiva && (
+                            <select value={migFilterDiv} onChange={e => setMigFilterDiv(e.target.value)}
+                              className="bg-white border-2 border-[#7598CF]/20 rounded-lg px-3 py-2 text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF]/50">
+                              <option value="">Todas as {hierLabels.divisao}s</option>
+                              {hierDistinctVals.divisions.map(v => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                          )}
+                          <select value={migFilterCat} onChange={e => setMigFilterCat(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/20 rounded-lg px-3 py-2 text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF]/50">
+                            <option value="">Todas as {hierLabels.categoria}s</option>
+                            {hierDistinctVals.categories.map(v => <option key={v} value={v}>{v}</option>)}
+                          </select>
+                          <select value={migFilterSub} onChange={e => setMigFilterSub(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/20 rounded-lg px-3 py-2 text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF]/50">
+                            <option value="">Todas as {hierLabels.subcategoria}s</option>
+                            {hierDistinctVals.subcategories.map(v => <option key={v} value={v}>{v}</option>)}
+                          </select>
+                        </>
+                      )}
+                      {migMode === "keyword" && (
+                        <input type="text" value={migKeyword} onChange={e => setMigKeyword(e.target.value)}
+                          placeholder="Termo na descrição do produto…"
+                          className="flex-1 min-w-48 bg-white border-2 border-[#7598CF]/20 rounded-lg px-3 py-2 text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF]/50" />
+                      )}
+                      {migMode === "material" && (
+                        <select value={migMaterial} onChange={e => setMigMaterial(e.target.value)}
+                          className="bg-white border-2 border-[#7598CF]/20 rounded-lg px-3 py-2 text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF]/50 flex-1">
+                          <option value="">Selecione o material…</option>
+                          {hierDistinctVals.materials.map(v => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                      )}
+                      <button onClick={handleMigSearch} disabled={migSearching}
+                        className="flex items-center gap-1.5 px-4 py-2 bg-[#7598CF] text-white rounded-lg text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                        <Search className="w-3.5 h-3.5" />{migSearching ? "Buscando…" : "Buscar"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Lista de produtos */}
+                  {migResults.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs text-[#28071C]/60">{migResults.length} produto{migResults.length !== 1 ? "s" : ""} encontrado{migResults.length !== 1 ? "s" : ""}</p>
+                        <button onClick={toggleMigAll} className="flex items-center gap-1 text-xs text-[#7598CF] font-semibold hover:opacity-70 transition-opacity">
+                          {migSelected.size === migResults.length
+                            ? <><CheckSquare className="w-3.5 h-3.5" />Desmarcar todos</>
+                            : <><Square className="w-3.5 h-3.5" />Selecionar todos</>
+                          }
+                        </button>
+                      </div>
+                      <div className="max-h-56 overflow-y-auto border border-[#28071C]/10 rounded-xl bg-white">
+                        {migResults.map(p => (
+                          <label key={p.sku} className="flex items-center gap-3 px-3 py-2 hover:bg-[#7598CF]/5 cursor-pointer border-b border-[#28071C]/5 last:border-0">
+                            <input type="checkbox" checked={migSelected.has(p.sku)} onChange={() => toggleMigSku(p.sku)}
+                              className="w-3.5 h-3.5 accent-[#7598CF] shrink-0" />
+                            <span className="text-xs text-[#28071C]/50 font-mono w-20 shrink-0">{p.sku}</span>
+                            <span className="text-xs text-[#28071C] truncate flex-1">{p.name}</span>
+                            <span className="text-[10px] text-[#28071C]/30 shrink-0">{[p.division, p.category, p.subcategory].filter(Boolean).join(" › ")}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {migResults.length === 0 && !migSearching && (
+                    <p className="text-center py-6 text-[#28071C]/30 text-xs">Clique em "Buscar" para encontrar produtos.</p>
+                  )}
+
+                  <div className="flex items-center gap-3 mt-4">
+                    <button onClick={() => setMigStep(1)} className="px-4 py-2 border border-[#28071C]/20 text-[#28071C]/60 rounded-lg text-xs font-semibold hover:bg-white/60 transition-colors">← Voltar</button>
+                    <button onClick={handleExecuteMigration}
+                      disabled={migSelected.size === 0 || migSaving}
+                      className="flex items-center gap-1.5 px-5 py-2 bg-[#28071C] text-white rounded-lg text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity">
+                      {migSaving ? "Migrando…" : `Migrar ${migSelected.size} produto${migSelected.size !== 1 ? "s" : ""} →`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Passo 3: Confirmação ── */}
+              {migStep === 3 && (
+                <div className="text-center py-4">
+                  <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <CheckCircle2 className="w-8 h-8 text-green-600" />
+                  </div>
+                  <p className="text-[#28071C] font-bold text-base mb-1">{migDoneCount} produto{migDoneCount !== 1 ? "s" : ""} migrado{migDoneCount !== 1 ? "s" : ""}!</p>
+                  <p className="text-[#28071C]/50 text-sm mb-4">
+                    Movidos para <strong>{[migNewDiv, migNewCat, migNewSub, migNewLinha].filter(Boolean).join(" › ")}</strong>
+                  </p>
+                  <button onClick={resetMigration}
+                    className="px-6 py-2.5 bg-[#7598CF] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity">
+                    Concluir
+                  </button>
+                </div>
+              )}
             </div>
+          )}
+        </SettingsCard>
+
+        {/* ── CARD 6: Matriz de Abastecimento ──────────────────────────────────── */}
+        <SettingsCard
+          id="tour-op-leadtimes"
+          icon={<Truck className="w-6 h-6 text-[#28071C]" />}
+          title="Matriz de Abastecimento"
+          accentColor="#F6F3AA"
+          summary={<span className="text-[#28071C]/50 text-sm">Lead time e condições de pagamento por hierarquia × fornecedor</span>}
+        >
+          <div className="flex items-center justify-between mt-1 mb-5">
+            <p className="text-[#28071C]/50 text-sm">Configure fornecedores, lead times e condições de pagamento.</p>
             <button
               onClick={() => navigate("/matriz-abastecimento")}
               className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm shrink-0"
@@ -1592,7 +3066,7 @@ export default function OperationSettings() {
             </button>
           </div>
 
-          <div className="mt-5 grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             {[
               { icon: Truck,       label: "Fornecedores",            desc: "White label, private label, importados e produção própria" },
               { icon: Clock,       label: "Lead Time",               desc: "Produção + Trânsito por combinação de hierarquia e fornecedor" },
@@ -1605,74 +3079,128 @@ export default function OperationSettings() {
               </div>
             ))}
           </div>
-        </div>
+        </SettingsCard>
 
-        {/* ── CARD 6 (NEW): Sustentador de Margem ─────────────────────────────── */}
-        <div id="tour-op-basicos" className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 shadow-sm border-t-4 border-[#28071C]">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <h2 className="text-[#28071C] text-xl font-bold">Sustentador de Margem</h2>
-              <p className="text-[#28071C]/50 text-sm mt-0.5">Perfil de produto recorrente</p>
-            </div>
-            <button
-              onClick={() => setBasicosAtivos(!basicosAtivos)}
-              className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${basicosAtivos ? "bg-[#28071C]" : "bg-[#28071C]/20"}`}
-            >
-              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${basicosAtivos ? "translate-x-7" : "translate-x-1"}`} />
-            </button>
-          </div>
-
-          <p className="text-[#28071C]/60 text-sm mb-4">
-            Incluir produtos Sustentador de Margem na coleção
-            <span className={`ml-2 text-xs font-semibold px-2 py-0.5 rounded-full ${basicosAtivos ? "bg-green-100 text-green-700" : "bg-[#28071C]/10 text-[#28071C]/40"}`}>
-              {basicosAtivos ? "Ativo" : "Inativo"}
-            </span>
+        {/* ── CARD 7: Cadastro de Básicos ────────────────────────────────────── */}
+        <SettingsCard
+          id="tour-op-basicos"
+          icon={<Package className="w-6 h-6 text-[#28071C]" />}
+          title="Cadastro de Básicos"
+          accentColor="#28071C"
+          summary={
+            basicosSkuArr.length > 0
+              ? <span className="text-[#28071C]/50 text-sm">{basicosSkuArr.length} produto{basicosSkuArr.length !== 1 ? "s" : ""} cadastrado{basicosSkuArr.length !== 1 ? "s" : ""}</span>
+              : <span className="text-[#28071C]/35 text-sm">Nenhum básico cadastrado</span>
+          }
+        >
+          {/* Conceito */}
+          <p className="text-[#28071C]/65 text-sm leading-relaxed mt-1 mb-5">
+            <strong>Sustentadores de Margem</strong> são produtos com estruturas consagradas e alta aceitação — margem mais alta por previsão de venda mais segura, atualizados a cada coleção em cor e poucos atributos.{" "}
+            <strong>Básicos</strong> são o subgrupo que <em>nunca muda</em> em estrutura, cor ou atributo. Cadastre aqui os SKUs desse perfil.
           </p>
 
-          {basicosAtivos && (
-            <div className="border-t border-[#28071C]/10 pt-4 space-y-4">
-              <p className="text-[#28071C]/70 text-sm uppercase tracking-wide font-semibold">Origem dos produtos</p>
-              <div className="flex flex-col gap-3">
-                {([
-                  { value: "estoque" as const, label: "Informar produtos do estoque" },
-                  { value: "novos"   as const, label: "Serão produtos novos" },
-                ]).map(opt => (
-                  <label key={opt.value} className="flex items-center gap-3 cursor-pointer">
-                    <input type="radio" name="basicosTipo" value={opt.value}
-                      checked={basicosTipo === opt.value}
-                      onChange={() => setBasicosTipo(opt.value)}
-                      className="accent-[#28071C]" />
-                    <span className="text-[#28071C] text-sm font-medium">{opt.label}</span>
-                  </label>
-                ))}
+          <div className="space-y-4">
+            {/* Campo de busca */}
+            <div className="relative">
+              <div className="flex items-center gap-2 bg-white border-2 border-[#28071C]/20 rounded-xl px-3 py-2.5 focus-within:border-[#28071C]/50 transition-colors">
+                <Search className="w-4 h-4 text-[#28071C]/40 shrink-0" />
+                <input
+                  type="text"
+                  value={basicosSearch}
+                  onChange={e => handleBasicosSearch(e.target.value)}
+                  onFocus={() => basicosResults.length > 0 && setBasicosShowDrop(true)}
+                  onBlur={() => setTimeout(() => setBasicosShowDrop(false), 200)}
+                  placeholder="Buscar por SKU ou nome do produto…"
+                  className="flex-1 bg-transparent text-[#28071C] text-sm focus:outline-none placeholder:text-[#28071C]/30"
+                />
+                {basicosSearching && <RefreshCw className="w-3.5 h-3.5 text-[#28071C]/30 animate-spin shrink-0" />}
               </div>
 
-              {basicosTipo === "estoque" ? (
-                <div>
-                  <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide mb-2">
-                    SKUs ou nomes de produtos (separados por vírgula)
-                  </label>
-                  <textarea
-                    value={basicosSkus}
-                    onChange={e => setBasicosSkus(e.target.value)}
-                    placeholder="Ex: SKU-001, Blusa Branca Básica, SKU-045"
-                    rows={3}
-                    className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#28071C]/20 focus:outline-none focus:ring-2 focus:ring-[#28071C]/40 text-sm resize-none"
-                  />
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 bg-[#7598CF]/10 border border-[#7598CF]/20 rounded-xl px-4 py-3">
-                  <AlertCircle className="w-4 h-4 text-[#7598CF] flex-shrink-0" />
-                  <p className="text-[#28071C]/70 text-sm">Os produtos serão definidos no plano de sortimento</p>
+              {/* Dropdown de resultados */}
+              {basicosShowDrop && basicosResults.length > 0 && (
+                <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-[#28071C]/15 rounded-xl shadow-lg overflow-hidden max-h-56 overflow-y-auto">
+                  {basicosResults.map(p => {
+                    const already = basicosSkuArr.includes(p.sku);
+                    return (
+                      <button key={p.sku}
+                        onMouseDown={() => handleAddBasico(p)}
+                        disabled={already}
+                        className={`w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-[#28071C]/5 transition-colors ${already ? "opacity-40 cursor-not-allowed" : ""}`}
+                      >
+                        <span className="font-mono text-xs text-[#28071C]/50 w-20 shrink-0">{p.sku}</span>
+                        <span className="text-[#28071C] text-sm truncate flex-1">{p.name}</span>
+                        <span className="text-[10px] text-[#28071C]/30 shrink-0">{[p.category, p.subcategory].filter(Boolean).join(" › ")}</span>
+                        {already && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
-          )}
 
-          <div className="flex items-center gap-3 mt-6">
+            {/* Import bulk colapsável */}
+            <details className="group">
+              <summary className="text-xs text-[#28071C]/40 hover:text-[#28071C]/70 cursor-pointer select-none flex items-center gap-1">
+                <ChevronRight className="w-3 h-3 group-open:rotate-90 transition-transform" />
+                Importar lista de SKUs em bloco
+              </summary>
+              <div className="mt-2 flex gap-2">
+                <textarea
+                  id="basicos-bulk-input"
+                  rows={3}
+                  placeholder={"SKU-001\nSKU-002, SKU-003\nSKU-004"}
+                  className="flex-1 bg-white rounded-lg px-3 py-2 text-[#28071C] border-2 border-[#28071C]/15 focus:outline-none focus:border-[#28071C]/40 text-xs font-mono resize-none"
+                />
+                <button
+                  onClick={() => {
+                    const el = document.getElementById("basicos-bulk-input") as HTMLTextAreaElement | null;
+                    if (el?.value) { handleImportBasicosBulk(el.value); el.value = ""; }
+                  }}
+                  className="self-start px-4 py-2 bg-[#28071C] text-white rounded-lg text-xs font-semibold hover:opacity-90 transition-opacity whitespace-nowrap"
+                >
+                  Adicionar
+                </button>
+              </div>
+            </details>
+
+            {/* Lista de produtos */}
+            {basicosSkuArr.length > 0 ? (
+              <div className="border border-[#28071C]/10 rounded-xl overflow-hidden bg-white">
+                <div className="px-4 py-2 bg-[#28071C]/5 border-b border-[#28071C]/10 flex items-center justify-between">
+                  <p className="text-xs font-semibold text-[#28071C]/60 uppercase tracking-wider">{basicosSkuArr.length} produto{basicosSkuArr.length !== 1 ? "s" : ""}</p>
+                  <button onClick={() => { setBasicosSkuArr([]); setBasicosProds([]); setBasicosSkus("[]"); }}
+                    className="text-[10px] text-red-500 hover:text-red-700 transition-colors">Limpar todos</button>
+                </div>
+                <div className="max-h-64 overflow-y-auto divide-y divide-[#28071C]/6">
+                  {basicosSkuArr.map(sku => {
+                    const prod = basicosProds.find(p => p.sku === sku);
+                    return (
+                      <div key={sku} className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#28071C]/3 group/row transition-colors">
+                        <span className="font-mono text-xs text-[#28071C]/50 w-24 shrink-0">{sku}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[#28071C] text-sm truncate">{prod?.name ?? <span className="text-[#28071C]/30 italic">carregando…</span>}</p>
+                          {prod && <p className="text-[10px] text-[#28071C]/35 mt-0.5">{[prod.division, prod.category, prod.subcategory].filter(Boolean).join(" › ")}</p>}
+                        </div>
+                        <button onClick={() => handleRemoveBasico(sku)}
+                          className="opacity-0 group-hover/row:opacity-100 transition-opacity p-1 text-red-500 hover:bg-red-50 rounded-lg">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 border-2 border-dashed border-[#28071C]/10 rounded-xl text-[#28071C]/30 text-sm">
+                Nenhum produto básico cadastrado. Use a busca acima ou importe uma lista de SKUs.
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-6 pt-4 border-t border-[#28071C]/8">
             <button onClick={handleSaveBasicos}
-              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md">
-              <Save className="w-5 h-5 mr-2" />Salvar Configuração
+              className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md text-sm">
+              <Save className="w-4 h-4 mr-2" />Salvar Configuração
             </button>
             {basicosSavedOk && (
               <span className="text-green-700 text-sm font-semibold bg-green-50 border border-green-200 rounded-lg px-3 py-2">
@@ -1680,272 +3208,25 @@ export default function OperationSettings() {
               </span>
             )}
           </div>
-        </div>
+        </SettingsCard>
 
-        {/* ── CARD 7: Banco de Cores ──────────────────────────────────────────── */}
-        <div id="tour-op-banco-cores">
-          {user.tenant_id && (
+        {/* ── CARD 8: Banco de Cores ──────────────────────────────────────────── */}
+        <SettingsCard
+          id="tour-op-banco-cores"
+          icon={<Palette className="w-6 h-6 text-[#28071C]" />}
+          title="Banco de Cores"
+          accentColor="#7598CF"
+          summary={
+            <span className="text-[#28071C]/50 text-sm">
+              Classifique cores brutas em família e intensidade para análises por grupo de cor
+            </span>
+          }
+        >
+          <div className="mt-2">
             <ColorBankCard tenantId={user.tenant_id} />
-          )}
-        </div>
-
-        {/* Card de importação movido para antes da Hierarquia — ver Card 4 acima */}
-        <div className="hidden">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <FileSpreadsheet className="w-6 h-6 text-[#28071C]" />
-              <div>
-                <h2 className="text-[#28071C] text-xl font-bold">Importação de Planilhas</h2>
-                <p className="text-[#28071C]/50 text-sm mt-0.5">Carregue dados de produtos ou hierarquia de códigos do seu sistema</p>
-              </div>
-            </div>
-            {importStep !== "select" && (
-              <button onClick={handleImportReset} className="flex items-center gap-1.5 text-[#28071C]/40 hover:text-[#28071C] text-sm transition-colors">
-                <X className="w-4 h-4" />Reiniciar
-              </button>
-            )}
           </div>
+        </SettingsCard>
 
-          {/* Step 1 — Seleção do fluxo */}
-          {importStep === "select" && (
-            <div className="mt-6">
-              <p className="text-[#28071C]/60 text-sm mb-4">
-                Selecione o fluxo que melhor descreve sua situação:
-              </p>
-              <div className="grid grid-cols-2 gap-4">
-
-                {/* Opção A — Importação Completa */}
-                <button
-                  onClick={() => { setImportMode("completa"); setImportStep("upload"); }}
-                  className="text-left border-2 border-[#9B8CD8]/30 hover:border-[#9B8CD8] rounded-2xl p-5 transition-all group hover:bg-[#9B8CD8]/4"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-8 h-8 bg-[#9B8CD8]/15 rounded-lg flex items-center justify-center">
-                      <Upload className="w-4 h-4 text-[#9B8CD8]" />
-                    </div>
-                    <span className="text-xs font-bold text-[#9B8CD8] uppercase tracking-widest">Sem ERP</span>
-                  </div>
-                  <h3 className="text-[#28071C] font-bold text-base mb-2">Importação Completa</h3>
-                  <p className="text-[#28071C]/55 text-sm leading-relaxed">
-                    Todos os dados de produtos são gerenciados em planilha. Faça upload do catálogo completo com código, descrição, preço, custo e hierarquia.
-                  </p>
-                  <div className="flex items-center gap-1 mt-4 text-[#9B8CD8] text-xs font-semibold">
-                    Selecionar este fluxo <ChevronRight className="w-3.5 h-3.5" />
-                  </div>
-                </button>
-
-                {/* Opção B — Complemento de Hierarquia */}
-                <button
-                  onClick={() => { setImportMode("hierarquia"); setImportStep("upload"); }}
-                  className="text-left border-2 border-[#7598CF]/30 hover:border-[#7598CF] rounded-2xl p-5 transition-all group hover:bg-[#7598CF]/4"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-8 h-8 bg-[#7598CF]/15 rounded-lg flex items-center justify-center">
-                      <Layers className="w-4 h-4 text-[#7598CF]" />
-                    </div>
-                    <span className="text-xs font-bold text-[#7598CF] uppercase tracking-widest">Com ERP</span>
-                  </div>
-                  <h3 className="text-[#28071C] font-bold text-base mb-2">Complemento de Hierarquia</h3>
-                  <p className="text-[#28071C]/55 text-sm leading-relaxed">
-                    O ERP já possui os produtos cadastrados mas não armazena a hierarquia de códigos. Faça upload de uma planilha de hierarquia para enriquecer os dados — o cruzamento é feito pelo código do produto.
-                  </p>
-                  <div className="flex items-center gap-1 mt-4 text-[#7598CF] text-xs font-semibold">
-                    Selecionar este fluxo <ChevronRight className="w-3.5 h-3.5" />
-                  </div>
-                </button>
-
-              </div>
-            </div>
-          )}
-
-          {/* Step 2 — Upload do arquivo */}
-          {importStep === "upload" && importMode && (
-            <div className="mt-6">
-              {/* Contexto do fluxo escolhido */}
-              <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 border ${
-                importMode === "completa"
-                  ? "bg-[#9B8CD8]/8 border-[#9B8CD8]/25"
-                  : "bg-[#7598CF]/8 border-[#7598CF]/25"
-              }`}>
-                <Info className={`w-4 h-4 flex-shrink-0 mt-0.5 ${importMode === "completa" ? "text-[#9B8CD8]" : "text-[#7598CF]"}`} />
-                <div>
-                  <p className="text-[#28071C] text-sm font-semibold mb-0.5">
-                    {importMode === "completa" ? "Importação Completa — catálogo via planilha" : "Complemento de Hierarquia — enriquecimento via join pelo código"}
-                  </p>
-                  <p className="text-[#28071C]/55 text-xs leading-relaxed">
-                    {importMode === "completa"
-                      ? "Faça upload do arquivo com os produtos. Na próxima etapa você indicará qual coluna da planilha corresponde a cada campo do sistema."
-                      : "Faça upload da planilha com a hierarquia de códigos. O sistema cruzará os dados pelo código do produto como chave de join."
-                    }
-                  </p>
-                </div>
-              </div>
-
-              {/* Drop zone */}
-              <div
-                onDragOver={e => { e.preventDefault(); setImportDragging(true); }}
-                onDragLeave={() => setImportDragging(false)}
-                onDrop={handleImportDrop}
-                className={`relative border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
-                  importDragging
-                    ? "border-[#7598CF] bg-[#7598CF]/8 scale-[1.01]"
-                    : "border-[#28071C]/20 hover:border-[#7598CF]/60 hover:bg-[#7598CF]/4"
-                }`}
-              >
-                <Upload className="w-10 h-10 text-[#28071C]/25 mx-auto mb-3" />
-                <p className="text-[#28071C]/60 text-sm mb-1 font-medium">
-                  Arraste o arquivo aqui ou clique para selecionar
-                </p>
-                <p className="text-[#28071C]/35 text-xs mb-4">Formatos aceitos: .xlsx · .csv</p>
-                <label className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold cursor-pointer hover:bg-[#28071C]/90 transition-colors">
-                  <Upload className="w-4 h-4" />
-                  Selecionar arquivo
-                  <input
-                    type="file"
-                    accept=".xlsx,.csv"
-                    className="sr-only"
-                    onChange={handleImportFileChange}
-                  />
-                </label>
-              </div>
-
-              {/* Dica de modelo */}
-              <div className="mt-4 flex items-center gap-2 text-xs text-[#28071C]/40">
-                <Info className="w-3.5 h-3.5 flex-shrink-0" />
-                <span>
-                  Não tem o arquivo pronto?{" "}
-                  <button className="underline text-[#7598CF] hover:text-[#28071C] transition-colors">
-                    Baixar modelo de planilha {importMode === "completa" ? "(Catálogo completo)" : "(Hierarquia de códigos)"}
-                  </button>
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Step 3 — Mapeamento de colunas */}
-          {importStep === "mapping" && importMode && (
-            <div className="mt-6">
-              {/* Arquivo carregado */}
-              <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-emerald-800 text-sm font-semibold">{importFileName}</p>
-                  <p className="text-emerald-700 text-xs mt-0.5">
-                    {importHeaders.length} colunas detectadas · Mapeie os campos abaixo
-                  </p>
-                </div>
-                <button
-                  onClick={() => setImportStep("upload")}
-                  className="text-emerald-600 hover:text-emerald-800 text-xs underline"
-                >
-                  Trocar arquivo
-                </button>
-              </div>
-
-              {/* Orientação de mapeamento */}
-              {importMode === "hierarquia" && (
-                <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 mb-5">
-                  <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-                  <p className="text-[#28071C]/60 text-xs leading-relaxed">
-                    O sistema usará o <strong className="text-[#28071C]">Código do Produto</strong> como chave de join entre os dados do ERP e a hierarquia da planilha. Certifique-se de que os códigos são idênticos nas duas fontes.
-                  </p>
-                </div>
-              )}
-
-              {/* Tabela de mapeamento */}
-              <div className="border border-[#28071C]/10 rounded-2xl overflow-hidden">
-                <div className="grid grid-cols-2 gap-0 bg-[#28071C]/5 px-5 py-2.5">
-                  <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Campo do sistema</span>
-                  <span className="text-[10px] text-[#28071C]/50 font-bold uppercase tracking-widest">Coluna na planilha</span>
-                </div>
-                <div className="divide-y divide-[#28071C]/6">
-                  {activeSystemFields.map(field => (
-                    <div key={field.key} className="grid grid-cols-2 gap-4 items-center px-5 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[#28071C]/70 text-sm">{field.label}</span>
-                        {field.required && (
-                          <span className="text-[10px] bg-red-50 text-red-600 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
-                            Obrigatório
-                          </span>
-                        )}
-                      </div>
-                      <select
-                        value={columnMapping[field.key] ?? ""}
-                        onChange={e => setColumnMapping(prev => ({ ...prev, [field.key]: e.target.value }))}
-                        className={`bg-white border-2 rounded-lg px-3 py-2 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 transition-colors ${
-                          field.required && !columnMapping[field.key]
-                            ? "border-red-200 focus:border-red-400"
-                            : "border-[#28071C]/15 focus:border-[#7598CF]"
-                        }`}
-                      >
-                        <option value="">— Não mapear —</option>
-                        {importHeaders.map(h => (
-                          <option key={h} value={h}>{h}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Validação e CTA */}
-              <div className="flex items-center justify-between mt-5">
-                <div className="text-xs text-[#28071C]/40">
-                  {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length === 0
-                    ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />Todos os campos obrigatórios mapeados</span>
-                    : <span className="text-red-500">
-                        {activeSystemFields.filter(f => f.required && !columnMapping[f.key]).length} campo(s) obrigatório(s) sem mapeamento
-                      </span>
-                  }
-                </div>
-                <button
-                  onClick={() => setImportStep("done")}
-                  disabled={!requiredFieldsMapped}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  {importMode === "completa" ? "Confirmar importação" : "Aplicar hierarquia"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step 4 — Confirmação */}
-          {importStep === "done" && importMode && (
-            <div className="mt-6 text-center py-8">
-              <div className="w-16 h-16 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckCircle2 className="w-8 h-8 text-emerald-600" />
-              </div>
-              <h3 className="text-[#28071C] font-bold text-lg mb-2">
-                {importMode === "completa" ? "Catálogo importado com sucesso!" : "Hierarquia aplicada com sucesso!"}
-              </h3>
-              <p className="text-[#28071C]/55 text-sm mb-1">
-                Arquivo: <strong>{importFileName}</strong>
-              </p>
-              <p className="text-[#28071C]/40 text-xs mb-6">
-                {importMode === "completa"
-                  ? "Os produtos foram registrados no sistema com as colunas mapeadas."
-                  : "A hierarquia de códigos foi cruzada pelo código do produto e aplicada ao cadastro do ERP."
-                }
-              </p>
-              <div className="flex gap-3 justify-center">
-                <button
-                  onClick={handleImportReset}
-                  className="px-5 py-2.5 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl text-sm font-semibold hover:bg-[#28071C]/5 transition-all"
-                >
-                  Nova importação
-                </button>
-                <button
-                  onClick={() => navigate("/dashboard")}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 transition-all shadow-sm"
-                >
-                  Ir para o Dashboard <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-        </div>
 
       </main>
 

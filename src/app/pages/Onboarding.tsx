@@ -1,11 +1,23 @@
+// ─── Onboarding.tsx v4 ─────────────────────────────────────────────────────
+// Mudanças:
+//   • Canais ANTES de Temporadas (nova ordem)
+//   • Temporadas com explicação enriquecida
+//   • Dados dividido em 2 sub-slides:
+//       slide 0 = contexto + hierarquia (informativo)
+//       slide 1 = escolha do método (3 opções) + wizard
+//   • Perguntas importação/exportação sempre visíveis (slide 2b de Negócio)
+//   • Topbar h-[72px]
+// ────────────────────────────────────────────────────────────────────────────
+
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import {
   ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown,
-  Plus, X, Upload, Users, Package, Info, CheckCircle2,
+  Plus, X, Upload, Info, CheckCircle2, Package,
 } from 'lucide-react'
 import ImportWizard from '../components/ImportWizard'
 import type { ImportDataType, ImportResult } from '../../services/importService'
+import { IMPORT_CONFIG } from '../../services/importService'
 import {
   type SegmentId, type RawMaterialId, type OrigemPecas, type SalesChannelId,
   type TeamInvite, type DataImportChoice,
@@ -15,12 +27,11 @@ import {
   ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
 } from '../types/onboarding'
 import {
-  MONTHS, DEFAULT_REGRA,
+  MONTHS, DEFAULT_REGRA, computeMesFim,
 } from '../../services/temporadaService'
 import { saveRegraDefaultDb } from '../../services/supabase/seasonService'
 
-// ─── Constantes ───────────────────────────────────────────────────────────────
-
+// ── Constantes ────────────────────────────────────────────────────────────────
 const ALL_SEGMENTS: SegmentId[] = [
   'vest_fem', 'vest_masc', 'vest_inf',
   'acc_bolsas_fem', 'acc_bolsas_masc', 'acc_bolsas_inf',
@@ -44,136 +55,73 @@ const ORIGEM_DESCRIPTIONS: Record<OrigemPecas, string> = {
 }
 
 const UPLOAD_FIELDS = [
-  {
-    key: 'catalog',
-    label: 'Cadastro de Produtos',
-    required: true,
-    description: 'SKU, nome, categoria, preço de venda, custo, cor, coleção.',
-    hint: 'Obrigatório — base de tudo.',
-  },
-  {
-    key: 'sales',
-    label: 'Histórico de Vendas',
-    required: true,
-    description: 'SKU, data, quantidade, receita bruta, canal, desconto.',
-    hint: 'Obrigatório — habilita indicadores históricos.',
-  },
-  {
-    key: 'orders',
-    label: 'Pedidos / Ordens de Compra',
-    required: false,
-    description: 'Número do pedido, SKU, data, quantidade, fornecedor, status.',
-    hint: 'Recomendado — habilita acompanhamento de entregas.',
-  },
-  {
-    key: 'inventory',
-    label: 'Estoque Histórico',
-    required: false,
-    description: 'SKU, data da posição (1º ou último dia do mês), quantidade, valor.',
-    hint: 'Recomendado — habilita GMROI e Cobertura precisos.',
-  },
+  { key: 'catalog',   label: 'Cadastro de Produtos',       required: true,  description: 'SKU, nome, divisão, categoria, subcategoria, preço, custo, cor, coleção.' },
+  { key: 'sales',     label: 'Histórico de Vendas',        required: true,  description: 'SKU, data, quantidade, receita bruta, canal, desconto.'                    },
+  { key: 'orders',    label: 'Pedidos / Ordens de Compra', required: false, description: 'Número do pedido, SKU, data, quantidade, fornecedor, status.'               },
+  { key: 'inventory', label: 'Estoque Histórico',          required: false, description: 'SKU, data da posição (1º ou último dia do mês), quantidade, valor.'        },
 ]
 
-// ─── Etapas ───────────────────────────────────────────────────────────────────
-
-type StepId = 'segments' | 'business' | 'seasons' | 'channels' | 'team' | 'data' | 'complete'
+// ── Etapas — Canais ANTES de Temporadas ──────────────────────────────────────
+type StepId = 'segments' | 'business' | 'channels' | 'seasons' | 'data' | 'team' | 'complete'
 
 const STEP_META: { id: StepId; label: string; optional?: boolean }[] = [
   { id: 'segments', label: 'Segmentos' },
-  { id: 'business', label: 'Negócio' },
-  { id: 'seasons',  label: 'Coleções' },
-  { id: 'channels', label: 'Canais' },
-  { id: 'team',     label: 'Equipe',   optional: true },
+  { id: 'business', label: 'Negócio'   },
+  { id: 'channels', label: 'Canais'    },   // ← antes de Temporadas
+  { id: 'seasons',  label: 'Coleções'  },   // ← depois de Canais
   { id: 'data',     label: 'Dados',    optional: true },
-  { id: 'complete', label: 'Pronto!' },
+  { id: 'team',     label: 'Equipe',   optional: true },
+  { id: 'complete', label: 'Pronto!'   },
 ]
 
-// ─── Helpers de UI ────────────────────────────────────────────────────────────
+// ── Títulos/descrições por slide ──────────────────────────────────────────────
+type SlideKey = StepId | 'business_b' | 'data_intro'
 
-function StepDots({
-  steps, current,
-}: { steps: typeof STEP_META; current: number }) {
-  return (
-    <div className="flex items-center gap-1.5 mb-6">
-      {steps.map((s, i) => (
-        <div key={s.id} className="flex items-center gap-1.5">
-          <div className={`w-2 h-2 rounded-full transition-all duration-300 ${
-            i < current
-              ? 'bg-[#28071C]'
-              : i === current
-                ? 'bg-[#7598CF] scale-125'
-                : 'bg-[#28071C]/20'
-          }`} />
-          {i < steps.length - 1 && (
-            <div className={`w-6 h-px transition-all duration-300 ${i < current ? 'bg-[#28071C]/40' : 'bg-[#28071C]/10'}`} />
-          )}
-        </div>
-      ))}
-    </div>
-  )
+const SLIDE_INFO: Record<SlideKey, { title: string; desc: string }> = {
+  segments: {
+    title: 'Segmentos de Produto',
+    desc:  'Quais categorias sua marca comercializa? Isso estrutura filtros e indicadores em todo o sistema.',
+  },
+  business: {
+    title: 'Modelo de Negócio',
+    desc:  'Como sua marca obtém os produtos? Isso adapta os indicadores ao seu fluxo operacional.',
+  },
+  business_b: {
+    title: 'Insumos & Comércio Exterior',
+    desc:  'Informe sobre matérias-primas utilizadas e operações de importação ou exportação.',
+  },
+  channels: {
+    title: 'Canais de Venda',
+    desc:  'Quais canais geram receita? Isso estrutura o Planejamento de Metas por Canal.',
+  },
+  seasons: {
+    title: 'Calendário de Temporadas',
+    desc:  'A temporada é o ciclo completo de uma coleção — do lançamento à liquidação. Configure os meses de início e fim de cada uma.',
+  },
+  data_intro: {
+    title: 'Dados & Hierarquia de Produtos',
+    desc:  'A hierarquia é a arquitetura de dados que viabiliza a governança do seu estoque — distribui orçamentos, mede rentabilidade e dá legibilidade ao mix, do macro ao SKU.',
+  },
+  data: {
+    title: 'Método de Importação',
+    desc:  'Escolha como você vai trazer seus dados para o sistema.',
+  },
+  team: {
+    title: 'Convide sua Equipe',
+    desc:  'Adicione colaboradores agora ou depois em Configurações → Usuários.',
+  },
+  complete: {
+    title: 'Tudo pronto!',
+    desc:  'Configuração inicial concluída. Qualquer ajuste pode ser feito depois em Operações.',
+  },
 }
 
-function SectionLabel({ children, optional }: { children: React.ReactNode; optional?: boolean }) {
-  return (
-    <div className="flex items-center gap-2 mb-4">
-      <span className="text-[#28071C] font-bold text-sm uppercase tracking-widest">{children}</span>
-      {optional && (
-        <span className="text-[10px] text-[#28071C]/40 bg-[#28071C]/8 rounded-full px-2 py-0.5 font-medium">
-          opcional
-        </span>
-      )}
-    </div>
-  )
-}
-
-function NavButtons({
-  onBack, onNext, nextLabel = 'Continuar', nextDisabled = false, onSkip, skipLabel,
-}: {
-  onBack?: () => void
-  onNext: () => void
-  nextLabel?: string
-  nextDisabled?: boolean
-  onSkip?: () => void
-  skipLabel?: string
-}) {
-  return (
-    <div className="flex items-center justify-between pt-6 mt-6 border-t border-[#28071C]/10">
-      <button
-        onClick={onBack}
-        disabled={!onBack}
-        className="flex items-center gap-1.5 text-[#28071C]/50 hover:text-[#28071C] disabled:opacity-0 disabled:pointer-events-none transition-colors text-sm"
-      >
-        <ChevronLeft className="w-4 h-4" />
-        Voltar
-      </button>
-      <div className="flex items-center gap-3">
-        {onSkip && (
-          <button
-            onClick={onSkip}
-            className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors underline"
-          >
-            {skipLabel ?? 'Pular por agora'}
-          </button>
-        )}
-        <button
-          onClick={onNext}
-          disabled={nextDisabled}
-          className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
-        >
-          {nextLabel}
-          <ChevronRight className="w-4 h-4" />
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ─── Componente principal ─────────────────────────────────────────────────────
-
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Componente
+// ═══════════════════════════════════════════════════════════════════════════════
 export default function Onboarding() {
   const navigate = useNavigate()
 
-  // Em DEV, reseta o onboarding para sempre poder ver o fluxo
   useEffect(() => {
     if (import.meta.env.DEV) {
       localStorage.removeItem(ONBOARDING_DONE_KEY)
@@ -181,27 +129,44 @@ export default function Onboarding() {
     }
   }, [])
 
+  // ── Navegação principal ───────────────────────────────────────────────────────
   const [step, setStep] = useState(0)
+  const [bizSlide, setBizSlide] = useState<0 | 1>(0)   // 0=origem, 1=insumos
+  const [dataSlide, setDataSlide] = useState<0 | 1>(0)  // 0=contexto, 1=escolha
+  const [showErpTip, setShowErpTip] = useState(false)
+
   const currentStepId = STEP_META[step].id
 
-  // ── Etapa 1: Segmentos ──────────────────────────────────────────────────────
-  const [segments, setSegments] = useState<SegmentId[]>([])
+  // Balão ERP: aparece 2s após entrar no slide data_intro, fecha ao mudar de slide
+  useEffect(() => {
+    if (currentStepId === 'data' && dataSlide === 0) {
+      const t = setTimeout(() => setShowErpTip(true), 2000)
+      return () => clearTimeout(t)
+    }
+    setShowErpTip(false)
+  }, [currentStepId, dataSlide])
 
+  const slideKey: SlideKey =
+    currentStepId === 'business' && bizSlide === 1  ? 'business_b'  :
+    currentStepId === 'data'     && dataSlide === 0 ? 'data_intro'  :
+    currentStepId
+
+  const info = SLIDE_INFO[slideKey]
+
+  // ── Etapa 1: Segmentos ───────────────────────────────────────────────────────
+  const [segments, setSegments] = useState<SegmentId[]>([])
   function toggleSegment(id: SegmentId) {
     setSegments(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id])
   }
 
-  // ── Etapa 2: Negócio ────────────────────────────────────────────────────────
-  const [origem, setOrigem]       = useState<OrigemPecas | null>(null)
+  // ── Etapa 2: Negócio ─────────────────────────────────────────────────────────
+  const [origem,          setOrigem]          = useState<OrigemPecas | null>(null)
   const [rankedMaterials, setRankedMaterials] = useState<RawMaterialId[]>([])
-  const [hasImport, setHasImport] = useState<boolean | null>(null)
-  const [hasExport, setHasExport] = useState<boolean | null>(null)
+  const [hasImport,       setHasImport]       = useState<boolean | null>(null)
+  const [hasExport,       setHasExport]       = useState<boolean | null>(null)
 
-  const showImportQuestion = origem === 'propria' || origem === 'hibrido'
-  const showMaterials      = origem !== null && origem !== 'multimarca'
-  // Materiais são obrigatórios apenas para produção própria ou híbrido
-  // (quem controla o processo produtivo e precisa monitorar custos de insumo)
-  const materialsRequired  = origem === 'propria' || origem === 'hibrido'
+  const showMaterials     = origem !== null && origem !== 'multimarca'
+  const materialsRequired = origem === 'propria' || origem === 'hibrido'
 
   function addMaterial(id: RawMaterialId) {
     if (!rankedMaterials.includes(id)) setRankedMaterials(prev => [...prev, id])
@@ -211,27 +176,19 @@ export default function Onboarding() {
   }
   function moveMaterial(i: number, dir: -1 | 1) {
     setRankedMaterials(prev => {
-      const next = [...prev]
-      const j = i + dir
+      const next = [...prev]; const j = i + dir
       if (j < 0 || j >= next.length) return prev
-      ;[next[i], next[j]] = [next[j], next[i]]
-      return next
+      ;[next[i], next[j]] = [next[j], next[i]]; return next
     })
   }
 
-  const businessValid =
-    origem !== null &&
+  const bizSlide0Valid = origem !== null
+  const bizSlide1Valid =
     (!materialsRequired || rankedMaterials.length > 0) &&
-    (!showImportQuestion || hasImport !== null) &&
+    hasImport !== null &&
     hasExport !== null
 
-  // ── Etapa 3: Calendário de Coleções ────────────────────────────────────────
-  const [veraoInicio,   setVeraoInicio]   = useState(DEFAULT_REGRA.verao.mesInicio)
-  const [veraoFim,      setVeraoFim]      = useState(DEFAULT_REGRA.verao.mesFim)
-  const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
-  const [invernoFim,    setInvernoFim]    = useState(DEFAULT_REGRA.inverno.mesFim)
-
-  // ── Etapa 4: Canais ─────────────────────────────────────────────────────────
+  // ── Etapa 3: Canais ──────────────────────────────────────────────────────────
   const [selectedChannels, setSelectedChannels] = useState<SalesChannelId[]>(
     SALES_CHANNELS.filter(c => c.erpFound).map(c => c.id)
   )
@@ -239,11 +196,54 @@ export default function Onboarding() {
     setSelectedChannels(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id])
   }
 
-  // ── Etapa 4: Equipe ─────────────────────────────────────────────────────────
+  // ── Etapa 4: Temporadas ──────────────────────────────────────────────────────
+  const [veraoInicio,   setVeraoInicio]   = useState(DEFAULT_REGRA.verao.mesInicio)
+  const [veraoFim,      setVeraoFim]      = useState(DEFAULT_REGRA.verao.mesFim)
+  const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
+  const [invernoFim,    setInvernoFim]    = useState(DEFAULT_REGRA.inverno.mesFim)
+  useEffect(() => { setInvernoFim(computeMesFim(veraoInicio))   }, [veraoInicio])
+  useEffect(() => { setVeraoFim(computeMesFim(invernoInicio))   }, [invernoInicio])
+
+  // ── Etapa 5: Dados ───────────────────────────────────────────────────────────
+  const [dataChoice,       setDataChoice]       = useState<DataImportChoice | null>(null)
+  const [uploadedFiles,    setUploadedFiles]    = useState<Record<string, string>>({})
+  const [activeWizardType, setActiveWizardType] = useState<ImportDataType | null>(null)
+  const [importResults,    setImportResults]    = useState<Partial<Record<ImportDataType, ImportResult>>>({})
+
+  const activeTenantId = (() => {
+    try {
+      const cu = sessionStorage.getItem('currentUser')
+      if (!cu) return ''
+      const parsed = JSON.parse(cu)
+      return sessionStorage.getItem('activeTenantId') ?? parsed.tenant_id ?? ''
+    } catch { return '' }
+  })()
+
+  function handleWizardComplete(result: ImportResult) {
+    setImportResults(prev => ({ ...prev, [result.dataType]: result }))
+    setUploadedFiles(prev => ({ ...prev, [result.dataType]: result.fileName }))
+    setActiveWizardType(null)
+    try {
+      const IMPORT_HISTORY_KEY = 'fm_import_history_v1'
+      const existing = JSON.parse(localStorage.getItem(IMPORT_HISTORY_KEY) ?? '[]')
+      localStorage.setItem(IMPORT_HISTORY_KEY, JSON.stringify([{
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        dataType: result.dataType,
+        label:    IMPORT_CONFIG[result.dataType]?.label ?? result.dataType,
+        importedRows: result.importedRows, errors: result.errors,
+        fileName: result.fileName, timestamp: new Date().toISOString(), source: 'onboarding',
+      }, ...existing].slice(0, 50)))
+    } catch { /* silent */ }
+  }
+
+  const FIELD_KEY_TO_IMPORT_TYPE: Record<string, ImportDataType> = {
+    catalog: 'catalog', sales: 'sales', orders: 'orders', inventory: 'inventory',
+  }
+
+  // ── Etapa 6: Equipe ──────────────────────────────────────────────────────────
   const [teamInvites, setTeamInvites] = useState<TeamInvite[]>([
     { name: '', email: '', role: 'estrategico' },
   ])
-
   function updateInvite(i: number, field: keyof TeamInvite, value: string) {
     setTeamInvites(prev => prev.map((inv, idx) => idx === i ? { ...inv, [field]: value } : inv))
   }
@@ -254,138 +254,182 @@ export default function Onboarding() {
     setTeamInvites(prev => prev.filter((_, idx) => idx !== i))
   }
 
-  // ── Etapa 5: Dados ──────────────────────────────────────────────────────────
-  const [dataChoice, setDataChoice] = useState<DataImportChoice | null>(null)
-  const [uploadedFiles, setUploadedFiles] = useState<Record<string, string>>({})
-  // wizard state: qual tipo está aberto agora
-  const [activeWizardType, setActiveWizardType] = useState<ImportDataType | null>(null)
-  // resultados importados por tipo
-  const [importResults, setImportResults] = useState<Partial<Record<ImportDataType, ImportResult>>>({})
-
-  function handleFileChange(key: string, file: File | undefined) {
-    if (file) setUploadedFiles(prev => ({ ...prev, [key]: file.name }))
+  // ── Navegação ─────────────────────────────────────────────────────────────────
+  function goNext() {
+    if (currentStepId === 'business' && bizSlide === 0) { setBizSlide(1); return }
+    if (currentStepId === 'business') setBizSlide(0)
+    if (currentStepId === 'data' && dataSlide === 0)    { setDataSlide(1); return }
+    if (currentStepId === 'data') setDataSlide(0)
+    setStep(s => Math.min(s + 1, STEP_META.length - 1))
+  }
+  function goBack() {
+    if (currentStepId === 'business' && bizSlide === 1)  { setBizSlide(0); return }
+    if (currentStepId === 'data'     && dataSlide === 1) { setDataSlide(0); return }
+    setStep(s => Math.max(s - 1, 0))
+  }
+  function skipData() {
+    setDataChoice('deferred')
+    setDataSlide(0)
+    setStep(s => Math.min(s + 1, STEP_META.length - 1))
   }
 
-  function handleWizardComplete(result: ImportResult) {
-    setImportResults(prev => ({ ...prev, [result.dataType]: result }))
-    setUploadedFiles(prev => ({ ...prev, [result.dataType]: result.fileName }))
-    setActiveWizardType(null)
-  }
-
-  // Mapeamento entre chave do UPLOAD_FIELDS e ImportDataType
-  const FIELD_KEY_TO_IMPORT_TYPE: Record<string, ImportDataType> = {
-    catalog:   'catalog',
-    sales:     'sales',
-    orders:    'orders',
-    inventory: 'inventory',
-  }
-
-  // tenantId ativo (pode ser null para conta demo sem activeTenantId)
-  const activeTenantId = (() => {
-    const cu = sessionStorage.getItem('currentUser')
-    if (!cu) return ''
-    const parsed = JSON.parse(cu)
-    return sessionStorage.getItem('activeTenantId') ?? parsed.tenant_id ?? ''
-  })()
-
-  const requiredUploaded =
-    dataChoice !== 'deferred' &&
-    dataChoice !== null &&
-    Boolean(importResults['catalog'] || uploadedFiles['catalog']) &&
-    Boolean(importResults['sales'] || uploadedFiles['sales'])
-
-  // ── Navegação ────────────────────────────────────────────────────────────────
-  function goNext() { setStep(s => Math.min(s + 1, STEP_META.length - 1)) }
-  function goBack() { setStep(s => Math.max(s - 1, 0)) }
-
-  // ── Conclusão ────────────────────────────────────────────────────────────────
+  // ── Conclusão ─────────────────────────────────────────────────────────────────
   function complete() {
     const validInvites = teamInvites.filter(inv => inv.email.trim() && inv.name.trim())
-
     const profile: OnboardingProfile = {
       segments,
       rawMaterials: rankedMaterials.map((id, i) => ({ id, rank: i + 1 })),
       origem: origem!,
-      hasImportedMaterial: showImportQuestion ? (hasImport ?? false) : false,
-      exports: hasExport ?? false,
-      productHierarchy: [],
-      salesChannels: selectedChannels,
-      teamInvites:    validInvites.length > 0 ? validInvites : undefined,
-      dataImportChoice: dataChoice ?? 'deferred',
-      importedFileNames: Object.values(uploadedFiles).length > 0
-        ? Object.values(uploadedFiles)
-        : undefined,
-      completedAt: new Date().toISOString(),
+      hasImportedMaterial: hasImport ?? false,
+      exports:             hasExport ?? false,
+      productHierarchy:    [],
+      salesChannels:       selectedChannels,
+      teamInvites:         validInvites.length > 0 ? validInvites : undefined,
+      dataImportChoice:    dataChoice ?? 'deferred',
+      importedFileNames:   Object.values(uploadedFiles).length > 0 ? Object.values(uploadedFiles) : undefined,
+      completedAt:         new Date().toISOString(),
     }
     localStorage.setItem(ONBOARDING_DONE_KEY, 'true')
     localStorage.setItem(ONBOARDING_PROFILE_KEY, JSON.stringify(profile))
-    // Salva a regra padrão de temporadas no Supabase
-    const tenantId = sessionStorage.getItem("activeTenantId") ?? ""
+    const tenantId = sessionStorage.getItem('activeTenantId') ?? ''
     if (tenantId) {
       saveRegraDefaultDb(tenantId, {
         verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
         inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
-      }).catch(err =>
-        console.warn("Erro ao salvar regra padrão de temporadas:", err)
-      )
+      }).catch(err => console.warn('Erro ao salvar regra padrão:', err))
     }
     navigate('/dashboard')
   }
 
-  // ─── Render ──────────────────────────────────────────────────────────────────
+  // ── Disabled / skip logic ─────────────────────────────────────────────────────
+  const nextDisabled =
+    (currentStepId === 'segments' && segments.length === 0) ||
+    (currentStepId === 'business' && bizSlide === 0 && !bizSlide0Valid) ||
+    (currentStepId === 'business' && bizSlide === 1 && !bizSlide1Valid) ||
+    (currentStepId === 'channels' && selectedChannels.length === 0) ||
+    (currentStepId === 'seasons'  && veraoInicio === invernoInicio) ||
+    (currentStepId === 'data'     && dataSlide === 0 && !showErpTip) ||
+    (currentStepId === 'data'     && dataSlide === 1 && !!activeWizardType)
+
+  // sub-passo no topbar (Negócio ou Dados têm sub-slides)
+  const subLabel =
+    currentStepId === 'business' ? `${bizSlide + 1}/2` :
+    currentStepId === 'data'     ? `${dataSlide + 1}/2` :
+    null
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  RENDER
+  // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-start bg-gradient-to-br from-[#7598CF] to-[#9B8CD8] p-4 py-10">
+    <div className="h-screen w-full flex flex-col overflow-hidden bg-[#28071C] relative">
 
-      {/* Logo */}
-      <div className="text-center mb-6">
-        <h1 className="text-[#F6F3AA] text-2xl">
-          tfo <span className="text-[#F6F3AA]/70">/ THE FASHION OFFICE</span>
-        </h1>
-        <p className="text-white/70 text-sm mt-1">Configuração inicial — vamos preparar o Fashion Mind para o seu negócio</p>
-      </div>
+      {/* ── Balão ERP tip — aparece 2s após entrar no data_intro ───────────── */}
+      {showErpTip && (
+        <div
+          className="fixed z-50 max-w-xs
+            bg-amber-50 border border-amber-200 rounded-2xl shadow-xl
+            px-4 py-3.5"
+          style={{
+            animation: 'fadeSlideUp 0.35s ease-out forwards',
+            bottom: '76px',
+            left: '42%',
+          }}
+        >
+          {/* Pontinha no topo-esquerdo */}
+          <div className="absolute -top-2 left-5 w-4 h-4 bg-amber-50 border-l border-t border-amber-200 rotate-45 rounded-sm" />
 
-      {/* Card */}
-      <div className="w-full max-w-2xl bg-[#F2F2F2] rounded-3xl shadow-2xl overflow-hidden">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <p className="text-amber-800 text-xs font-bold mb-1">E se meu ERP não tem hierarquia?</p>
+              <p className="text-amber-700 text-[11px] leading-relaxed">
+                Muitos ERPs de moda não estruturam os produtos com hierarquia. Se for o seu caso
+                e você tiver a hierarquia em planilha, importe os dados via ERP e depois a hierarquia
+                separada. A próxima tela mostra como configurar isso.
+              </p>
+            </div>
+            <button onClick={() => setShowErpTip(false)}
+              className="text-amber-400 hover:text-amber-700 transition-colors flex-shrink-0 mt-0.5">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
-        {/* Barra de progresso */}
-        <div className="w-full h-1 bg-[#28071C]/10">
-          <div
-            className="h-full bg-gradient-to-r from-[#7598CF] to-[#9B8CD8] transition-all duration-500"
-            style={{ width: `${((step + 1) / STEP_META.length) * 100}%` }}
-          />
+      <style>{`
+        @keyframes fadeSlideUp {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
+      {/* ════════════════════════════════════════════════════════════════════
+          TOPBAR
+      ════════════════════════════════════════════════════════════════════ */}
+      <header className="flex-shrink-0 h-[72px] flex items-center px-8 gap-6">
+        <div className="flex items-baseline gap-1.5 flex-shrink-0 w-44">
+          <span className="text-[#F6F3AA] text-sm font-light tracking-wide select-none">tfo</span>
+          <span className="text-[#F6F3AA]/35 text-[9px] tracking-widest uppercase select-none">/ the fashion office</span>
         </div>
 
-        <div className="px-8 py-7">
+        <div className="flex-1 flex items-center justify-center gap-2.5">
+          {STEP_META.map((s, i) => {
+            const isCurrent   = i === step
+            const isCompleted = i < step
+            if (isCurrent) {
+              return (
+                <span key={s.id}
+                  className="bg-[#7598CF]/25 text-white text-xs font-semibold px-3.5 py-1 rounded-full border border-[#7598CF]/45 select-none whitespace-nowrap">
+                  {s.label}
+                  {subLabel && <span className="ml-1.5 text-[#7598CF] font-normal">{subLabel}</span>}
+                </span>
+              )
+            }
+            return (
+              <div key={s.id}
+                className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${
+                  isCompleted ? 'bg-[#F6F3AA]/75' : 'bg-white/18'
+                }`} />
+            )
+          })}
+        </div>
 
-          {/* Dots de etapa */}
-          <StepDots steps={STEP_META} current={step} />
+        <div className="w-44 flex-shrink-0" />
+      </header>
 
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 1 — SEGMENTOS
-          ────────────────────────────────────────────────────────────────── */}
+      {/* ════════════════════════════════════════════════════════════════════
+          ÁREA PRINCIPAL
+      ════════════════════════════════════════════════════════════════════ */}
+      <div className="flex-1 flex flex-col bg-[#F2F2F2] rounded-t-2xl overflow-hidden">
+
+        {/* Cabeçalho da etapa */}
+        <div className="flex-shrink-0 px-12 pt-7 pb-4">
+          <p className="text-[#28071C]/35 text-[11px] font-bold uppercase tracking-widest mb-1.5">
+            Etapa {step + 1} de {STEP_META.length}
+            {subLabel && <span className="ml-1 text-[#7598CF]/60">· {subLabel}</span>}
+          </p>
+          <h2 className="text-[#28071C] text-2xl font-bold tracking-tight leading-snug">{info.title}</h2>
+          <p className="text-[#28071C]/55 text-sm mt-1.5 leading-relaxed max-w-3xl">{info.desc}</p>
+        </div>
+        <div className="flex-shrink-0 h-px bg-[#28071C]/8 mx-12" />
+
+        {/* Conteúdo */}
+        <div className="flex-1 overflow-y-auto px-12 py-7">
+
+          {/* ── SEGMENTOS ──────────────────────────────────────────────────── */}
           {currentStepId === 'segments' && (
             <div>
-              <SectionLabel>Segmentos de Produto</SectionLabel>
-              <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
-                Quais segmentos de produto a sua marca comercializa? Selecione todos que se aplicam.
-                Isso estrutura os filtros e indicadores em todo o sistema.
-              </p>
-
-              <div className="grid grid-cols-2 gap-2 mb-2">
+              <div className="grid grid-cols-3 gap-2">
                 {ALL_SEGMENTS.map(id => {
                   const selected = segments.includes(id)
                   return (
-                    <button
-                      key={id}
-                      onClick={() => toggleSegment(id)}
-                      className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border-2 text-left text-sm transition-all ${
+                    <button key={id} onClick={() => toggleSegment(id)}
+                      className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border-2 text-left text-sm transition-all ${
                         selected
                           ? 'bg-[#28071C] border-[#28071C] text-white'
-                          : 'bg-white border-[#28071C]/12 text-[#28071C]/70 hover:border-[#7598CF]/50'
-                      }`}
-                    >
+                          : 'bg-white border-[#28071C]/10 text-[#28071C]/70 hover:border-[#7598CF]/50'
+                      }`}>
                       <div className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${
-                        selected ? 'bg-white border-white' : 'border-[#28071C]/25'
+                        selected ? 'bg-white border-white' : 'border-[#28071C]/20'
                       }`}>
                         {selected && <Check className="w-2.5 h-2.5 text-[#28071C]" />}
                       </div>
@@ -394,146 +438,98 @@ export default function Onboarding() {
                   )
                 })}
               </div>
-
               {segments.length > 0 && (
                 <p className="text-xs text-[#28071C]/40 mt-3">
                   {segments.length} segmento{segments.length > 1 ? 's' : ''} selecionado{segments.length > 1 ? 's' : ''}
                 </p>
               )}
-
-              <NavButtons
-                onNext={goNext}
-                nextDisabled={segments.length === 0}
-                nextLabel="Continuar"
-              />
             </div>
           )}
 
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 2 — NEGÓCIO & LOGÍSTICA
-          ────────────────────────────────────────────────────────────────── */}
-          {currentStepId === 'business' && (
-            <div>
-              <SectionLabel>Negócio & Logística</SectionLabel>
-              <p className="text-[#28071C]/60 text-sm mb-6 leading-relaxed">
-                Como sua marca obtém os produtos? Essas informações adaptam os indicadores e alertas do sistema ao seu modelo de negócio.
-              </p>
+          {/* ── NEGÓCIO 2A: Origem ─────────────────────────────────────────── */}
+          {currentStepId === 'business' && bizSlide === 0 && (
+            <div className="max-w-lg space-y-2">
+              {ORIGENS.map(o => (
+                <button key={o} onClick={() => { setOrigem(o); setHasImport(null) }}
+                  className={`w-full flex items-start gap-3 px-4 py-3.5 rounded-xl border-2 text-left transition-all ${
+                    origem === o
+                      ? 'bg-[#28071C]/5 border-[#28071C]'
+                      : 'bg-white border-[#28071C]/10 hover:border-[#7598CF]/50'
+                  }`}>
+                  <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 flex items-center justify-center ${
+                    origem === o ? 'border-[#28071C] bg-[#28071C]' : 'border-[#28071C]/30'
+                  }`}>
+                    {origem === o && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                  </div>
+                  <div>
+                    <p className="text-[#28071C] text-sm font-semibold">{ORIGEM_LABELS[o]}</p>
+                    {origem === o && (
+                      <p className="text-[#28071C]/50 text-xs mt-0.5">{ORIGEM_DESCRIPTIONS[o]}</p>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
 
-              {/* Origem */}
-              <div className="mb-5">
-                <label className="block text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest mb-3">
-                  Origem das peças
-                </label>
-                <div className="space-y-2">
-                  {ORIGENS.map(o => (
-                    <button
-                      key={o}
-                      onClick={() => { setOrigem(o); setHasImport(null) }}
-                      className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${
-                        origem === o
-                          ? 'bg-[#28071C]/5 border-[#28071C]'
-                          : 'bg-white border-[#28071C]/12 hover:border-[#7598CF]/50'
-                      }`}
-                    >
-                      <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 flex items-center justify-center ${
-                        origem === o ? 'border-[#28071C] bg-[#28071C]' : 'border-[#28071C]/30'
-                      }`}>
-                        {origem === o && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                      </div>
-                      <div>
-                        <p className="text-[#28071C] text-sm font-semibold">{ORIGEM_LABELS[o]}</p>
-                        <p className="text-[#28071C]/50 text-xs mt-0.5">{ORIGEM_DESCRIPTIONS[o]}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Matérias-primas — dois painéis (lista | ranking) */}
-              {showMaterials && (
-                <div className="mb-5 border-t border-[#28071C]/8 pt-5">
+          {/* ── NEGÓCIO 2B: Insumos (esq) + Comércio Exterior (dir) ─────── */}
+          {currentStepId === 'business' && bizSlide === 1 && (
+            <div className="flex gap-8 h-full">
+              {/* Coluna esquerda — Matérias-primas */}
+              {showMaterials ? (
+                <div className="flex-1 min-w-0 flex flex-col">
                   <div className="flex items-center gap-2 mb-1">
-                    <label className="block text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest">
+                    <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
                       Matérias-primas relevantes
                     </label>
                     {materialsRequired && (
                       <span className="text-[10px] bg-red-50 text-red-500 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
-                        Obrigatório — selecione ao menos 1
+                        Selecione ao menos 1
                       </span>
                     )}
                   </div>
-                  <p className="text-[#28071C]/50 text-xs mb-3">
-                    Clique em uma matéria-prima à esquerda para adicioná-la. Ordene à direita da mais impactante para a menos.
-                    O sistema monitora flutuações de preço dessas matérias.
+                  <p className="text-[#28071C]/45 text-xs mb-3">
+                    Selecione à esquerda e ordene à direita por impacto no custo.
                   </p>
-
-                  <div className="grid grid-cols-2 gap-3">
-
-                    {/* Painel esquerdo — disponíveis */}
-                    <div>
-                      <p className="text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-2">
-                        Disponíveis — clique para selecionar
-                      </p>
-                      <div className="border border-[#28071C]/10 rounded-xl overflow-hidden">
+                  <div className="grid grid-cols-2 gap-3 flex-1">
+                    <div className="flex flex-col">
+                      <p className="text-[10px] text-[#28071C]/35 font-bold uppercase tracking-widest mb-1.5">Disponíveis</p>
+                      <div className="bg-white border border-[#28071C]/10 rounded-xl overflow-hidden flex-1 overflow-y-auto">
                         {ALL_RAW_MATERIALS.filter(m => !rankedMaterials.includes(m)).map((m, i, arr) => (
-                          <button
-                            key={m}
-                            onClick={() => addMaterial(m)}
-                            className={`w-full flex items-center justify-between px-3 py-2.5 text-left text-sm text-[#28071C] hover:bg-[#7598CF]/8 hover:text-[#7598CF] transition-colors group ${
+                          <button key={m} onClick={() => addMaterial(m)}
+                            className={`w-full flex items-center justify-between px-3.5 py-2.5 text-left text-sm text-[#28071C] hover:bg-[#7598CF]/8 hover:text-[#7598CF] transition-colors group ${
                               i < arr.length - 1 ? 'border-b border-[#28071C]/6' : ''
-                            }`}
-                          >
+                            }`}>
                             <span>{RAW_MATERIAL_LABELS[m]}</span>
-                            <Plus className="w-3.5 h-3.5 text-[#28071C]/25 group-hover:text-[#7598CF] transition-colors flex-shrink-0" />
+                            <Plus className="w-3.5 h-3.5 text-[#28071C]/20 group-hover:text-[#7598CF] flex-shrink-0" />
                           </button>
                         ))}
                         {ALL_RAW_MATERIALS.filter(m => !rankedMaterials.includes(m)).length === 0 && (
-                          <p className="px-3 py-4 text-xs text-[#28071C]/35 text-center">
-                            Todas as matérias-primas foram selecionadas
-                          </p>
+                          <p className="px-3.5 py-4 text-sm text-[#28071C]/35 text-center">Todas selecionadas</p>
                         )}
                       </div>
                     </div>
-
-                    {/* Painel direito — ranking */}
-                    <div>
-                      <p className="text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-2">
-                        Selecionadas — ordene por impacto no custo
-                      </p>
+                    <div className="flex flex-col">
+                      <p className="text-[10px] text-[#28071C]/35 font-bold uppercase tracking-widest mb-1.5">Ordenadas por impacto</p>
                       {rankedMaterials.length > 0 ? (
-                        <div className="border border-[#7598CF]/25 rounded-xl overflow-hidden bg-[#7598CF]/3">
+                        <div className="bg-white border border-[#7598CF]/25 rounded-xl overflow-hidden flex-1 overflow-y-auto">
                           {rankedMaterials.map((id, i) => (
-                            <div
-                              key={id}
-                              className={`flex items-center gap-2 px-3 py-2.5 ${
-                                i < rankedMaterials.length - 1 ? 'border-b border-[#7598CF]/15' : ''
-                              }`}
-                            >
-                              <span className="text-[11px] text-[#7598CF] font-bold w-4 text-center flex-shrink-0">
-                                {i + 1}
-                              </span>
-                              <span className="text-[#28071C] text-sm flex-1 min-w-0 truncate">
-                                {RAW_MATERIAL_LABELS[id]}
-                              </span>
+                            <div key={id} className={`flex items-center gap-2 px-3 py-2.5 ${
+                              i < rankedMaterials.length - 1 ? 'border-b border-[#7598CF]/12' : ''
+                            }`}>
+                              <span className="text-xs text-[#7598CF] font-bold w-5 text-center flex-shrink-0">{i + 1}</span>
+                              <span className="text-[#28071C] text-sm flex-1 min-w-0 truncate">{RAW_MATERIAL_LABELS[id]}</span>
                               <div className="flex items-center gap-0.5 flex-shrink-0">
-                                <button
-                                  onClick={() => moveMaterial(i, -1)}
-                                  disabled={i === 0}
-                                  className="p-0.5 text-[#28071C]/30 hover:text-[#28071C] disabled:opacity-0 transition-colors"
-                                >
-                                  <ArrowUp className="w-3.5 h-3.5" />
+                                <button onClick={() => moveMaterial(i, -1)} disabled={i === 0}
+                                  className="p-1 text-[#28071C]/25 hover:text-[#28071C] disabled:opacity-0 transition-colors">
+                                  <ArrowUp className="w-3 h-3" />
                                 </button>
-                                <button
-                                  onClick={() => moveMaterial(i, 1)}
-                                  disabled={i === rankedMaterials.length - 1}
-                                  className="p-0.5 text-[#28071C]/30 hover:text-[#28071C] disabled:opacity-0 transition-colors"
-                                >
-                                  <ArrowDown className="w-3.5 h-3.5" />
+                                <button onClick={() => moveMaterial(i, 1)} disabled={i === rankedMaterials.length - 1}
+                                  className="p-1 text-[#28071C]/25 hover:text-[#28071C] disabled:opacity-0 transition-colors">
+                                  <ArrowDown className="w-3 h-3" />
                                 </button>
-                                <button
-                                  onClick={() => removeMaterial(id)}
-                                  className="p-0.5 text-[#28071C]/25 hover:text-red-500 transition-colors ml-0.5"
-                                >
+                                <button onClick={() => removeMaterial(id)}
+                                  className="p-1 text-[#28071C]/20 hover:text-red-500 transition-colors ml-0.5">
                                   <X className="w-3 h-3" />
                                 </button>
                               </div>
@@ -541,234 +537,70 @@ export default function Onboarding() {
                           ))}
                         </div>
                       ) : (
-                        <div className="border-2 border-dashed border-[#28071C]/10 rounded-xl p-4 text-center">
-                          <p className="text-[#28071C]/35 text-xs leading-relaxed">
-                            Nenhuma selecionada ainda.
-                            <br />
-                            Clique nas matérias-primas à esquerda.
-                          </p>
+                        <div className="border-2 border-dashed border-[#28071C]/10 rounded-xl flex-1 flex items-center justify-center">
+                          <p className="text-[#28071C]/30 text-sm">Nenhuma selecionada</p>
                         </div>
                       )}
                     </div>
-
                   </div>
                 </div>
+              ) : (
+                <div className="flex-1" />
               )}
+              {showMaterials && <div className="w-px bg-[#28071C]/8 self-stretch flex-shrink-0" />}
 
-              {/* Matéria-prima importada (condicional) */}
-              {showImportQuestion && (
-                <div className="mb-5 border-t border-[#28071C]/8 pt-5">
-                  <label className="block text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest mb-3">
-                    Usa matéria-prima importada?
-                  </label>
-                  <div className="flex gap-3">
-                    {[{ v: true, l: 'Sim' }, { v: false, l: 'Não' }].map(({ v, l }) => (
-                      <button
-                        key={l}
-                        onClick={() => setHasImport(v)}
-                        className={`flex-1 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all ${
-                          hasImport === v
-                            ? 'bg-[#28071C] border-[#28071C] text-white'
-                            : 'bg-white border-[#28071C]/15 text-[#28071C]/70 hover:border-[#7598CF]/50'
-                        }`}
-                      >
-                        {l}
-                      </button>
-                    ))}
-                  </div>
-                  {hasImport && (
-                    <p className="mt-2 text-xs text-[#7598CF] flex items-center gap-1">
-                      <Info className="w-3 h-3" />
-                      Câmbio e frete marítimo serão monitorados nos indicadores de custo.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Exportação */}
-              <div className="border-t border-[#28071C]/8 pt-5">
-                <label className="block text-[#28071C]/70 text-xs font-semibold uppercase tracking-widest mb-3">
-                  Sua marca exporta produtos?
+              {/* Coluna direita — Comércio Exterior */}
+              <div className={`flex flex-col gap-6 ${showMaterials ? 'w-72 flex-shrink-0' : 'max-w-md w-full'}`}>
+                <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
+                  Comércio exterior
                 </label>
-                <div className="flex gap-3">
-                  {[{ v: true, l: 'Sim' }, { v: false, l: 'Não' }].map(({ v, l }) => (
-                    <button
-                      key={l}
-                      onClick={() => setHasExport(v)}
-                      className={`flex-1 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all ${
-                        hasExport === v
-                          ? 'bg-[#28071C] border-[#28071C] text-white'
-                          : 'bg-white border-[#28071C]/15 text-[#28071C]/70 hover:border-[#7598CF]/50'
-                      }`}
-                    >
-                      {l}
-                    </button>
-                  ))}
-                </div>
+                {[
+                  { label: 'Usa matéria-prima importada?', val: hasImport, setter: setHasImport,
+                    hint: 'Câmbio e frete marítimo serão monitorados nos indicadores de custo.' },
+                  { label: 'Sua marca exporta produtos?', val: hasExport, setter: setHasExport,
+                    hint: 'Ativaremos indicadores de moeda e mercado externo.' },
+                ].map(q => (
+                  <div key={q.label}>
+                    <p className="text-[#28071C] text-sm font-semibold mb-3">{q.label}</p>
+                    <div className="flex gap-2">
+                      {[{ v: true, l: 'Sim' }, { v: false, l: 'Não' }].map(({ v, l }) => (
+                        <button key={l} onClick={() => q.setter(v)}
+                          className={`flex-1 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all ${
+                            q.val === v
+                              ? 'bg-[#28071C] border-[#28071C] text-white'
+                              : 'bg-white border-[#28071C]/12 text-[#28071C]/70 hover:border-[#7598CF]/50'
+                          }`}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                    {q.val === true && (
+                      <p className="mt-2 text-xs text-[#7598CF] flex items-start gap-1">
+                        <Info className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                        {q.hint}
+                      </p>
+                    )}
+                  </div>
+                ))}
               </div>
-
-              <NavButtons
-                onBack={goBack}
-                onNext={goNext}
-                nextDisabled={!businessValid}
-              />
             </div>
           )}
 
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 3 — CALENDÁRIO DE TEMPORADAS
-          ────────────────────────────────────────────────────────────────── */}
-          {currentStepId === 'seasons' && (
-            <div>
-              <SectionLabel>Calendário de Temporadas</SectionLabel>
-
-              {/* Texto introdutório completo */}
-              <div className="mb-5 space-y-3">
-                <p className="text-[#28071C]/70 text-sm leading-relaxed">
-                  No Fashion Mind trabalhamos o planejamento pelo <strong className="text-[#28071C]">ano fiscal</strong> e também pelas <strong className="text-[#28071C]">temporadas de moda</strong>.
-                  Trata-se de uma convenção comercial, industrial e criativa que organiza o fluxo de mercadorias — estabelecendo o ciclo em que seus produtos estarão expostos a preço cheio e delimitando o ritmo de vendas, compras e markdowns.
-                </p>
-
-                {/* Os três pilares */}
-                <div className="grid grid-cols-1 gap-2 mt-3">
-                  {[
-                    {
-                      emoji: '🎨',
-                      titulo: 'Pilar Criativo (A Narrativa)',
-                      desc: 'O recorte temporal onde o estilo define um novo tema, uma nova cartela de cores e uma nova proposta de silhuetas. Garante identidade visual e coesão estética a cada lançamento.',
-                      cor: 'border-[#9B8CD8]/30 bg-[#9B8CD8]/4',
-                    },
-                    {
-                      emoji: '⚙️',
-                      titulo: 'Pilar Industrial (A Operação)',
-                      desc: 'O cronograma que dita o ritmo de toda a cadeia de suprimentos. Sincroniza desde a compra de matérias-primas e o desenvolvimento de produtos até a fabricação e a entrega logística nas lojas.',
-                      cor: 'border-[#7598CF]/30 bg-[#7598CF]/4',
-                    },
-                    {
-                      emoji: '💼',
-                      titulo: 'Pilar Comercial (O Varejo)',
-                      desc: 'O ciclo de vida do produto no mercado. Define o período de vendas a preço cheio, planeja a rotatividade das vitrines para atrair o cliente e organiza o fluxo de caixa através do escoamento planejado de estoque.',
-                      cor: 'border-[#28071C]/10 bg-[#28071C]/3',
-                    },
-                  ].map(p => (
-                    <div key={p.titulo} className={`flex items-start gap-3 border rounded-xl px-4 py-3 ${p.cor}`}>
-                      <span className="text-xl flex-shrink-0 mt-0.5">{p.emoji}</span>
-                      <div>
-                        <p className="text-[#28071C] text-xs font-bold mb-0.5">{p.titulo}</p>
-                        <p className="text-[#28071C]/60 text-xs leading-relaxed">{p.desc}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <p className="text-[#28071C]/50 text-xs leading-relaxed mt-2">
-                  O Fashion Mind pré-configura duas temporadas padrão, mas você tem <strong className="text-[#28071C]">autonomia total</strong> para personalizar a estrutura do seu negócio.
-                </p>
-              </div>
-
-              {/* Cards das temporadas — seletores livres */}
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                {/* Verão */}
-                <div className="bg-white rounded-2xl border-2 border-[#7598CF]/30 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-lg">☀️</span>
-                    <span className="text-[#28071C] font-bold text-sm">Verão</span>
-                    <span className="ml-auto text-[10px] font-semibold text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
-                  </div>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
-                      <select value={veraoInicio} onChange={e => setVeraoInicio(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-[#7598CF]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
-                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
-                      <select value={veraoFim} onChange={e => setVeraoFim(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-[#7598CF]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
-                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Inverno */}
-                <div className="bg-white rounded-2xl border-2 border-[#9B8CD8]/30 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-lg">❄️</span>
-                    <span className="text-[#28071C] font-bold text-sm">Inverno</span>
-                    <span className="ml-auto text-[10px] font-semibold text-[#9B8CD8] bg-[#9B8CD8]/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
-                  </div>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Início</label>
-                      <select value={invernoInicio} onChange={e => setInvernoInicio(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-[#9B8CD8]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
-                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-[#28071C]/45 font-semibold uppercase tracking-widest mb-1">Fim</label>
-                      <select value={invernoFim} onChange={e => setInvernoFim(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-[#9B8CD8]/25 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
-                        {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Aviso sobre mês de início igual */}
-              {veraoInicio === invernoInicio && (
-                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3">
-                  <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                  <p className="text-amber-800 text-xs">
-                    O mês de início do Verão e do Inverno não podem ser o mesmo. Ajuste um deles.
-                  </p>
-                </div>
-              )}
-
-              <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
-                <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-                <p className="text-[#28071C]/60 text-xs leading-relaxed">
-                  Essas datas definem o <strong>período de venda a preço cheio</strong> — não a data de entrega. Lead times de produção e pedido são configurados em <strong>Operações</strong>. Durações customizadas são permitidas, inclusive ultrapassando o limite do ano fiscal.
-                </p>
-              </div>
-
-              <NavButtons
-                onBack={goBack}
-                onNext={goNext}
-                nextDisabled={veraoInicio === invernoInicio}
-              />
-            </div>
-          )}
-
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 4 — CANAIS DE VENDA
-          ────────────────────────────────────────────────────────────────── */}
+          {/* ── CANAIS ─────────────────────────────────────────────────────── */}
           {currentStepId === 'channels' && (
             <div>
-              <SectionLabel>Canais de Venda</SectionLabel>
-              <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
-                Quais canais geram receita para a sua marca? Isso estrutura o Planejamento de Metas por Canal (Módulo 2).
-              </p>
-
-              <div className="space-y-2">
+              <div className="grid grid-cols-3 gap-2 max-w-3xl">
                 {SALES_CHANNELS.map(ch => {
                   const selected = selectedChannels.includes(ch.id)
                   return (
-                    <button
-                      key={ch.id}
-                      onClick={() => toggleChannel(ch.id)}
-                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${
+                    <button key={ch.id} onClick={() => toggleChannel(ch.id)}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${
                         selected
                           ? 'bg-[#28071C]/5 border-[#28071C]'
-                          : 'bg-white border-[#28071C]/12 hover:border-[#7598CF]/50'
-                      }`}
-                    >
-                      <div className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${
-                        selected ? 'bg-[#28071C] border-[#28071C]' : 'border-[#28071C]/25'
+                          : 'bg-white border-[#28071C]/10 hover:border-[#7598CF]/50'
+                      }`}>
+                      <div className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 ${
+                        selected ? 'bg-[#28071C] border-[#28071C]' : 'border-[#28071C]/20'
                       }`}>
                         {selected && <Check className="w-2.5 h-2.5 text-white" />}
                       </div>
@@ -777,112 +609,275 @@ export default function Onboarding() {
                   )
                 })}
               </div>
-
-              <NavButtons
-                onBack={goBack}
-                onNext={goNext}
-                nextDisabled={selectedChannels.length === 0}
-              />
-            </div>
-          )}
-
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 4 — EQUIPE (opcional)
-          ────────────────────────────────────────────────────────────────── */}
-          {currentStepId === 'team' && (
-            <div>
-              <SectionLabel optional>Convide sua Equipe</SectionLabel>
-              <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
-                Você pode convidar a equipe agora ou depois. Recomendado: convide antes de começar o planejamento tático.
-              </p>
-
-              <div className="space-y-3">
-                {teamInvites.map((inv, i) => (
-                  <div key={i} className="bg-white rounded-xl border border-[#28071C]/10 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <select
-                        value={inv.role}
-                        onChange={e => updateInvite(i, 'role', e.target.value)}
-                        className="text-xs font-bold text-[#7598CF] bg-[#7598CF]/10 rounded-lg px-2 py-1 border-0 focus:outline-none cursor-pointer uppercase tracking-widest"
-                      >
-                        <option value="estrategico">Estratégico</option>
-                        <option value="tatico">Tático</option>
-                        <option value="operacional">Operacional</option>
-                      </select>
-                      {teamInvites.length > 1 && (
-                        <button onClick={() => removeInvite(i)} className="text-[#28071C]/30 hover:text-red-500 transition-colors">
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">Nome</label>
-                        <input
-                          type="text"
-                          value={inv.name}
-                          onChange={e => updateInvite(i, 'name', e.target.value)}
-                          placeholder="Nome completo"
-                          className="w-full px-3 py-2 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">E-mail</label>
-                        <input
-                          type="email"
-                          value={inv.email}
-                          onChange={e => updateInvite(i, 'email', e.target.value)}
-                          placeholder="email@marca.com.br"
-                          className="w-full px-3 py-2 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={addInvite}
-                className="mt-3 flex items-center gap-2 text-sm text-[#7598CF] hover:text-[#28071C] transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Adicionar outro membro
-              </button>
-
-              <div className="mt-4 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2">
-                <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                <p className="text-amber-700 text-xs leading-relaxed">
-                  Os convidados receberão e-mail com link de acesso. Você pode gerenciar a equipe depois em <strong>Configurações → Usuários</strong>.
+              {selectedChannels.length > 0 && (
+                <p className="text-xs text-[#28071C]/40 mt-3">
+                  {selectedChannels.length} canal{selectedChannels.length > 1 ? 'is' : ''} selecionado{selectedChannels.length > 1 ? 's' : ''}
                 </p>
-              </div>
-
-              <NavButtons
-                onBack={goBack}
-                onNext={goNext}
-                nextLabel="Continuar"
-                onSkip={goNext}
-                skipLabel="Convidar depois"
-              />
+              )}
             </div>
           )}
 
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 5 — DADOS & HISTÓRICO (opcional)
-          ────────────────────────────────────────────────────────────────── */}
-          {currentStepId === 'data' && (
-            <div>
-              <SectionLabel optional>Dados & Histórico</SectionLabel>
+          {/* ── TEMPORADAS ─────────────────────────────────────────────────── */}
+          {currentStepId === 'seasons' && (
+            <div className="flex gap-8 h-full">
 
-              {/* Wizard aberto inline para um tipo específico */}
+              {/* COLUNA ESQUERDA — explicação */}
+              <div className="flex-1 flex flex-col gap-3 min-w-0">
+
+                {/* O que é uma temporada */}
+                <div className="bg-white rounded-2xl border border-[#28071C]/8 px-5 py-4">
+                  <p className="text-[#28071C] text-xs font-bold uppercase tracking-widest mb-2">
+                    O que é uma temporada?
+                  </p>
+                  <p className="text-[#28071C]/60 text-sm leading-relaxed">
+                    A temporada (Verão/SS ou Inverno/AW) é o <strong className="text-[#28071C]">ciclo completo de uma coleção</strong> —
+                    desde o lançamento até o fim da liquidação. Ela funciona como um "guarda-chuva" temporal que abriga
+                    o Preview (peças que chegam antes da virada oficial), os drops e cápsulas intermediários, e o período de markdown para queima de estoque.
+                  </p>
+                  <p className="text-[#28071C]/50 text-xs mt-2 leading-relaxed">
+                    <strong className="text-[#28071C]">Atenção:</strong> o mês de fim que você cadastra deve incluir a liquidação, não apenas o período de preço cheio.
+                    Excluir o markdown deixa as vendas desse período sem coleção, distorcendo faturamento e sell-through.
+                    Após o mês de fim, o sistema ainda tolera até 60 dias para resíduos de estoque de perfil específico.
+                  </p>
+                </div>
+
+                {/* Três frentes de uso */}
+                <div>
+                  <p className="text-[#28071C]/55 text-xs font-bold uppercase tracking-widest mb-2">
+                    Como o sistema usa a temporada
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { e: '🎨', t: 'Criativo',   d: 'Vincula cada produto (Preview, principal ou drop) à coleção — cartela de cores, silhuetas, coesão visual.' },
+                      { e: '⚙️', t: 'Industrial', d: 'Calcula lead time reverso: a data em que o produto precisa estar na vitrine determina quando comprar MP e programar produção.' },
+                      { e: '💼', t: 'Comercial',  d: 'Mede sell-through durante os meses ativos. Alerta quando o ritmo indica necessidade de antecipar o markdown.' },
+                    ].map(p => (
+                      <div key={p.t} className="bg-[#F2F2F2] border border-[#28071C]/8 rounded-xl px-3 py-3">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="text-base">{p.e}</span>
+                          <span className="text-[#28071C] text-xs font-bold">{p.t}</span>
+                        </div>
+                        <p className="text-[#28071C]/55 text-[11px] leading-relaxed">{p.d}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Contexto Brasil */}
+                <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
+                  <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                  <p className="text-[#28071C]/65 text-xs leading-relaxed">
+                    <strong className="text-[#28071C]">Contexto Brasil:</strong> Verão costuma ir de <strong>agosto a fevereiro</strong> (incluindo liquidação de jan-fev);
+                    Inverno de <strong>março a julho</strong>. O Preview de Verão pode chegar em julho, mas ainda pertence à temporada Verão —
+                    o mês de início é quando a comunicação e a vitrine mudam de fato.
+                  </p>
+                </div>
+              </div>
+
+              {/* Divisor */}
+              <div className="w-px bg-[#28071C]/8 self-stretch flex-shrink-0" />
+
+              {/* COLUNA DIREITA — seletores */}
+              <div className="w-72 flex-shrink-0 flex flex-col gap-4">
+                {/* Verão */}
+                <div className="bg-white rounded-2xl border-2 border-[#7598CF]/25 p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-xl">☀️</span>
+                    <span className="text-[#28071C] font-bold">Verão</span>
+                  </div>
+                  <div className="space-y-3">
+                    {[{ l: 'Início', v: veraoInicio, fn: setVeraoInicio }, { l: 'Fim', v: veraoFim, fn: setVeraoFim }].map(s => (
+                      <div key={s.l}>
+                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">{s.l}</label>
+                        <select value={s.v} onChange={e => s.fn(e.target.value)}
+                          className="w-full px-3 py-2.5 border-2 border-[#7598CF]/20 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white">
+                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {/* Inverno */}
+                <div className="bg-white rounded-2xl border-2 border-[#9B8CD8]/25 p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-xl">❄️</span>
+                    <span className="text-[#28071C] font-bold">Inverno</span>
+                  </div>
+                  <div className="space-y-3">
+                    {[{ l: 'Início', v: invernoInicio, fn: setInvernoInicio }, { l: 'Fim', v: invernoFim, fn: setInvernoFim }].map(s => (
+                      <div key={s.l}>
+                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">{s.l}</label>
+                        <select value={s.v} onChange={e => s.fn(e.target.value)}
+                          className="w-full px-3 py-2.5 border-2 border-[#9B8CD8]/20 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white">
+                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {veraoInicio === invernoInicio && (
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                    <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                    <p className="text-amber-800 text-xs">Início do Verão e do Inverno não podem ser o mesmo mês.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── DADOS slide 0: Contexto + Hierarquia ───────────────────────── */}
+          {currentStepId === 'data' && dataSlide === 0 && (
+            <div className="flex gap-8 h-full">
+
+              {/* COLUNA ESQUERDA — dados importados + hierarquia */}
+              <div className="flex-1 min-w-0 flex flex-col gap-3">
+
+                {/* O que vamos importar */}
+                <div>
+                  <p className="text-[#28071C]/55 text-xs font-bold uppercase tracking-widest mb-2">
+                    Dados que o sistema utiliza
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { icon: '📦', t: 'Produtos & SKUs',         d: 'Base do sortimento — hierarquia, preço, custo e coleção.' },
+                      { icon: '📈', t: 'Histórico de Vendas',     d: 'Ativa sell-through, GMROI e análise por canal.' },
+                      { icon: '🚚', t: 'Pedidos / Ordens',        d: 'Acompanhamento de entregas e lead times reais.' },
+                      { icon: '🏪', t: 'Posições de Estoque',     d: 'Calcula cobertura e giro com precisão.' },
+                    ].map(item => (
+                      <div key={item.t} className="bg-white border border-[#28071C]/8 rounded-xl px-3 py-2.5 flex items-start gap-2.5">
+                        <span className="text-base flex-shrink-0">{item.icon}</span>
+                        <div>
+                          <p className="text-[#28071C] text-xs font-semibold">{item.t}</p>
+                          <p className="text-[#28071C]/50 text-[11px] mt-0.5 leading-relaxed">{item.d}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* A hierarquia */}
+                <div className="bg-white border border-[#28071C]/8 rounded-2xl px-5 py-4 flex-1">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#7598CF]" />
+                    <p className="text-[#28071C] text-xs font-bold uppercase tracking-widest">
+                      A hierarquia de produtos
+                    </p>
+                  </div>
+                  <p className="text-[#28071C]/60 text-xs leading-relaxed mb-3">
+                    A hierarquia é a arquitetura de dados que viabiliza a governança do seu estoque.
+                    Ela organiza o sortimento do macro ao micro, permitindo distribuir orçamentos,
+                    medir rentabilidade (Giro e GMROI) e — principalmente — <strong className="text-[#28071C]">visualizar o produto apenas lendo o dado</strong>.
+                    O sistema trabalha com <strong className="text-[#28071C]">2 a 4 níveis</strong>; o que cada nível representa é uma decisão estratégica sua.
+                  </p>
+
+                  {/* Estrutura visual — 4 níveis */}
+                  <div className="flex items-center gap-1.5 flex-wrap mb-3">
+                    {[
+                      { label: 'Divisão',      bg: 'bg-[#28071C]',   ring: '' },
+                      { label: 'Categoria',    bg: 'bg-[#7598CF]',   ring: '' },
+                      { label: 'Subcategoria', bg: 'bg-[#9B8CD8]',   ring: '' },
+                      { label: 'Linha',        bg: 'bg-[#28071C]/40',ring: '' },
+                    ].map((lvl, i, arr) => (
+                      <div key={lvl.label} className="flex items-center gap-1.5">
+                        <div className={`px-2.5 py-1.5 ${lvl.bg} text-white rounded-lg text-xs font-bold`}>
+                          {lvl.label}
+                        </div>
+                        {i < arr.length - 1 && <span className="text-[#28071C]/25 text-sm">→</span>}
+                      </div>
+                    ))}
+                    <span className="text-[#28071C]/30 text-[10px] ml-1">opcional</span>
+                  </div>
+
+                  {/* Exemplo de leitura visual */}
+                  <div className="border-t border-[#28071C]/6 pt-3">
+                    <p className="text-[10px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-2">
+                      Exemplo — leitura visual do produto
+                    </p>
+                    <div className="flex items-center gap-1.5 flex-wrap bg-[#F2F2F2] rounded-lg px-3 py-2 mb-1.5">
+                      {['Feminino', 'Vestido', 'Midi', 'Justo'].map((v, i, arr) => (
+                        <div key={v} className="flex items-center gap-1.5">
+                          <span className={`text-xs font-semibold ${
+                            i === 0 ? 'text-[#28071C]'   :
+                            i === 1 ? 'text-[#7598CF]'   :
+                            i === 2 ? 'text-[#9B8CD8]'   :
+                            'text-[#28071C]/50'
+                          }`}>{v}</span>
+                          {i < arr.length - 1 && <span className="text-[#28071C]/20 text-xs">→</span>}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[#28071C]/40 text-[11px] italic">
+                      Ao bater o olho na trilha de dados, você já consegue visualizar perfeitamente o produto.
+                    </p>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Divisor */}
+              <div className="w-px bg-[#28071C]/8 self-stretch flex-shrink-0" />
+
+              {/* COLUNA DIREITA — 4 pilares de uso + alerta ERP */}
+              <div className="w-80 flex-shrink-0 flex flex-col gap-3">
+
+                <div>
+                  <p className="text-[#28071C]/55 text-xs font-bold uppercase tracking-widest mb-2">
+                    Por que a hierarquia é indispensável
+                  </p>
+                  <div className="space-y-2">
+                    {[
+                      {
+                        icon: '👁️',
+                        mod: 'Leitura Visual',
+                        uso: 'Gestor entende o que está vendendo só lendo o dado — sem precisar ver a foto da peça.',
+                      },
+                      {
+                        icon: '💰',
+                        mod: 'Orçamento (OTB)',
+                        uso: 'Verba distribuída por agrupamentos lógicos (Divisão → Categoria), não por SKU isolado.',
+                      },
+                      {
+                        icon: '📊',
+                        mod: 'Rentabilidade',
+                        uso: 'Giro e GMROI calculados por bloco — revela se uma categoria rentável mascara o prejuízo de outra.',
+                      },
+                      {
+                        icon: '🗂️',
+                        mod: 'Sortimento & Preços',
+                        uso: 'Balanceia a vitrine garantindo entrada, preço médio e premium na proporção certa por grupo.',
+                      },
+                    ].map(item => (
+                      <div key={item.mod} className="flex items-start gap-2.5 bg-white border border-[#28071C]/8 rounded-lg px-3 py-2.5">
+                        <span className="text-sm flex-shrink-0 mt-0.5">{item.icon}</span>
+                        <div>
+                          <p className="text-[#28071C] text-xs font-semibold">{item.mod}</p>
+                          <p className="text-[#28071C]/50 text-[11px] mt-0.5 leading-relaxed">{item.uso}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* ── DADOS slide 1: Método de importação ───────────────────────── */}
+          {currentStepId === 'data' && dataSlide === 1 && (
+            <div className="max-w-2xl">
+              {/* Wizard aberto inline */}
               {activeWizardType && (
                 <div>
-                  <button
-                    onClick={() => setActiveWizardType(null)}
-                    className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                    Voltar à lista
+                  <button onClick={() => setActiveWizardType(null)}
+                    className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-5 transition-colors">
+                    <ChevronLeft className="w-3.5 h-3.5" /> Voltar à lista
                   </button>
+                  {!activeTenantId && (
+                    <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800">
+                      ⚠️ Sessão não identificada. Volte ao início e faça login novamente.
+                    </div>
+                  )}
                   <ImportWizard
                     dataType={activeWizardType}
                     tenantId={activeTenantId}
@@ -892,97 +887,127 @@ export default function Onboarding() {
                 </div>
               )}
 
-              {/* Lista de arquivos (quando nenhum wizard está aberto) */}
               {!activeWizardType && (
                 <>
-                  <p className="text-[#28071C]/60 text-sm mb-5 leading-relaxed">
-                    Importe seus dados para ativar indicadores históricos — ou explore o sistema agora e importe depois em Configurações.
-                  </p>
-
-                  {/* Seleção do fluxo */}
+                  {/* Seleção do método — 3 opções */}
                   {!dataChoice && (
                     <div className="space-y-3">
                       {[
                         {
-                          key: 'completa' as DataImportChoice,
-                          icon: <Upload className="w-5 h-5 text-[#9B8CD8]" />,
-                          badge: 'Sem ERP',
-                          badgeColor: 'text-[#9B8CD8] bg-[#9B8CD8]/10',
-                          title: 'Importação Completa',
-                          desc: 'Seus dados de produto, vendas e estoque estão em planilhas. Faça upload de todos os arquivos agora.',
+                          key: 'erp_completo' as DataImportChoice,
+                          icon: <Package className="w-5 h-5 text-emerald-600" />,
+                          iconBg: 'bg-emerald-50',
+                          badge: 'ERP Completo', badgeColor: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+                          title: 'Importar via ERP (com hierarquia)',
+                          desc: 'Meu ERP já organiza os produtos por divisão, categoria e subcategoria. Vou exportar de lá.',
                         },
                         {
                           key: 'hierarquia' as DataImportChoice,
                           icon: <Package className="w-5 h-5 text-[#7598CF]" />,
-                          badge: 'Com ERP',
-                          badgeColor: 'text-[#7598CF] bg-[#7598CF]/10',
-                          title: 'Complemento de Hierarquia',
-                          desc: 'Seu ERP já possui os produtos, mas a hierarquia de categorias está em planilha separada.',
+                          iconBg: 'bg-[#7598CF]/10',
+                          badge: 'ERP + Planilha', badgeColor: 'text-[#7598CF] bg-[#7598CF]/10 border-[#7598CF]/20',
+                          title: 'ERP para dados + planilha para hierarquia',
+                          desc: 'Meu ERP tem produtos e vendas, mas a estrutura hierárquica (divisão/categoria/subcategoria) está em planilha separada.',
+                        },
+                        {
+                          key: 'completa' as DataImportChoice,
+                          icon: <Upload className="w-5 h-5 text-[#9B8CD8]" />,
+                          iconBg: 'bg-[#9B8CD8]/10',
+                          badge: 'Só Planilhas', badgeColor: 'text-[#9B8CD8] bg-[#9B8CD8]/10 border-[#9B8CD8]/20',
+                          title: 'Importar tudo via planilhas',
+                          desc: 'Não uso ERP ou prefiro importar produtos, vendas e estoque direto de arquivos CSV ou XLSX.',
                         },
                       ].map(opt => (
-                        <button
-                          key={opt.key}
-                          onClick={() => setDataChoice(opt.key)}
-                          className="w-full flex items-start gap-4 px-4 py-4 border-2 border-[#28071C]/10 rounded-2xl text-left hover:border-[#7598CF]/50 transition-all bg-white"
-                        >
-                          <div className="w-10 h-10 bg-[#28071C]/5 rounded-xl flex items-center justify-center flex-shrink-0">
+                        <button key={opt.key} onClick={() => setDataChoice(opt.key)}
+                          className="w-full flex items-start gap-4 px-5 py-4 border-2 border-[#28071C]/10 rounded-2xl text-left hover:border-[#7598CF]/50 transition-all bg-white">
+                          <div className={`w-10 h-10 ${opt.iconBg} rounded-xl flex items-center justify-center flex-shrink-0`}>
                             {opt.icon}
                           </div>
                           <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest ${opt.badgeColor}`}>
-                                {opt.badge}
-                              </span>
-                            </div>
+                            <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest mb-1 ${opt.badgeColor}`}>
+                              {opt.badge}
+                            </span>
                             <p className="text-[#28071C] font-semibold text-sm">{opt.title}</p>
-                            <p className="text-[#28071C]/55 text-xs mt-0.5 leading-relaxed">{opt.desc}</p>
+                            <p className="text-[#28071C]/50 text-xs mt-0.5 leading-relaxed">{opt.desc}</p>
                           </div>
-                          <ChevronRight className="w-4 h-4 text-[#28071C]/30 mt-1 flex-shrink-0" />
+                          <ChevronRight className="w-4 h-4 text-[#28071C]/25 mt-1 flex-shrink-0" />
                         </button>
                       ))}
-
-                      <div className="text-center pt-2">
-                        <button
-                          onClick={() => { setDataChoice('deferred'); goNext() }}
-                          className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 underline transition-colors"
-                        >
+                      <div className="text-center pt-1">
+                        <button onClick={skipData}
+                          className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 underline transition-colors">
                           Importar depois — explorar o sistema agora
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {/* Lista de arquivos com botões de importação via wizard */}
-                  {(dataChoice === 'completa' || dataChoice === 'hierarquia') && (
+                  {/* ERP Completo — sem arquivo para fazer upload, configura depois */}
+                  {dataChoice === 'erp_completo' && (
                     <div>
-                      <button
-                        onClick={() => setDataChoice(null)}
-                        className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors"
-                      >
-                        <ChevronLeft className="w-3.5 h-3.5" />
-                        Mudar opção
+                      <button onClick={() => setDataChoice(null)}
+                        className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors">
+                        <ChevronLeft className="w-3.5 h-3.5" /> Mudar opção
                       </button>
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-5 py-4 mb-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                          <p className="text-emerald-800 font-semibold text-sm">ERP com hierarquia completa</p>
+                        </div>
+                        <p className="text-emerald-700 text-xs leading-relaxed">
+                          A configuração da integração ou importação via ERP é feita em <strong>Configurações → Integrações</strong> após o onboarding,
+                          quando você terá acesso ao mapeamento de campos e ao template de exportação.
+                        </p>
+                      </div>
+                      <div className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 flex items-start gap-2">
+                        <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                        <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                          Confirme para continuar. Você poderá importar os dados logo após concluir a configuração inicial.
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
-                      <div className="space-y-3">
-                        {(dataChoice === 'hierarquia'
-                          ? [{ key: 'catalog', label: 'Hierarquia de Códigos', required: true, description: 'SKU + níveis hierárquicos (join pelo código do produto).', hint: 'Obrigatório — enriquece os dados do ERP.' }]
-                          : UPLOAD_FIELDS
-                        ).map(field => {
-                          const importType = dataChoice === 'hierarquia' ? 'hierarchy' : FIELD_KEY_TO_IMPORT_TYPE[field.key]
-                          const result = importResults[importType as ImportDataType]
+                  {/* ERP + Hierarquia em planilha */}
+                  {dataChoice === 'hierarquia' && (
+                    <div>
+                      <button onClick={() => setDataChoice(null)}
+                        className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors">
+                        <ChevronLeft className="w-3.5 h-3.5" /> Mudar opção
+                      </button>
+                      <div className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 flex items-start gap-2 mb-4">
+                        <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                        <p className="text-[#28071C]/60 text-xs leading-relaxed">
+                          Importe aqui a planilha com a hierarquia. O sistema cruzará os registros pelo <strong className="text-[#28071C]">código do produto (SKU)</strong> com os dados do ERP.
+                        </p>
+                      </div>
+                      <HierarchyFileRow
+                        result={importResults['hierarchy' as ImportDataType]}
+                        onImport={() => setActiveWizardType('hierarchy' as ImportDataType)}
+                      />
+                    </div>
+                  )}
+
+                  {/* Só planilhas */}
+                  {dataChoice === 'completa' && (
+                    <div>
+                      <button onClick={() => setDataChoice(null)}
+                        className="flex items-center gap-1.5 text-xs text-[#28071C]/40 hover:text-[#28071C] mb-4 transition-colors">
+                        <ChevronLeft className="w-3.5 h-3.5" /> Mudar opção
+                      </button>
+                      <div className="space-y-2.5">
+                        {UPLOAD_FIELDS.map(field => {
+                          const importType = FIELD_KEY_TO_IMPORT_TYPE[field.key] as ImportDataType
+                          const result = importResults[importType]
                           const isImported = Boolean(result)
                           return (
-                            <div
-                              key={field.key}
-                              className={`rounded-xl border-2 p-4 transition-all ${
+                            <div key={field.key}
+                              className={`rounded-xl border-2 px-4 py-3.5 transition-all ${
                                 isImported
                                   ? 'bg-emerald-50 border-emerald-200'
-                                  : field.required
-                                    ? 'bg-white border-[#28071C]/12'
-                                    : 'bg-white border-dashed border-[#28071C]/12'
-                              }`}
-                            >
-                              <div className="flex items-start justify-between gap-3">
+                                  : 'bg-white border-[#28071C]/10'
+                              }`}>
+                              <div className="flex items-center justify-between gap-3">
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2 mb-0.5">
                                     <p className="text-[#28071C] text-sm font-semibold">{field.label}</p>
@@ -992,198 +1017,213 @@ export default function Onboarding() {
                                       </span>
                                     )}
                                   </div>
-                                  <p className="text-[#28071C]/50 text-xs">{field.description}</p>
+                                  <p className="text-[#28071C]/45 text-xs">{field.description}</p>
                                   {isImported && result && (
-                                    <p className="text-emerald-600 text-xs mt-0.5">
-                                      {result.importedRows} registros importados
-                                    </p>
+                                    <p className="text-emerald-600 text-xs mt-0.5">{result.importedRows} registros importados</p>
                                   )}
                                 </div>
-                                <div className="flex-shrink-0">
-                                  {isImported ? (
-                                    <div className="flex items-center gap-1.5">
-                                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                                      <button
-                                        onClick={() => setActiveWizardType(importType as ImportDataType)}
-                                        className="text-emerald-600 hover:text-emerald-800 text-xs underline"
-                                      >
-                                        Reimportar
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <button
-                                      onClick={() => setActiveWizardType(importType as ImportDataType)}
-                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#28071C] text-white text-xs font-semibold rounded-lg hover:bg-[#28071C]/90 transition-colors"
-                                    >
-                                      <Upload className="w-3.5 h-3.5" />
-                                      Importar
+                                {isImported ? (
+                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                                    <button onClick={() => setActiveWizardType(importType)}
+                                      className="text-emerald-600 hover:text-emerald-800 text-xs underline">
+                                      Reimportar
                                     </button>
-                                  )}
-                                </div>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => setActiveWizardType(importType)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#28071C] text-white text-xs font-semibold rounded-lg hover:bg-[#28071C]/90 transition-colors flex-shrink-0">
+                                    <Upload className="w-3.5 h-3.5" /> Importar
+                                  </button>
+                                )}
                               </div>
                             </div>
                           )
                         })}
                       </div>
-
-                      {dataChoice === 'hierarquia' && (
-                        <div className="mt-4 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3 flex items-start gap-2">
-                          <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-                          <p className="text-[#28071C]/60 text-xs leading-relaxed">
-                            O sistema cruzará os dados pelo <strong className="text-[#28071C]">código do produto (SKU)</strong> como chave de join entre o ERP e a planilha de hierarquia.
-                          </p>
-                        </div>
-                      )}
-
-                      <NavButtons
-                        onBack={() => setDataChoice(null)}
-                        onNext={goNext}
-                        nextDisabled={!requiredUploaded}
-                        nextLabel="Confirmar importação"
-                        onSkip={() => { setDataChoice('deferred'); goNext() }}
-                        skipLabel="Importar depois"
-                      />
                     </div>
-                  )}
-
-                  {/* Quando nenhuma escolha ainda */}
-                  {!dataChoice && (
-                    <NavButtons
-                      onBack={goBack}
-                      onNext={() => { setDataChoice('deferred'); goNext() }}
-                      nextLabel="Continuar sem importar"
-                      onSkip={undefined}
-                    />
                   )}
                 </>
               )}
             </div>
           )}
 
-          {/* ──────────────────────────────────────────────────────────────────
-              ETAPA 6 — PRONTO!
-          ────────────────────────────────────────────────────────────────── */}
-          {currentStepId === 'complete' && (
-            <div className="text-center">
-              <div className="w-16 h-16 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-5">
-                <Check className="w-8 h-8 text-emerald-600" />
-              </div>
-
-              <h2 className="text-[#28071C] font-bold text-xl mb-2">
-                Seu Fashion Mind está pronto!
-              </h2>
-              <p className="text-[#28071C]/55 text-sm mb-7 leading-relaxed">
-                Configuração inicial concluída. Aqui está um resumo do que foi configurado.
-              </p>
-
-              {/* Resumo */}
-              <div className="text-left bg-white rounded-2xl border border-[#28071C]/10 divide-y divide-[#28071C]/6 mb-7">
-                <div className="px-5 py-3.5 flex items-start gap-3">
-                  <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-[#28071C] text-sm font-semibold">
-                      {segments.length} segmento{segments.length > 1 ? 's' : ''} configurado{segments.length > 1 ? 's' : ''}
-                    </p>
-                    <p className="text-[#28071C]/45 text-xs mt-0.5">
-                      {segments.slice(0, 3).map(s => SEGMENT_LABELS[s]).join(', ')}
-                      {segments.length > 3 && ` e mais ${segments.length - 3}`}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="px-5 py-3.5 flex items-start gap-3">
-                  <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-[#28071C] text-sm font-semibold">
-                      Modelo de negócio: {ORIGEM_LABELS[origem!]}
-                    </p>
-                    {rankedMaterials.length > 0 && (
-                      <p className="text-[#28071C]/45 text-xs mt-0.5">
-                        Matérias-primas: {rankedMaterials.slice(0, 3).map(m => RAW_MATERIAL_LABELS[m]).join(', ')}
-                        {rankedMaterials.length > 3 && ` +${rankedMaterials.length - 3}`}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="px-5 py-3.5 flex items-start gap-3">
-                  <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-[#28071C] text-sm font-semibold">
-                      {selectedChannels.length} canal{selectedChannels.length > 1 ? 'is' : ''} de venda
-                    </p>
-                    <p className="text-[#28071C]/45 text-xs mt-0.5">
-                      {selectedChannels.slice(0, 3).map(id =>
-                        SALES_CHANNELS.find(c => c.id === id)?.label ?? id
-                      ).join(', ')}
-                      {selectedChannels.length > 3 && ` e mais ${selectedChannels.length - 3}`}
-                    </p>
-                  </div>
-                </div>
-
-                {teamInvites.some(inv => inv.email.trim()) && (
-                  <div className="px-5 py-3.5 flex items-start gap-3">
-                    <Users className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-[#28071C] text-sm font-semibold">
-                        {teamInvites.filter(inv => inv.email.trim()).length} convite{teamInvites.filter(inv => inv.email.trim()).length > 1 ? 's' : ''} de equipe
-                      </p>
-                      <p className="text-[#28071C]/45 text-xs mt-0.5">Os convites serão enviados ao concluir</p>
+          {/* ── EQUIPE ─────────────────────────────────────────────────────── */}
+          {currentStepId === 'team' && (
+            <div className="space-y-4 max-w-2xl">
+              <div className="space-y-3">
+                {teamInvites.map((inv, i) => (
+                  <div key={i} className="bg-white rounded-xl border border-[#28071C]/10 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <select value={inv.role} onChange={e => updateInvite(i, 'role', e.target.value)}
+                        className="text-xs font-bold text-[#7598CF] bg-[#7598CF]/10 rounded-lg px-2 py-1 border-0 focus:outline-none cursor-pointer uppercase tracking-widest">
+                        <option value="estrategico">Estratégico</option>
+                        <option value="tatico">Tático</option>
+                        <option value="operacional">Operacional</option>
+                      </select>
+                      {teamInvites.length > 1 && (
+                        <button onClick={() => removeInvite(i)} className="text-[#28071C]/25 hover:text-red-500 transition-colors">
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">Nome</label>
+                        <input type="text" value={inv.name} onChange={e => updateInvite(i, 'name', e.target.value)}
+                          placeholder="Nome completo"
+                          className="w-full px-3 py-2 border border-[#28071C]/12 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30 bg-[#F2F2F2]" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">E-mail</label>
+                        <input type="email" value={inv.email} onChange={e => updateInvite(i, 'email', e.target.value)}
+                          placeholder="email@marca.com.br"
+                          className="w-full px-3 py-2 border border-[#28071C]/12 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30 bg-[#F2F2F2]" />
+                      </div>
                     </div>
                   </div>
-                )}
-
-                <div className="px-5 py-3.5 flex items-start gap-3">
-                  {dataChoice && dataChoice !== 'deferred' ? (
-                    <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <Info className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                  )}
-                  <div>
-                    <p className="text-[#28071C] text-sm font-semibold">
-                      {dataChoice === 'completa'
-                        ? 'Importação completa de dados'
-                        : dataChoice === 'hierarquia'
-                          ? 'Hierarquia importada (join pelo ERP)'
-                          : 'Dados para importar depois'
-                      }
-                    </p>
-                    {dataChoice === 'deferred' && (
-                      <p className="text-[#28071C]/45 text-xs mt-0.5">
-                        Disponível em Configurações → Importação de Planilhas
-                      </p>
-                    )}
-                  </div>
-                </div>
+                ))}
               </div>
-
-              {/* CTAs */}
-              <div className="space-y-3">
-                <button
-                  onClick={complete}
-                  className="w-full flex items-center justify-center gap-2 px-6 py-3.5 bg-gradient-to-r from-[#7598CF] to-[#9B8CD8] text-white rounded-xl font-semibold text-sm hover:opacity-90 transition-all shadow-md"
-                >
-                  Iniciar Planejamento Estratégico
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={complete}
-                  className="w-full px-6 py-3 border-2 border-[#28071C]/15 text-[#28071C]/70 rounded-xl font-semibold text-sm hover:bg-[#28071C]/5 transition-all"
-                >
-                  Explorar o Dashboard
-                </button>
+              <button onClick={addInvite}
+                className="flex items-center gap-2 text-sm text-[#7598CF] hover:text-[#28071C] transition-colors">
+                <Plus className="w-4 h-4" /> Adicionar outro membro
+              </button>
+              <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2">
+                <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                <p className="text-amber-700 text-xs leading-relaxed">
+                  Os convidados receberão e-mail com link de acesso.
+                  Gerencie a equipe depois em <strong>Configurações → Usuários</strong>.
+                </p>
               </div>
-
-              <NavButtons onBack={goBack} onNext={complete} nextLabel="Concluir" />
             </div>
           )}
 
+          {/* ── PRONTO ─────────────────────────────────────────────────────── */}
+          {currentStepId === 'complete' && (
+            <div className="max-w-2xl">
+              <div className="w-12 h-12 bg-emerald-100 border-2 border-emerald-200 rounded-full flex items-center justify-center mb-5">
+                <Check className="w-6 h-6 text-emerald-600" />
+              </div>
+              <div className="bg-white rounded-2xl border border-[#28071C]/8 divide-y divide-[#28071C]/6 mb-7">
+                <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
+                  title={`${segments.length} segmento${segments.length > 1 ? 's' : ''} configurado${segments.length > 1 ? 's' : ''}`}
+                  desc={`${segments.slice(0, 3).map(s => SEGMENT_LABELS[s]).join(', ')}${segments.length > 3 ? ` e mais ${segments.length - 3}` : ''}`} />
+                <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
+                  title={`Modelo: ${ORIGEM_LABELS[origem!]}`}
+                  desc={rankedMaterials.length > 0 ? `Matérias-primas: ${rankedMaterials.slice(0, 3).map(m => RAW_MATERIAL_LABELS[m]).join(', ')}${rankedMaterials.length > 3 ? ` +${rankedMaterials.length - 3}` : ''}` : undefined} />
+                <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
+                  title={`${selectedChannels.length} canal${selectedChannels.length > 1 ? 'is' : ''} de venda`}
+                  desc={selectedChannels.slice(0, 3).map(id => SALES_CHANNELS.find(c => c.id === id)?.label ?? id).join(', ')} />
+                {teamInvites.some(inv => inv.email.trim()) && (
+                  <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
+                    title={`${teamInvites.filter(inv => inv.email.trim()).length} convite${teamInvites.filter(inv => inv.email.trim()).length > 1 ? 's' : ''} enviados`}
+                    desc="Os convidados receberão e-mail com link de acesso" />
+                )}
+                <SummaryRow
+                  icon={dataChoice && dataChoice !== 'deferred' ? <Check className="w-4 h-4 text-emerald-500" /> : <Info className="w-4 h-4 text-amber-400" />}
+                  title={
+                    dataChoice === 'erp_completo' ? 'Integração via ERP configurada'  :
+                    dataChoice === 'hierarquia'   ? 'ERP + hierarquia em planilha'     :
+                    dataChoice === 'completa'     ? 'Importação completa via planilhas':
+                    'Dados para importar depois'
+                  }
+                  desc={dataChoice === 'deferred' ? 'Disponível em Configurações → Importação de Planilhas' : undefined} />
+              </div>
+              <div className="flex gap-3">
+                <button onClick={complete}
+                  className="flex items-center gap-2 px-7 py-3.5 bg-[#28071C] text-white rounded-xl font-semibold text-sm hover:bg-[#28071C]/90 transition-all shadow-sm">
+                  Iniciar Planejamento <ChevronRight className="w-4 h-4" />
+                </button>
+                <button onClick={complete}
+                  className="px-7 py-3.5 border-2 border-[#28071C]/15 text-[#28071C]/70 rounded-xl font-semibold text-sm hover:bg-[#28071C]/5 transition-all">
+                  Explorar o Dashboard
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      </div>
 
-      {/* Powered by */}
-      <div className="mt-6 opacity-30 text-white/70 text-xs text-center">
-        powered by tfo / The Fashion Office
+        {/* ── NAV BUTTONS ───────────────────────────────────────────────────── */}
+        {currentStepId !== 'complete' && (
+          <div className="flex-shrink-0 px-12 py-4 border-t border-[#28071C]/8 bg-[#EBEBEB]/60 flex items-center justify-between">
+            <button onClick={goBack}
+              disabled={step === 0 && bizSlide === 0}
+              className="flex items-center gap-1.5 text-[#28071C]/50 hover:text-[#28071C] disabled:opacity-0 disabled:pointer-events-none transition-colors text-sm">
+              <ChevronLeft className="w-4 h-4" /> Voltar
+            </button>
+
+            <div className="flex items-center gap-4">
+              {/* Skip para etapas opcionais */}
+              {STEP_META[step].optional && (
+                <button onClick={skipData}
+                  className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors underline">
+                  {currentStepId === 'data' ? 'Importar depois' : 'Convidar depois'}
+                </button>
+              )}
+              {/* Continuar */}
+              <button onClick={goNext} disabled={nextDisabled}
+                className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-sm">
+                {currentStepId === 'data' && dataSlide === 0 ? 'Entendido, avançar' : 'Continuar'}
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Micro-componentes ─────────────────────────────────────────────────────────
+
+function SummaryRow({ icon, title, desc }: { icon: React.ReactNode; title: string; desc?: string }) {
+  return (
+    <div className="px-5 py-3.5 flex items-start gap-3">
+      <div className="flex-shrink-0 mt-0.5">{icon}</div>
+      <div>
+        <p className="text-[#28071C] text-sm font-semibold">{title}</p>
+        {desc && <p className="text-[#28071C]/45 text-xs mt-0.5">{desc}</p>}
+      </div>
+    </div>
+  )
+}
+
+function HierarchyFileRow({
+  result, onImport,
+}: { result: ImportResult | undefined; onImport: () => void }) {
+  const isImported = Boolean(result)
+  return (
+    <div className={`rounded-xl border-2 px-4 py-4 transition-all ${
+      isImported ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-[#28071C]/10'
+    }`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-0.5">
+            <p className="text-[#28071C] text-sm font-semibold">Planilha de Hierarquia</p>
+            <span className="text-[10px] bg-red-50 text-red-500 border border-red-100 rounded-full px-1.5 py-0.5 font-semibold">
+              Obrigatório
+            </span>
+          </div>
+          <p className="text-[#28071C]/45 text-xs">
+            SKU + Divisão + Categoria + Subcategoria (join pelo código do produto com os dados do ERP).
+          </p>
+          {isImported && result && (
+            <p className="text-emerald-600 text-xs mt-0.5">{result.importedRows} registros importados</p>
+          )}
+        </div>
+        {isImported ? (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+            <button onClick={onImport} className="text-emerald-600 hover:text-emerald-800 text-xs underline">
+              Reimportar
+            </button>
+          </div>
+        ) : (
+          <button onClick={onImport}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#28071C] text-white text-xs font-semibold rounded-lg hover:bg-[#28071C]/90 transition-colors flex-shrink-0">
+            <Upload className="w-3.5 h-3.5" /> Importar
+          </button>
+        )}
       </div>
     </div>
   )

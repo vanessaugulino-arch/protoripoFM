@@ -85,6 +85,7 @@ export interface MatrizEntry {
   dias_transito: number;
   lead_time_total: number;
   condicao_pagamento_id: string | null;
+  peso_participacao: number;     // % do volume da categoria atribuído a este fornecedor
   moeda: string;
   observacoes: string | null;
   ativo: boolean;
@@ -93,6 +94,46 @@ export interface MatrizEntry {
   // Joined
   fornecedor?: Pick<Fornecedor, "id" | "nome" | "tipo">;
   condicao?: Pick<CondicaoPagamento, "id" | "descricao"> & { parcelas: Parcela[] };
+}
+
+// ── Modelo Produção/Facção — cabeçalho ───────────────────────────────────────
+export interface ProducaoModelo {
+  id: string;
+  tenant_id: string;
+  divisao: string;
+  categoria: string;
+  subcategoria: string | null;
+  nome_modelo: string;
+  pct_materia_prima: number;
+  condicao_mp_id: string | null;
+  mes_corte: string | null;
+  observacoes: string | null;
+  ativo: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Modelo Produção/Facção — etapas ─────────────────────────────────────────
+export interface ProducaoEtapa {
+  id: string;
+  modelo_id: string;
+  tenant_id: string;
+  ordem_grupo: number;
+  nome_etapa: string | null;
+  faccao_nome: string;
+  dias_prazo: number;
+  condicao_pagamento_id: string | null;
+  observacoes: string | null;
+  created_at: string;
+}
+
+/** Prazo total = soma do maior prazo de cada grupo de ordem (caminho crítico) */
+export function calcPrazoTotal(etapas: Pick<ProducaoEtapa, "ordem_grupo" | "dias_prazo">[]): number {
+  const groupMax = new Map<number, number>();
+  for (const e of etapas) {
+    groupMax.set(e.ordem_grupo, Math.max(groupMax.get(e.ordem_grupo) ?? 0, e.dias_prazo));
+  }
+  return [...groupMax.values()].reduce((s, d) => s + d, 0);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -356,4 +397,78 @@ export async function deleteMatrizEntryDb(id: string): Promise<void> {
     .update({ ativo: false })
     .eq("id", id);
   if (error) throw error;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MODELO PRODUÇÃO / FACÇÃO
+// ══════════════════════════════════════════════════════════════════════════════
+
+export async function listModelosProducaoDb(tenantId: string): Promise<ProducaoModelo[]> {
+  const { data, error } = await db
+    .from("matriz_producao_modelos")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("ativo", true)
+    .order("divisao")
+    .order("categoria")
+    .order("nome_modelo");
+  if (error) throw error;
+  return (data ?? []) as ProducaoModelo[];
+}
+
+export async function upsertModeloProducaoDb(
+  tenantId: string,
+  values: Omit<ProducaoModelo, "id" | "tenant_id" | "created_at" | "updated_at"> & { id?: string }
+): Promise<ProducaoModelo> {
+  const row = { ...values, tenant_id: tenantId, updated_at: new Date().toISOString() };
+  const { data, error } = values.id
+    ? await db.from("matriz_producao_modelos").update(row).eq("id", values.id).select().single()
+    : await db.from("matriz_producao_modelos").insert(row).select().single();
+  if (error) throw error;
+  return data as ProducaoModelo;
+}
+
+export async function deleteModeloProducaoDb(id: string): Promise<void> {
+  const { error } = await db
+    .from("matriz_producao_modelos")
+    .update({ ativo: false })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+// ── Etapas ────────────────────────────────────────────────────────────────────
+
+export async function listEtapasByModeloDb(modeloId: string): Promise<ProducaoEtapa[]> {
+  const { data, error } = await db
+    .from("matriz_producao_etapas")
+    .select("*")
+    .eq("modelo_id", modeloId)
+    .order("ordem_grupo")
+    .order("created_at");
+  if (error) throw error;
+  return (data ?? []) as ProducaoEtapa[];
+}
+
+/** Substitui TODAS as etapas de um modelo (delete + re-insert batch) */
+export async function replaceEtapasDb(
+  modeloId: string,
+  tenantId: string,
+  etapas: Omit<ProducaoEtapa, "id" | "modelo_id" | "tenant_id" | "created_at">[]
+): Promise<ProducaoEtapa[]> {
+  // Delete existing
+  const { error: delErr } = await db
+    .from("matriz_producao_etapas")
+    .delete()
+    .eq("modelo_id", modeloId);
+  if (delErr) throw delErr;
+  if (etapas.length === 0) return [];
+
+  // Insert new
+  const rows = etapas.map(e => ({ ...e, modelo_id: modeloId, tenant_id: tenantId }));
+  const { data, error } = await db
+    .from("matriz_producao_etapas")
+    .insert(rows)
+    .select();
+  if (error) throw error;
+  return (data ?? []) as ProducaoEtapa[];
 }

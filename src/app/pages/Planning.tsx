@@ -1,5 +1,6 @@
 // src/app/pages/Planning.tsx — v5 (3-column layout)
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { supabase } from '../../lib/supabase';
 import { useNavigate, useLocation } from "react-router";
 import { usePlanningEngine } from '../../hooks/usePlanningEngine'
 import { PlanningField } from '../../components/PlanningField'
@@ -39,7 +40,7 @@ const PLANNING_TOUR: TourStep[] = [
   {
     targetId: "tour-plan-compare",
     title: "Comparativo de Cenários",
-    content: "O botão 'Comparar' exibe uma tabela com todos os cenários salvos. Analise as diferenças de receita, margem e OTB de uma vez e aplique o cenário vencedor com um clique.",
+    content: "O botão 'Comparar' exibe uma tabela com todos os cenários salvos. Analise as diferenças de receita, margem e Orçamento de uma vez e aplique o cenário vencedor com um clique.",
   },
   {
     targetId: "tour-plan-macro",
@@ -48,7 +49,7 @@ const PLANNING_TOUR: TourStep[] = [
   },
 ];
 
-interface UserData { name: string; email: string; profile: string }
+interface UserData { id?: string; name: string; email: string; profile: string }
 interface LocationState {
   year: number
   mode: PlanMode
@@ -60,26 +61,25 @@ interface LocationState {
 // ─── Historical database ──────────────────────────────────────────────────────
 interface HistoricalData {
   year: string; receita: number; margemBruta: number; pmv: number;
-  otb: number; estoqueMedioRS: number; estoqueMedioPecas: number;
+  orcamento: number; estoqueMedioRS: number; estoqueMedioPecas: number;
   giro: number; cobertura: number; markdown: number; producao: number; gmroi: number;
   ticketMedio: number;
 }
 
-const historicalDatabase: HistoricalData[] = [
-  { year: "2023", receita: 2450000, margemBruta: 40.5, pmv: 145, otb: 1050000,
+// Fallback (demo) — substituído por dados reais do Supabase após login
+const HIST_FALLBACK: HistoricalData[] = [
+  { year: "2023", receita: 2450000, margemBruta: 40.5, pmv: 145, orcamento: 1050000,
     estoqueMedioRS: 720000, estoqueMedioPecas: 4965, giro: 3.85, cobertura: 78,
     markdown: 165000, producao: 16890, gmroi: 1.55, ticketMedio: 290 },
-  { year: "2024", receita: 2700000, margemBruta: 42.0, pmv: 158, otb: 1100000,
+  { year: "2024", receita: 2700000, margemBruta: 42.0, pmv: 158, orcamento: 1100000,
     estoqueMedioRS: 695000, estoqueMedioPecas: 4398, giro: 4.05, cobertura: 75,
     markdown: 148000, producao: 17850, gmroi: 1.70, ticketMedio: 315 },
-  { year: "2025", receita: 2850000, margemBruta: 42.3, pmv: 155, otb: 1140000,
+  { year: "2025", receita: 2850000, margemBruta: 42.3, pmv: 155, orcamento: 1140000,
     estoqueMedioRS: 680000, estoqueMedioPecas: 4387, giro: 4.19, cobertura: 72,
     markdown: 142500, producao: 18387, gmroi: 1.77, ticketMedio: 320 },
 ]
 
-const custoMedioPorAno: Record<string, number> = {
-  "2023": 72, "2024": 80, "2025": 87,
-}
+const CUSTO_MEDIO_DEFAULT = 85 // fallback: custo estimado por peça
 
 // ─── Field definitions ────────────────────────────────────────────────────────
 type FieldFormat = "currency" | "percent" | "days" | "pieces" | "index"
@@ -111,9 +111,9 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: (y, h) => `Base ${y}: R$ ${h.pmv}`,
   },
   {
-    key: "otbCompra", label: "OTB de Compra (R$)", format: "currency",
-    getValue: v => v.otbCompra, getState: s => s.otbCompra,
-    getHelp: (y, h) => `Base ${y}: R$ ${h.otb.toLocaleString("pt-BR")}`,
+    key: "orcamento", label: "Orçamento de Compra (R$)", format: "currency",
+    getValue: v => v.orcamento, getState: s => s.orcamento,
+    getHelp: (y, h) => `Base ${y}: R$ ${h.orcamento.toLocaleString("pt-BR")}`,
   },
   {
     key: "giro", label: "Giro (R$)", format: "index",
@@ -138,7 +138,7 @@ const FIELD_DEFS: FieldDef[] = [
   {
     key: "custoMedio", label: "Custo Médio (R$)", format: "currency",
     getValue: v => v.custoMedio, getState: s => s.custoMedio,
-    getHelp: () => "Custo médio por peça — base para OTB e GMROI",
+    getHelp: () => "Custo médio por peça — base para Orçamento e GMROI",
   },
   {
     key: "ticketMedio", label: "Ticket Médio (R$)", format: "currency",
@@ -156,7 +156,7 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: (y, h) => `Base ${y}: R$ ${h.markdown.toLocaleString("pt-BR")}`,
   },
   {
-    key: "totalPecas", label: "Total de Peças (OTB)", format: "pieces", isCalc: true,
+    key: "totalPecas", label: "Total de Peças (Orçamento)", format: "pieces", isCalc: true,
     getValue: v => v.totalPecas, getState: () => "calculated",
     getHelp: (y, h) => `Base ${y}: ${h.producao.toLocaleString("pt-BR")} pç — Compras + Produção`,
   },
@@ -190,8 +190,15 @@ export default function Planning() {
   const tour       = useTour("planning-main")
 
   const [user,               setUser]               = useState<UserData | null>(null)
+  const [tenantId,           setTenantId]           = useState<string>("")
   const [isAccordionOpen,    setIsAccordionOpen]    = useState(false)
   const [selectedHistorical, setSelectedHistorical] = useState("2025")
+
+  // ── Histórico real do Supabase (substitui HIST_FALLBACK após carga) ──────────
+  const [historicalDatabase, setHistoricalDatabase] = useState<HistoricalData[]>(HIST_FALLBACK)
+  const [histLoading,        setHistLoading]        = useState(false)
+  const [histIsReal,         setHistIsReal]         = useState(false)  // true = dados reais carregados
+  const histFetched = useRef(false)
 
   // Save dialog
   const [saveDialogOpen,   setSaveDialogOpen]   = useState(false)
@@ -225,12 +232,14 @@ export default function Planning() {
   const fieldPriorities: PlanFieldPriority[] = routeState?.fieldPriorities ?? []
 
   const getHist = (yr: string) =>
-    historicalDatabase.find(d => d.year === yr) ?? historicalDatabase[2]
+    historicalDatabase.find(d => d.year === yr) ?? historicalDatabase[historicalDatabase.length - 1]
 
   const referenceYear = useMemo(() => {
     const y = String(year - 1)
-    return historicalDatabase.find(d => d.year === y) ? y : "2025"
-  }, [year])
+    return historicalDatabase.find(d => d.year === y)
+      ? y
+      : (historicalDatabase[historicalDatabase.length - 1]?.year ?? "2025")
+  }, [year, historicalDatabase])
 
   const histRef  = getHist(referenceYear)
   const histSel  = getHist(selectedHistorical)
@@ -239,7 +248,7 @@ export default function Planning() {
     const devolucoes     = Math.round(histRef.receita * 0.05)   // 5% de devoluções estimadas
     const receitaLiquida = histRef.receita - devolucoes
     const pecasVendidas  = Math.round(receitaLiquida / histRef.pmv)
-    const custoMedio     = custoMedioPorAno[referenceYear] ?? 87
+    const custoMedio     = CUSTO_MEDIO_DEFAULT
     return {
       receitaBruta:      histRef.receita,
       devolucoes,
@@ -249,7 +258,7 @@ export default function Planning() {
       pecasVendidas,
       giro:              histRef.giro,
       cobertura:         histRef.cobertura,
-      otbCompra:         histRef.otb,
+      orcamento:         histRef.orcamento,
       producaoPecas:     histRef.producao,
       mkdPct:            +((histRef.markdown / histRef.receita) * 100).toFixed(1),
       custoMedio,
@@ -274,7 +283,7 @@ export default function Planning() {
   const {
     current, isDirty, activeScenario, scenarios,
     setField, unlock, saveScenario, loadScenario, reset,
-  } = usePlanningEngine(year, baseline, activeKeysList)
+  } = usePlanningEngine(year, baseline, activeKeysList, tenantId || undefined, user?.id)
 
   const v = current.values
   const s = current.states
@@ -286,6 +295,7 @@ export default function Planning() {
     if (stored) {
       const u = JSON.parse(stored)
       setUser(u)
+      setTenantId(sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "")
       const effectiveProfile =
         u.system_role === "support" || u.system_role === "client_admin"
           ? "CEO"
@@ -293,6 +303,61 @@ export default function Planning() {
       if (effectiveProfile !== "CEO") navigate("/dashboard")
     } else navigate("/")
   }, [navigate, routeState])
+
+  // ── Buscar histórico real de vendas do Supabase ──────────────────────────────
+  useEffect(() => {
+    if (!tenantId || histFetched.current) return
+    histFetched.current = true
+    setHistLoading(true)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rpc = (supabase as any).rpc('get_sales_historical_summary', { p_tenant_id: tenantId })
+    Promise.resolve(rpc)
+      .then(({ data, error }: { data: unknown; error: unknown }) => {
+        const rows = Array.isArray(data) ? data : []
+        if (error || rows.length === 0) return
+        const MARGEM_BRUTA = 40.0 // % — estimativa padrão quando custo não disponível
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const built: HistoricalData[] = rows.map((row: any) => {
+          const receita           = Number(row.receita)
+          const pmv               = Number(row.pmv)
+          const markdown          = Number(row.markdown)
+          const producao          = Number(row.producao)
+          const ticketMedio       = Math.round(Number(row.ticket_medio))
+          const estoqueMedioPecas = Number(row.estoque_medio_pecas)
+          // Estoque médio RS estimado via preço unitário médio de venda
+          const estoqueMedioRS  = Math.round(estoqueMedioPecas * pmv)
+          const giro            = estoqueMedioRS > 0
+            ? +( receita / estoqueMedioRS ).toFixed(2)
+            : 4.0
+          const cobertura       = giro > 0 ? Math.round(365 / giro) : 90
+          const gmroi           = +( (MARGEM_BRUTA / 100) * giro ).toFixed(2)
+          return {
+            year:              row.year,
+            receita,
+            margemBruta:       MARGEM_BRUTA,
+            pmv,
+            orcamento:         Math.round(receita * 0.40),
+            estoqueMedioRS,
+            estoqueMedioPecas,
+            giro,
+            cobertura,
+            markdown,
+            producao,
+            gmroi,
+            ticketMedio,
+          }
+        })
+        setHistoricalDatabase(built)
+        setHistIsReal(true)
+        // Garante que o ano selecionado existe nos dados reais
+        const years = built.map(d => d.year)
+        setSelectedHistorical(prev =>
+          years.includes(prev) ? prev : (years[years.length - 2] ?? years[years.length - 1] ?? prev)
+        )
+      })
+      .catch(() => { /* mantém fallback */ })
+      .finally(() => setHistLoading(false))
+  }, [tenantId])
 
   // ── Field split by status ────────────────────────────────────────────────
   const { activeDefs, calcDefs } = useMemo(() => {
@@ -337,7 +402,7 @@ export default function Planning() {
   // Col 2 + Col 3 rows — order follows activeDefs, then the rest
   const { allPlanRows, refRows, planSplitAt, refSplitAt } = useMemo(() => {
     const histMkdPct = +((histSel.markdown / histSel.receita) * 100).toFixed(1)
-    const histCustoMedio = custoMedioPorAno[selectedHistorical] ?? 87
+    const histCustoMedio = CUSTO_MEDIO_DEFAULT
 
     // Receita líquida histórica estimada (5% devoluções)
     const histSelRL         = histSel.receita * 0.95
@@ -354,7 +419,7 @@ export default function Planning() {
       { key: "mkdPct",            label: "Markdown (%)",            plan: v.mkdPct,            ref: histMkdPct                   },
       { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: histSel.gmroi                },
       { key: "pmv",               label: "PMV (R$)",                plan: v.pmv,               ref: histSel.pmv                  },
-      { key: "otbCompra",         label: "OTB (R$)",                plan: v.otbCompra,         ref: histSel.otb                  },
+      { key: "orcamento",         label: "Orçamento (R$)",          plan: v.orcamento,         ref: histSel.orcamento            },
       { key: "giroUnidades",      label: "Giro (peças)",            plan: v.giroUnidades,      ref: histSelGiroUnid              },
       { key: "giro",              label: "Giro (R$)",               plan: v.giro,              ref: histSelGiroRS                },
       { key: "cobertura",         label: "Cobertura (dias)",        plan: v.cobertura,         ref: histSel.cobertura            },
@@ -374,7 +439,7 @@ export default function Planning() {
       { key: "mkdPct",            label: "Markdown (%)",            value: histMkdPct,                   fmt: "percent"    },
       { key: "gmroi",             label: "GMROI",                   value: histSel.gmroi,                fmt: "multiplier" },
       { key: "pmv",               label: "PMV (R$)",                value: histSel.pmv,                  fmt: "currency"   },
-      { key: "otbCompra",         label: "OTB (R$)",                value: histSel.otb,                  fmt: "currency"   },
+      { key: "orcamento",         label: "Orçamento (R$)",          value: histSel.orcamento,            fmt: "currency"   },
       { key: "giroUnidades",      label: "Giro (peças)",            value: histSel.giro,                 fmt: "multiplier" },
       { key: "giro",              label: "Giro (R$)",               value: histSelGiroRS ?? 0,           fmt: "multiplier" },
       { key: "cobertura",         label: "Cobertura (dias)",        value: histSel.cobertura,            fmt: "days"       },
@@ -421,9 +486,9 @@ export default function Planning() {
   const handleExportPDF = async () => {
     setIsExportingPDF(true)
     await exportToPDF({
-      elementId: "planning-export-content",
-      fileName:  `planejamento_estrategico_${year}`,
-      title:     `Planejamento Estratégico ${year}`,
+      elementId: "planning-scenarios-pdf",
+      fileName:  `cenarios_planejamento_${year}`,
+      title:     `Comparação de Cenários — Planejamento Estratégico ${year}`,
     })
     setIsExportingPDF(false)
   }
@@ -935,14 +1000,26 @@ export default function Planning() {
                 <h3 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">
                   Ano de Referência
                 </h3>
-                <p className="text-[#28071C]/40 text-xs mt-0.5">Base de comparação do plano</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <p className="text-[#28071C]/40 text-xs">Base de comparação do plano</p>
+                  {histLoading && (
+                    <span className="text-[10px] text-[#7598CF] animate-pulse">carregando…</span>
+                  )}
+                  {!histLoading && histIsReal && (
+                    <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full">
+                      📊 dados reais
+                    </span>
+                  )}
+                </div>
               </div>
               <select
                 value={selectedHistorical}
                 onChange={e => setSelectedHistorical(e.target.value)}
                 className="bg-white rounded-lg px-2.5 py-1.5 text-[#28071C] border-2 border-[#7598CF]/30 focus:border-[#7598CF] focus:outline-none cursor-pointer text-sm"
               >
-                <option>2023</option><option>2024</option><option>2025</option>
+                {historicalDatabase.map(d => (
+                  <option key={d.year} value={d.year}>{d.year}</option>
+                ))}
               </select>
             </div>
 
@@ -1018,17 +1095,6 @@ export default function Planning() {
                 )}
               </button>
 
-              {/* Exportar JSON */}
-              <button
-                onClick={handleExportScenarios}
-                disabled={scenarios.length === 0}
-                title={scenarios.length === 0 ? "Salve ao menos um cenário para exportar" : "Exportar cenários como JSON"}
-                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
-              >
-                <Download className="w-4 h-4" />
-                Exportar JSON
-              </button>
-
               {/* Exportar PDF */}
               <button
                 onClick={handleExportPDF}
@@ -1053,7 +1119,7 @@ export default function Planning() {
                       ? `Aplicar metas do cenário "${activeScenario.name}"`
                       : "Aplicar metas do último cenário salvo"
                 }
-                className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+                className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
               >
                 <CheckCheck className="w-4 h-4" />
                 Aplicar metas
@@ -1162,6 +1228,48 @@ export default function Planning() {
           </div>
         </div>
       )}
+
+      {/* ── PDF: Comparação de Cenários (capturado pelo html2canvas) ─────────── */}
+      <div
+        id="planning-scenarios-pdf"
+        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
+      >
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
+          Planejamento Estratégico {year}
+        </p>
+        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
+          Comparação de Cenários
+        </p>
+        {scenarios.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+            {scenarios.map(sc => (
+              <div key={sc.name} style={{ flex: '1 1 200px', minWidth: '180px', maxWidth: '240px', background: 'white', borderRadius: '12px', padding: '14px', borderTop: `4px solid ${activeScenario?.name === sc.name ? '#7598CF' : '#28071C'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
+                  {activeScenario?.name === sc.name && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '4px 0', fontSize: '9px', fontWeight: 700, color: 'rgba(40,7,28,0.4)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #F2F2F2' }}>
+                  <span>Indicador</span><span style={{ textAlign: 'center' }}>Plano</span><span style={{ textAlign: 'right' }}>vs Referência</span>
+                </div>
+                {allPlanRows.slice(0, 8).map((row, i) => {
+                  const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
+                  const refVal = row.ref ?? null
+                  const delta = (val != null && refVal != null && refVal !== 0) ? (((val as number) - (refVal as number)) / Math.abs(refVal as number) * 100).toFixed(1) : null
+                  return (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: '10px', color: '#28071C' }}>
+                      <span style={{ opacity: 0.6 }}>{row.label}</span>
+                      <span style={{ textAlign: 'center', fontWeight: 600 }}>{fmtPlan(row.label, val as number | null)}</span>
+                      <span style={{ textAlign: 'right', opacity: 0.5 }}>{delta != null ? `${+delta > 0 ? '+' : ''}${delta}%` : '—'}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

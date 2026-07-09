@@ -16,6 +16,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import { ArrowLeft, Check, X } from "lucide-react";
 import { BusinessDivisionId, DEFAULT_DIVISIONS } from "../types/module3";
 import { CategoryPricePlan, PriceTierId, TierConfig } from "../types/pricePyramid";
+import { supabase } from "../../lib/supabase";
 
 // ─── Dados estáticos (TODO: virão das Configurações) ─────────────────────────
 
@@ -75,8 +76,25 @@ function loadCategories(divId: BusinessDivisionId): CategoryPricePlan[] | null {
   return null;
 }
 
-function persistCategories(divId: string, categories: CategoryPricePlan[]) {
+function persistCategories(divId: string, categories: CategoryPricePlan[], tenantId?: string) {
   localStorage.setItem(storageKey(divId), JSON.stringify(categories));
+  // Write-through → Supabase price_tiers (fire-and-forget)
+  if (!tenantId) return;
+  const upserts = categories.map(cat => ({
+    tenant_id: tenantId,
+    division: divId,
+    category: cat.categoryId,
+    p1_min: TIER_CONFIG.p1.rangeMin,
+    p1_max: TIER_CONFIG.p1.rangeMax,
+    p2_min: TIER_CONFIG.p2.rangeMin,
+    p2_max: TIER_CONFIG.p2.rangeMax,
+    p3_min: TIER_CONFIG.p3.rangeMin,
+    p3_max: TIER_CONFIG.p3.rangeMax,
+    updated_at: new Date().toISOString(),
+  }));
+  supabase.from("price_tiers")
+    .upsert(upserts, { onConflict: "tenant_id,division,category" })
+    .then(({ error }) => { if (error) console.warn("[PricePyramid] Supabase:", error); });
 }
 
 function buildDefaults(divId: BusinessDivisionId): CategoryPricePlan[] {
@@ -116,14 +134,21 @@ export default function PricePyramid() {
 
   const divId = divisionId as BusinessDivisionId;
 
+  const tenantId = (() => {
+    try {
+      const cu = JSON.parse(sessionStorage.getItem("currentUser") ?? "{}");
+      return sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? "";
+    } catch { return ""; }
+  })();
+
   const [categories, setCategories] = useState<CategoryPricePlan[]>(() => {
     if (!divisionId) return [];
     return loadCategories(divId) ?? buildDefaults(divId);
   });
 
   useEffect(() => {
-    if (divisionId) persistCategories(divisionId, categories);
-  }, [divisionId, categories]);
+    if (divisionId) persistCategories(divisionId, categories, tenantId || undefined);
+  }, [divisionId, categories, tenantId]);
 
   // PMV estimado pela pirâmide — recalcula ao vivo
   const pmvEstimado = useMemo(() => {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { supabase } from "../../lib/supabase";
 import { useNavigate } from "react-router";
 import { Download, Check, RefreshCw } from "lucide-react";
 import { DashboardHeader } from "../components/DashboardHeader";
@@ -24,6 +25,7 @@ export default function CycleClosing() {
   const [filters, setFilters] = useState<Filters>({});
   const [showModal, setShowModal] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [tenantId, setTenantId] = useState<string>("");
 
   // Verba disponível (vem da Direção Criativa - Renata)
   const [verbaTotalDisponivel] = useState(150000); // R$ 150.000,00
@@ -31,159 +33,95 @@ export default function CycleClosing() {
   // Profile group do usuário (RBAC)
   const userProfileGroup = currentUser?.profile === "Estilo" ? "Feminino" : "Feminino"; // Mock - em produção vem do user
 
-  // Inicializa produtos (mock data - em produção vem do backend filtrado por profile_group)
+  // Inicializa produtos a partir do Supabase (products + inventory_snapshots)
   useEffect(() => {
-    if (!isInitialized) {
-      const mockProducts: ProductMarkdown[] = [
-        {
-          id: "1",
-          nome: "Blusa Oversized Linho",
-          foto: "https://images.unsplash.com/photo-1485968579580-b6d095142e6e?w=400",
-          grupo: "Feminino",
-          categoria: "Blusas",
-          subcategoria: "Blusa manga curta",
-          temaColecao: "Minimalista Urbano",
-          estoqueAtual: 250,
-          precoOriginal: 189.90,
-          custoUnitario: 75.00,
-          margemOriginal: 60.5,
-          continuidade: false,
+    if (isInitialized) return;
+
+    // Resolve tenant
+    const storedUser = sessionStorage.getItem("currentUser");
+    const userData = storedUser ? JSON.parse(storedUser) : null;
+    const tid = sessionStorage.getItem("activeTenantId") ?? userData?.tenant_id ?? "";
+    if (tid) setTenantId(tid);
+
+    const loadFromSupabase = async () => {
+      if (!tid) return null;
+
+      // Busca produtos do tenant
+      const { data: prods } = await supabase
+        .from("products")
+        .select("sku, name, division, category, subcategory, price_sale, price_cost, collection_name, risk_level, linha")
+        .eq("tenant_id", tid)
+        .limit(500);
+
+      if (!prods || prods.length === 0) return null;
+
+      // Busca snapshots de estoque mais recentes por sku
+      const skus = prods.map((p: any) => p.sku);
+      const { data: snaps } = await supabase
+        .from("inventory_snapshots")
+        .select("sku, quantity, snapshot_date")
+        .eq("tenant_id", tid)
+        .in("sku", skus)
+        .order("snapshot_date", { ascending: false });
+
+      // Pega o snapshot mais recente por sku
+      const latestSnap: Record<string, number> = {};
+      (snaps ?? []).forEach((s: any) => {
+        if (latestSnap[s.sku] === undefined) latestSnap[s.sku] = Number(s.quantity) || 0;
+      });
+
+      const mapped: ProductMarkdown[] = prods.map((p: any, i: number) => {
+        const venda = Number(p.price_sale) || 0;
+        const custo = Number(p.price_cost) || 0;
+        const margem = venda > 0 ? parseFloat((((venda - custo) / venda) * 100).toFixed(1)) : 0;
+        const estoque = latestSnap[p.sku] ?? 0;
+        return {
+          id: p.sku ?? String(i),
+          nome: p.name ?? p.sku,
+          foto: "",
+          grupo: p.division ?? "Feminino",
+          categoria: p.category ?? "Outros",
+          subcategoria: p.subcategory ?? "",
+          temaColecao: p.collection_name ?? "",
+          estoqueAtual: estoque,
+          precoOriginal: venda,
+          custoUnitario: custo,
+          margemOriginal: margem,
+          continuidade: p.linha === "Básicos",
           percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "2",
-          nome: "Vestido Midi Estampado",
-          foto: "https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=400",
-          grupo: "Feminino",
-          categoria: "Vestidos",
-          subcategoria: "Vestido midi",
-          temaColecao: "Verão Vibrante",
-          estoqueAtual: 180,
-          precoOriginal: 299.90,
-          custoUnitario: 120.00,
-          margemOriginal: 60.0,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "3",
-          nome: "Calça Wide Leg Alfaiataria",
-          foto: "https://images.unsplash.com/photo-1594633312681-425c7b97ccd1?w=400",
-          grupo: "Feminino",
-          categoria: "Calças",
-          subcategoria: "Calça wide leg",
-          temaColecao: "Minimalista Urbano",
-          estoqueAtual: 150,
-          precoOriginal: 349.90,
-          custoUnitario: 140.00,
-          margemOriginal: 60.0,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "4",
-          nome: "Saia Plissada Midi",
-          foto: "https://images.unsplash.com/photo-1583496661160-fb5886a0aaaa?w=400",
-          grupo: "Feminino",
-          categoria: "Saias",
-          subcategoria: "Saia midi",
-          temaColecao: "Verão Vibrante",
-          estoqueAtual: 200,
-          precoOriginal: 229.90,
-          custoUnitario: 90.00,
-          margemOriginal: 60.8,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "5",
-          nome: "Top Cropped Linho",
-          foto: "https://images.unsplash.com/photo-1594633313593-bab3825d0caf?w=400",
-          grupo: "Feminino",
-          categoria: "Blusas",
-          subcategoria: "Top cropped",
-          temaColecao: "Verão Vibrante",
-          estoqueAtual: 300,
-          precoOriginal: 139.90,
-          custoUnitario: 55.00,
-          margemOriginal: 60.7,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "6",
-          nome: "Jaqueta Jeans Oversized",
-          foto: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=400",
-          grupo: "Feminino",
-          categoria: "Jaquetas",
-          subcategoria: "Jaqueta jeans",
-          temaColecao: "Minimalista Urbano",
-          estoqueAtual: 120,
-          precoOriginal: 399.90,
-          custoUnitario: 160.00,
-          margemOriginal: 60.0,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "7",
-          nome: "Regata Ribana Básica",
-          foto: "https://images.unsplash.com/photo-1562157873-818bc0726f68?w=400",
-          grupo: "Feminino",
-          categoria: "Blusas",
-          subcategoria: "Regata",
-          temaColecao: "Minimalista Urbano",
-          estoqueAtual: 400,
-          precoOriginal: 89.90,
-          custoUnitario: 35.00,
-          margemOriginal: 61.1,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
-        {
-          id: "8",
-          nome: "Vestido Longo Floral",
-          foto: "https://images.unsplash.com/photo-1572804013309-59a88b7e92f1?w=400",
-          grupo: "Feminino",
-          categoria: "Vestidos",
-          subcategoria: "Vestido longo",
-          temaColecao: "Verão Vibrante",
-          estoqueAtual: 90,
-          precoOriginal: 449.90,
-          custoUnitario: 180.00,
-          margemOriginal: 60.0,
-          continuidade: false,
-          percentualDesconto: 0,
-          nivelCorte: "Baixo",
-        },
+          nivelCorte: p.risk_level ?? "Baixo",
+        };
+      });
+
+      return mapped;
+    };
+
+    const useFallback = () => {
+      const fallback: ProductMarkdown[] = [
+        { id: "1", nome: "Blusa Oversized Linho", foto: "", grupo: "Feminino", categoria: "Blusas", subcategoria: "Blusa manga curta", temaColecao: "Minimalista Urbano", estoqueAtual: 250, precoOriginal: 189.90, custoUnitario: 75, margemOriginal: 60.5, continuidade: false, percentualDesconto: 0, nivelCorte: "Baixo" },
+        { id: "2", nome: "Vestido Midi Estampado", foto: "", grupo: "Feminino", categoria: "Vestidos", subcategoria: "Vestido midi", temaColecao: "Verão Vibrante", estoqueAtual: 180, precoOriginal: 299.90, custoUnitario: 120, margemOriginal: 60, continuidade: false, percentualDesconto: 0, nivelCorte: "Baixo" },
+        { id: "3", nome: "Calça Wide Leg Alfaiataria", foto: "", grupo: "Feminino", categoria: "Calças", subcategoria: "Calça wide leg", temaColecao: "Minimalista Urbano", estoqueAtual: 150, precoOriginal: 349.90, custoUnitario: 140, margemOriginal: 60, continuidade: false, percentualDesconto: 0, nivelCorte: "Baixo" },
+        { id: "4", nome: "Saia Plissada Midi", foto: "", grupo: "Feminino", categoria: "Saias", subcategoria: "Saia midi", temaColecao: "Verão Vibrante", estoqueAtual: 200, precoOriginal: 229.90, custoUnitario: 90, margemOriginal: 60.8, continuidade: false, percentualDesconto: 0, nivelCorte: "Baixo" },
+        { id: "5", nome: "Jaqueta Jeans Oversized", foto: "", grupo: "Feminino", categoria: "Jaquetas", subcategoria: "Jaqueta jeans", temaColecao: "Minimalista Urbano", estoqueAtual: 120, precoOriginal: 399.90, custoUnitario: 160, margemOriginal: 60, continuidade: false, percentualDesconto: 0, nivelCorte: "Baixo" },
       ];
+      return fallback;
+    };
 
-      // Filtra por grupo do usuário (RBAC)
-      const filteredByGroup = mockProducts.filter(
-        (p) => p.grupo === userProfileGroup
-      );
-
-      // Ordena por estoque (DESC) - produtos com mais estoque primeiro
-      const sortedProducts = [...filteredByGroup].sort(
-        (a, b) => b.estoqueAtual - a.estoqueAtual
-      );
-
-      // Aplica distribuição linear inicial
-      const withInitialDistribution = calculateLinearDistribution(
-        sortedProducts,
-        verbaTotalDisponivel
-      );
-
-      setAllProducts(withInitialDistribution);
-      setIsInitialized(true);
-    }
+    loadFromSupabase()
+      .then((loaded) => {
+        const source = loaded ?? useFallback();
+        const filtered = source.filter((p) => p.grupo === userProfileGroup || loaded === null);
+        const sorted = [...filtered].sort((a, b) => b.estoqueAtual - a.estoqueAtual);
+        const withDist = calculateLinearDistribution(sorted, verbaTotalDisponivel);
+        setAllProducts(withDist);
+        setIsInitialized(true);
+      })
+      .catch(() => {
+        const fallback = useFallback();
+        const withDist = calculateLinearDistribution(fallback, verbaTotalDisponivel);
+        setAllProducts(withDist);
+        setIsInitialized(true);
+      });
   }, [isInitialized, userProfileGroup, verbaTotalDisponivel]);
 
   // Produtos filtrados

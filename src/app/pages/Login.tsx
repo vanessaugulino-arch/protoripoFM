@@ -110,7 +110,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gradient-to-br from-[#7598CF] to-[#9B8CD8] p-4">
+    <div className="min-h-screen w-full flex flex-col items-center justify-center p-4" style={{ background: 'radial-gradient(ellipse 120% 100% at 55% 40%, #87A7E7 0%, #6281B2 40%, #1F416C 70%, #0F2545 90%), radial-gradient(ellipse 60% 60% at 5% 100%, #2E1325 0%, transparent 60%)' }}>
       {/* Logo at Top */}
       <div className="text-center mb-8">
         <h1 className="text-[#F6F3AA] text-2xl">tfo <span className="text-[#F6F3AA]/70">/ THE FASHION OFFICE</span></h1>

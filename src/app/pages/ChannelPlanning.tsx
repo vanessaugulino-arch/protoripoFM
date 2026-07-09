@@ -34,14 +34,17 @@ import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import {
-  saveChannelScenario, listChannelScenarios, exportChannelScenarios,
-  markYearAsChannelReviewed, getChannelReviewedYears,
-} from "../../services/channelScenarioService";
-import type { ChannelScenario } from "../../services/channelScenarioService";
+  saveChannelScenario as dbSaveChannelScenario,
+  listChannelScenarios as dbListChannelScenarios,
+  deleteChannelScenario as dbDeleteChannelScenario,
+  getReviewedYears as dbGetReviewedYears,
+} from "../../services/supabase/channelScenarioService";
+import type { ChannelScenario } from "../../services/supabase/channelScenarioService";
+import { exportChannelScenarios } from "../../services/channelScenarioService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface UserData { name: string; email: string; profile: string }
+interface UserData { id?: string; name: string; email: string; profile: string }
 
 interface ChannelData {
   receita: number;           // computed: macroReceita × pct/100
@@ -52,7 +55,7 @@ interface ChannelData {
   custoMedio: number;        // R$ — driver
   giro: number;              // — driver
   cobertura: number;         // days — driver
-  otb: number;               // computed: producao × custoMedio
+  orcamento: number;           // computed: producao × custoMedio
   estoqueMedioRS: number;    // computed: receita / giro
   estoqueMedioPecas: number; // computed
   mkdPct: number;            // % — driver
@@ -82,7 +85,7 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
   pmv:           "PMV (R$)",
   ticketMedio:   "Ticket Médio (R$)",
   producaoPecas: "Produção / Peças",
-  otbCompra:     "OTB de Compra (R$)",
+  orcamento:     "Orçamento de Compra (R$)",
   mkdPct:        "Markdown (%)",
   giro:          "Giro de Estoque",
   cobertura:     "Cobertura (dias)",
@@ -103,7 +106,7 @@ const MACRO_TO_CHANNEL: Partial<Record<string, keyof ChannelData>> = {
   pmv:           "pmv",
   ticketMedio:   "ticketMedio",
   producaoPecas: "producao",
-  otbCompra:     "otb",
+  orcamento:     "orcamento",
   mkdPct:        "mkdPct",
   giro:          "giro",
   cobertura:     "cobertura",
@@ -122,7 +125,7 @@ const HIGHER_IS_BETTER: Partial<Record<keyof ChannelData, boolean>> = {
 // Tooltips para campos calculados (não-driver)
 const COMPUTED_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   margemBrutaRS:     "Calculado: Receita × Margem Bruta %. Para alterar, edite a Margem Bruta (%).",
-  otb:               "Calculado: Peças × Custo Médio. Para alterar, edite o Custo Médio.",
+  orcamento:         "Calculado: Peças × Custo Médio. Para alterar, edite o Custo Médio.",
   estoqueMedioRS:    "Calculado: Receita ÷ Giro. Para alterar, edite o Giro.",
   estoqueMedioPecas: "Calculado: Estoque Médio (R$) ÷ PMV.",
   producao:          "Calculado: Receita ÷ PMV. Para alterar o volume, ajuste o PMV ou a participação.",
@@ -136,7 +139,7 @@ const DRIVER_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   margemBruta:  "Percentual que sobra da receita após o custo dos produtos. Impacta diretamente a rentabilidade do canal.",
   pmv:          "Preço Médio de Venda — valor médio por peça vendida neste canal. Determina o volume de peças necessário para atingir a receita.",
   ticketMedio:  "Valor médio gasto por cliente em cada compra. Tickets maiores indicam maior mix ou volume por transação.",
-  custoMedio:   "Custo unitário médio das peças vendidas neste canal. Base de cálculo do OTB e da margem bruta.",
+  custoMedio:   "Custo unitário médio das peças vendidas neste canal. Base de cálculo do Orçamento e da margem bruta.",
   giro:         "Quantas vezes o estoque se renova no período. Giro alto = menos capital parado, mais liquidez.",
   cobertura:    "Quantos dias o estoque disponível cobre as vendas. Cobertura alta aumenta o risco de sobrestoque.",
   mkdPct:       "Percentual de desconto aplicado sobre a receita bruta. Markdown alto corrói a margem do canal.",
@@ -146,14 +149,14 @@ const DRIVER_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
 // ─── Pure functions ────────────────────────────────────────────────────────────
 
 function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
-  const otbRate        = data.receita > 0 ? data.otb / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365);
+  const orcRate        = data.receita > 0 ? data.orcamento / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365);
   const estoqueMedioRS = data.giro > 0 ? Math.round(newReceita / data.giro) : 0;
   const producao       = data.pmv > 0 ? Math.round(newReceita / data.pmv) : 0;
   return {
     ...data,
     receita:           newReceita,
     margemBrutaRS:     Math.round(newReceita * data.margemBruta / 100),
-    otb:               Math.round(newReceita * otbRate),
+    orcamento:         Math.round(newReceita * orcRate),
     estoqueMedioRS,
     estoqueMedioPecas: data.pmv > 0 ? Math.round(estoqueMedioRS / data.pmv) : 0,
     producao,
@@ -168,12 +171,12 @@ function buildChannel(
 ): ChannelData {
   const estoqueMedioRS = rates.giro > 0 ? Math.round(receita / rates.giro) : 0;
   const producao       = rates.pmv > 0 ? Math.round(receita / rates.pmv) : 0;
-  const otbRate        = rates.custoMedio > 0 && rates.pmv > 0 ? rates.custoMedio / rates.pmv : 0.365;
+  const orcRate2       = rates.custoMedio > 0 && rates.pmv > 0 ? rates.custoMedio / rates.pmv : 0.365;
   return {
     receita,
     margemBrutaRS:     Math.round(receita * rates.margemBruta / 100),
     ...rates,
-    otb:               Math.round(receita * otbRate),
+    orcamento:         Math.round(receita * orcRate2),
     estoqueMedioRS,
     estoqueMedioPecas: rates.pmv > 0 ? Math.round(estoqueMedioRS / rates.pmv) : 0,
     producao,
@@ -196,6 +199,7 @@ const INIT_PERCENTS: Record<ChannelId, number> = { atacado: 40, varejo: 35, ecom
 export default function ChannelPlanning() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
+  const [tenantId, setTenantId] = useState<string>("");
   const tour = useTour("channel-planning");
 
   useEffect(() => {
@@ -203,8 +207,20 @@ export default function ChannelPlanning() {
     if (stored) {
       const u = JSON.parse(stored);
       setUser(u);
+      const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
+      setTenantId(tid);
       const hasAccess = u.profile === "CEO" || u.system_role === "support" || u.system_role === "client_admin";
       if (!hasAccess) navigate("/dashboard");
+
+      // Carregar cenários e anos revisados do Supabase
+      if (tid) {
+        dbListChannelScenarios(tid, defaultYear)
+          .then(rows => setSavedScenarios(rows))
+          .catch(() => {/* fallback to localStorage state */});
+        dbGetReviewedYears(tid)
+          .then(years => setReviewedYears(years))
+          .catch(() => {/* fallback */});
+      }
     } else navigate("/");
   }, [navigate]);
 
@@ -212,7 +228,7 @@ export default function ChannelPlanning() {
   const plannedYears = getPlannedYears();
   const defaultYear  = plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1;
   const [selectedYear, setSelectedYear]   = useState<number>(defaultYear);
-  const [reviewedYears, setReviewedYears] = useState<number[]>(() => getChannelReviewedYears());
+  const [reviewedYears, setReviewedYears] = useState<number[]>([]);
 
   const planCycle    = getPlanCycle(selectedYear);
   const macroValues: Record<string, unknown> | null = planCycle?.versions?.[0]?.values ?? null;
@@ -251,11 +267,15 @@ export default function ChannelPlanning() {
     const newMacroR = (plan?.versions?.[0]?.values?.receitaBruta as number | null) ?? 3_120_000;
     setChannelData(initChannelData(newMacroR));
     setPercents(initPercents);
-    setSavedScenarios(listChannelScenarios(selectedYear));
-  }, [selectedYear, initPercents]);
+    if (tenantId) {
+      dbListChannelScenarios(tenantId, selectedYear)
+        .then(rows => setSavedScenarios(rows))
+        .catch(() => setSavedScenarios([]));
+    }
+  }, [selectedYear, initPercents, tenantId]);
 
   // Scenarios
-  const [savedScenarios, setSavedScenarios]         = useState<ChannelScenario[]>(() => listChannelScenarios(selectedYear));
+  const [savedScenarios, setSavedScenarios]         = useState<ChannelScenario[]>([]);
   const [showSaveDialog, setShowSaveDialog]         = useState(false);
   const [saveNameInput, setSaveNameInput]           = useState("");
   const [toast, setToast]                           = useState<string | null>(null);
@@ -300,16 +320,30 @@ export default function ChannelPlanning() {
   };
 
   const handleConfirmSave = () => {
-    const sc = saveChannelScenario(selectedYear, saveNameInput,
-      { percents, channelData: channelData as unknown as Record<string, Record<string, number>> });
-    setSavedScenarios(listChannelScenarios(selectedYear));
-    setShowSaveDialog(false); setSaveNameInput("");
-    showToast(`Cenário "${sc.name}" salvo.`);
+    if (!tenantId) return;
+    const name = saveNameInput.trim() || `Cenário ${new Date().toLocaleDateString("pt-BR")}`;
+    dbSaveChannelScenario(tenantId, selectedYear, name,
+      { percents, channelData: channelData as unknown as Record<string, Record<string, number>> },
+      user?.email
+    ).then(sc => {
+      setSavedScenarios(prev => [...prev, sc]);
+      showToast(`Cenário "${sc.name}" salvo.`);
+    }).catch(err => showToast("Erro ao salvar: " + err.message));
+    setShowSaveDialog(false);
+    setSaveNameInput("");
   };
 
   const handleExport = () => {
     if (!savedScenarios.length) { showToast("Salve ao menos um cenário antes de exportar."); return; }
-    exportChannelScenarios(selectedYear, savedScenarios);
+    // Cast Supabase ChannelScenario to legacy export format
+    const legacyScenarios = savedScenarios.map(sc => ({
+      id: sc.id,
+      name: sc.name,
+      year: sc.year,
+      savedAt: sc.saved_at,
+      data: { percents: sc.percents, channelData: sc.channel_data as Record<string, Record<string, number>> },
+    }));
+    exportChannelScenarios(selectedYear, legacyScenarios as any);
     showToast("Exportação iniciada.");
   };
 
@@ -317,16 +351,23 @@ export default function ChannelPlanning() {
   const handleExportPDF = async () => {
     setIsExportingPDF(true);
     await exportToPDF({
-      elementId: "channel-export-content",
-      fileName:  `planejamento_canais_${selectedYear}`,
-      title:     `Planejamento por Canal ${selectedYear}`,
+      elementId: "channel-scenarios-pdf",
+      fileName:  `cenarios_canais_${selectedYear}`,
+      title:     `Comparação de Cenários — Planejamento por Canal ${selectedYear}`,
     });
     setIsExportingPDF(false);
   };
 
   const handleApplyMetas = () => {
-    markYearAsChannelReviewed(selectedYear);
-    setReviewedYears(getChannelReviewedYears());
+    if (!tenantId) return;
+    // Aplica o cenário mais recente e marca o ano como revisado
+    const last = savedScenarios[savedScenarios.length - 1];
+    if (last) {
+      import("../../services/supabase/channelScenarioService").then(({ applyChannelScenario }) =>
+        applyChannelScenario(tenantId, selectedYear, last.id)
+      ).catch(() => {});
+    }
+    setReviewedYears(prev => prev.includes(selectedYear) ? prev : [...prev, selectedYear]);
     showToast(`Metas do ciclo ${selectedYear} aplicadas. Ciclo marcado como revisado.`);
   };
 
@@ -343,7 +384,7 @@ export default function ChannelPlanning() {
 
     const summary: ScenarioSummary[] = sel.map(sc => {
       const chs = visibleChannels;
-      const chData = sc.data.channelData as Record<string, Record<string, number>>;
+      const chData = (sc.channel_data as unknown as Record<string, Record<string, number>>);
       const totalR = chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0), 0);
       const wAvg = (key: string) =>
         totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
@@ -351,7 +392,7 @@ export default function ChannelPlanning() {
 
       return {
         name: sc.name,
-        savedAt: sc.savedAt,
+        savedAt: sc.saved_at,
         channels: Object.fromEntries(chs.map(ch => [ch, chData[ch] ?? {}])),
         consolidated: {
           receita:           totalR,
@@ -362,7 +403,7 @@ export default function ChannelPlanning() {
           custoMedio:        +wAvg('custoMedio').toFixed(0),
           giro:              +wAvg('giro').toFixed(2),
           cobertura:         +wAvg('cobertura').toFixed(0),
-          otb:               sum('otb'),
+          orcamento:         sum('orcamento'),
           mkdPct:            +wAvg('mkdPct').toFixed(1),
           markdown:          sum('markdown'),
           producao:          sum('producao'),
@@ -390,7 +431,7 @@ export default function ChannelPlanning() {
       custoMedio:        +w(c => c.custoMedio).toFixed(0),
       giro:              +w(c => c.giro).toFixed(2),
       cobertura:         +w(c => c.cobertura).toFixed(0),
-      otb:               chs.reduce((s, c) => s + c.otb, 0),
+      orcamento:         chs.reduce((s, c) => s + c.orcamento, 0),
       estoqueMedioRS:    chs.reduce((s, c) => s + c.estoqueMedioRS, 0),
       estoqueMedioPecas: chs.reduce((s, c) => s + c.estoqueMedioPecas, 0),
       mkdPct:            +(totalR > 0 ? (totalMkd / totalR) * 100 : 0).toFixed(1),
@@ -409,7 +450,7 @@ export default function ChannelPlanning() {
     const projected: Record<string, number> = {
       receitaBruta: consolidated.receita, margemBruta: consolidated.margemBruta,
       pmv: consolidated.pmv, ticketMedio: consolidated.ticketMedio,
-      producaoPecas: consolidated.producao, otbCompra: consolidated.otb,
+      producaoPecas: consolidated.producao, orcamento: consolidated.orcamento,
       mkdPct: consolidated.mkdPct, giro: consolidated.giro,
       cobertura: consolidated.cobertura, gmroi: consolidated.gmroi,
       custoMedio: consolidated.custoMedio,
@@ -452,7 +493,7 @@ export default function ChannelPlanning() {
     { label: "Ticket Médio (R$)",    key: "ticketMedio",   format: "currency",   isDriver: true,  macroKey: "ticketMedio"   },
     { label: "Giro",                 key: "giro",          format: "multiplier", isDriver: true,  macroKey: "giro"          },
     { label: "Cobertura (dias)",     key: "cobertura",     format: "days",       isDriver: true,  macroKey: "cobertura"     },
-    { label: "OTB (custo) (R$)",     key: "otb",           format: "currency",   isDriver: false, macroKey: "otbCompra"     },
+    { label: "Orçamento (R$)",       key: "orcamento",     format: "currency",   isDriver: false, macroKey: "orcamento"     },
     { label: "Produção (peças)",     key: "producao",      format: "number",     isDriver: false, macroKey: "producaoPecas" },
     { label: "MKD (%)",              key: "mkdPct",        format: "percent",    isDriver: true,  macroKey: "mkdPct"        },
     { label: "MKD (R$)",             key: "markdown",      format: "currency",   isDriver: false                           },
@@ -497,7 +538,7 @@ export default function ChannelPlanning() {
        margemBruta: consolidated.margemBruta, pmv: consolidated.pmv,
        ticketMedio: consolidated.ticketMedio, custoMedio: consolidated.custoMedio,
        giro: consolidated.giro, cobertura: consolidated.cobertura,
-       otb: consolidated.otb, estoqueMedioRS: consolidated.estoqueMedioRS,
+       orcamento: consolidated.orcamento, estoqueMedioRS: consolidated.estoqueMedioRS,
        estoqueMedioPecas: consolidated.estoqueMedioPecas, mkdPct: consolidated.mkdPct,
        markdown: consolidated.markdown, producao: consolidated.producao,
        totalPecas: consolidated.totalPecas, gmroi: consolidated.gmroi,
@@ -505,7 +546,7 @@ export default function ChannelPlanning() {
 
   // Is this consolidated field off-target?
   const CHANNEL_TO_MACRO: Partial<Record<keyof ChannelData, string>> = {
-    otb: "otbCompra", producao: "producaoPecas", totalPecas: "producaoPecas", margemBrutaRS: "margemBruta",
+    orcamento: "orcamento", producao: "producaoPecas", totalPecas: "producaoPecas", margemBrutaRS: "margemBruta",
   };
   const isConsolidatedImpacted = (key: keyof ChannelData) => {
     const mk = CHANNEL_TO_MACRO[key] ?? (key as string);
@@ -823,7 +864,7 @@ export default function ChannelPlanning() {
                 <div key={sc.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 bg-white border-[#28071C]/10 text-[#28071C]/65">
                   <Check className="w-3 h-3 text-[#7598CF]" />
                   <span className="font-medium">{sc.name}</span>
-                  <span className="text-[10px] text-[#28071C]/30">{new Date(sc.savedAt).toLocaleDateString("pt-BR")}</span>
+                  <span className="text-[10px] text-[#28071C]/30">{new Date(sc.saved_at).toLocaleDateString("pt-BR")}</span>
                 </div>
               ))}
             </div>
@@ -844,10 +885,6 @@ export default function ChannelPlanning() {
                 <GitCompare className="w-4 h-4" />Comparar
                 {savedScenarios.length >= 2 && <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{savedScenarios.length}</span>}
               </button>
-              <button onClick={handleExport} disabled={!savedScenarios.length}
-                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
-                <Download className="w-4 h-4" />Exportar JSON
-              </button>
               <button onClick={handleExportPDF} disabled={isExportingPDF}
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
                 <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
@@ -857,7 +894,7 @@ export default function ChannelPlanning() {
               disabled={totalPercent !== 100}
               title={totalPercent !== 100 ? "Participação dos canais deve somar 100%" : "Aplicar metas e concluir revisão"}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
-                totalPercent === 100 ? "bg-emerald-600 text-white hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
+                totalPercent === 100 ? "bg-[#28071C] text-[#F6F3AA] hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
               }`}>
               <Lock className="w-4 h-4" />Aplicar Metas
             </button>
@@ -927,7 +964,7 @@ export default function ChannelPlanning() {
                       { key: 'custoMedio',   label: 'Custo Médio (R$)',     format: 'currency'   },
                       { key: 'giro',         label: 'Giro',                 format: 'multiplier' },
                       { key: 'cobertura',    label: 'Cobertura (dias)',     format: 'days'       },
-                      { key: 'otb',          label: 'OTB (custo R$)',       format: 'currency'   },
+                      { key: 'orcamento',    label: 'Orçamento (R$)',       format: 'currency'   },
                       { key: 'mkdPct',       label: 'Markdown (%)',         format: 'percent'    },
                       { key: 'markdown',     label: 'Markdown (R$)',        format: 'currency'   },
                       { key: 'producao',     label: 'Produção (peças)',     format: 'number'     },
@@ -1008,7 +1045,7 @@ export default function ChannelPlanning() {
                           onChange={e => setSelectedForCompare(prev => e.target.checked ? [...prev, sc.id] : prev.filter(id => id !== sc.id))} />
                         <div className="flex-1">
                           <p className="text-[#28071C] text-sm font-semibold">{sc.name}</p>
-                          <p className="text-[#28071C]/40 text-xs">{new Date(sc.savedAt).toLocaleString("pt-BR")}</p>
+                          <p className="text-[#28071C]/40 text-xs">{new Date(sc.saved_at).toLocaleString("pt-BR")}</p>
                         </div>
                       </label>
                     );
@@ -1031,6 +1068,71 @@ export default function ChannelPlanning() {
       {tour.isOpen && (
         <ProductTour steps={CHANNEL_PLANNING_TOUR} onClose={tour.dismiss} />
       )}
+
+      {/* ── PDF hidden element — scenario comparison cards ────────────────── */}
+      <div
+        id="channel-scenarios-pdf"
+        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
+      >
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
+          Planejamento por Canal {selectedYear}
+        </p>
+        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
+          Comparação de Cenários — Consolidado Ponderado
+        </p>
+        {savedScenarios.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+            {savedScenarios.map(sc => {
+              const chData = sc.channel_data as Record<string, Record<string, number>>;
+              const chs = visibleChannels;
+              const totalR = chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0), 0);
+              const wAvg = (key: string) =>
+                totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
+              const sum = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
+              const cons = {
+                receita:    totalR,
+                margemBruta: +wAvg('margemBruta').toFixed(1),
+                orcamento:  sum('orcamento'),
+                pmv:        +wAvg('pmv').toFixed(0),
+                giro:       +wAvg('giro').toFixed(2),
+                cobertura:  +wAvg('cobertura').toFixed(0),
+                mkdPct:     +wAvg('mkdPct').toFixed(1),
+                producao:   sum('producao'),
+              };
+              const PDF_ROWS: { label: string; val: string }[] = [
+                { label: 'Receita Total (R$)',  val: `R$ ${Math.round(cons.receita).toLocaleString('pt-BR')}` },
+                { label: 'Margem Bruta (%)',    val: `${cons.margemBruta}%` },
+                { label: 'PMV (R$)',            val: `R$ ${Math.round(cons.pmv).toLocaleString('pt-BR')}` },
+                { label: 'Orçamento (R$)',      val: `R$ ${Math.round(cons.orcamento).toLocaleString('pt-BR')}` },
+                { label: 'Giro',               val: `${cons.giro}x` },
+                { label: 'Cobertura (dias)',    val: `${Math.round(cons.cobertura)} dias` },
+                { label: 'Markdown (%)',        val: `${cons.mkdPct}%` },
+                { label: 'Produção (peças)',    val: Math.round(cons.producao).toLocaleString('pt-BR') },
+              ];
+              const isActive = sc.is_applied;
+              return (
+                <div key={sc.id} style={{ flex: '1 1 200px', minWidth: '180px', maxWidth: '240px', background: 'white', borderRadius: '12px', padding: '14px', borderTop: `4px solid ${isActive ? '#7598CF' : '#28071C'}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
+                    {isActive && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px', padding: '4px 0', fontSize: '9px', fontWeight: 700, color: 'rgba(40,7,28,0.4)', textTransform: 'uppercase' as const, letterSpacing: '0.05em', borderBottom: '1px solid #F2F2F2' }}>
+                    <span>Indicador</span><span style={{ textAlign: 'right' }}>Valor</span>
+                  </div>
+                  {PDF_ROWS.map((row, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: '10px', color: '#28071C' }}>
+                      <span style={{ opacity: 0.6 }}>{row.label}</span>
+                      <span style={{ textAlign: 'right', fontWeight: 600 }}>{row.val}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

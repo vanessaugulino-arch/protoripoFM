@@ -29,10 +29,12 @@ import {
   Download,
   GitCompare,
   ChevronRight,
+  CheckCheck,
+  FileDown,
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
-import { isTemporadaPast } from "../../services/temporadaService";
+import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
   getPlanCycle,
@@ -257,8 +259,42 @@ function shiftMonth(dateStr: string, n: number): string {
   if (!dateStr) return "";
   const base = dateStr.slice(0, 7); // "YYYY-MM"
   const d = new Date(base + "-01T00:00:00");
+  if (isNaN(d.getTime())) return "";
   d.setMonth(d.getMonth() + n);
+  if (isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 7);
+}
+
+/**
+ * Converte nome de mês em PT-BR ("Agosto") + ano fiscal para "YYYY-MM".
+ * Para mesFim que cruza o ano-calendário (ex: Verão: Ago→Fev),
+ * passa `yearOffset=1` quando o índice do fim < índice do início.
+ */
+function monthNameToYM(monthName: string, year: number): string {
+  const idx = MONTHS.indexOf(monthName);
+  if (idx === -1 || !year) return "";
+  return `${year}-${String(idx + 1).padStart(2, "0")}`;
+}
+
+/** Gera lista "YYYY-MM" entre início e fim de uma Temporada (lida com virada de ano). */
+function seasonMonthRange(t: Temporada): string[] {
+  if (!t.mesInicio || !t.mesFim || !t.anoFiscal) return [];
+  const idxIni = MONTHS.indexOf(t.mesInicio);
+  const idxFim = MONTHS.indexOf(t.mesFim);
+  if (idxIni === -1 || idxFim === -1) return [];
+  // mesFim pode ser no ano seguinte (ex: Ago → Fev)
+  const fimYear = idxFim < idxIni ? t.anoFiscal + 1 : t.anoFiscal;
+  const start = monthNameToYM(t.mesInicio, t.anoFiscal);
+  const end   = monthNameToYM(t.mesFim, fimYear);
+  const months: string[] = [];
+  let cur = start;
+  // limite de segurança: máximo 24 meses
+  let guard = 0;
+  while (cur && cur <= end && guard++ < 24) {
+    months.push(cur);
+    cur = shiftMonth(cur, 1);
+  }
+  return months;
 }
 
 function monthLabel(ym: string) {
@@ -489,13 +525,13 @@ export default function SortimentPlan() {
     allocPieces = Math.round(allocPieces);
 
     // Sell-through implícito: COGS_alvo / OTB_custo
-    // COGS_alvo = receita × (1 – margem%)  →  ST = COGS_alvo / OTB
+    // COGS_alvo = receita × (1 – margem%)  →  ST = COGS_alvo / Orçamento
     let sellThrough: number | null = null;
     if (macroRec != null && macroMgm != null && macroOtb != null && macroOtb > 0) {
       sellThrough = Math.round(((macroRec * (1 - macroMgm / 100)) / macroOtb) * 1000) / 10;
     }
 
-    // Peças de OTB disponíveis (capacidade total – peças já planejadas)
+    // Peças de Orçamento disponíveis (capacidade total – peças já planejadas)
     // PMV ponderado para calcular peças alvo: usa macroPmv ou calcula das divisões
     const pmvRef = macroPmv ?? (allocPieces > 0 ? allocRevenue / allocPieces : null);
     let otbPiecesTarget: number | null = null;
@@ -766,15 +802,11 @@ export default function SortimentPlan() {
 
   const timelineMonths = useMemo((): string[] => {
     // 1) Usa o intervalo completo da temporada selecionada (mesInicio → mesFim)
+    //    mesInicio/mesFim são nomes PT-BR ("Agosto") — converter para YYYY-MM primeiro
     const currentSeason = seasonId ? temporadas.find(t => t.id === seasonId) : null;
-    if (currentSeason?.mesInicio && currentSeason?.mesFim) {
-      const months: string[] = [];
-      let cur = currentSeason.mesInicio;
-      while (cur <= currentSeason.mesFim) {
-        months.push(cur);
-        cur = shiftMonth(cur, 1);
-      }
-      return months;
+    if (currentSeason) {
+      const range = seasonMonthRange(currentSeason);
+      if (range.length > 0) return range;
     }
 
     // 2) Fallback: deriva das datas das coleções cadastradas
@@ -1068,7 +1100,7 @@ export default function SortimentPlan() {
 
           {/* Sell-through alvo */}
           {topbarKpis.sellThrough != null && (
-            <HeaderTooltip text="Sell-through implícito do plano: percentual do estoque comprado que precisa ser vendido para atingir a receita alvo com o OTB disponível. Quanto mais próximo de 100%, mais eficiente o plano.">
+            <HeaderTooltip text="Sell-through implícito do plano: percentual do estoque comprado que precisa ser vendido para atingir a receita alvo com o Orçamento disponível. Quanto mais próximo de 100%, mais eficiente o plano.">
               <div className="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/15 rounded-lg px-2.5 py-1 cursor-default">
                 <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Sell-through</span>
                 <span className={`text-xs font-bold ${
@@ -1092,11 +1124,11 @@ export default function SortimentPlan() {
             </HeaderTooltip>
           )}
 
-          {/* OTB disponível R$ */}
+          {/* Orçamento disponível R$ */}
           {topbarKpis.macroOtb != null && (
-            <HeaderTooltip text="Orçamento total de compras disponível (OTB). Cada coleção planejada consome parte deste orçamento — o saldo diminui conforme o plano é construído.">
+            <HeaderTooltip text="Orçamento total de compras disponível. Cada coleção planejada consome parte deste orçamento — o saldo diminui conforme o plano é construído.">
               <div className="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/15 rounded-lg px-2.5 py-1 cursor-default">
-                <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">OTB</span>
+                <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Orçamento</span>
                 <span className="text-xs font-bold text-[#F6F3AA]">{fmtCurrency(topbarKpis.macroOtb)}</span>
                 <Info className="w-3 h-3 text-[#F6F3AA]/40" />
               </div>
@@ -1105,14 +1137,14 @@ export default function SortimentPlan() {
 
           <div className="w-px h-4 bg-white/20 mx-1 flex-shrink-0" />
 
-          {/* Peças de OTB disponíveis — abate conforme coleções são planejadas */}
+          {/* Peças do Orçamento disponíveis — abate conforme coleções são planejadas */}
           <HeaderTooltip text={
             topbarKpis.otbPiecesRemaining != null
-              ? `Saldo de peças ainda disponíveis no OTB. Total estimado: ${fmtNum(topbarKpis.otbPiecesTarget ?? 0)} peças — já planejadas: ${fmtNum(topbarKpis.allocPieces)} peças. Este número diminui à medida que as coleções são planejadas com orçamento e preço médio.`
+              ? `Saldo de peças ainda disponíveis no Orçamento. Total estimado: ${fmtNum(topbarKpis.otbPiecesTarget ?? 0)} peças — já planejadas: ${fmtNum(topbarKpis.allocPieces)} peças. Este número diminui à medida que as coleções são planejadas com orçamento e preço médio.`
               : "Volume de peças novas previstas para a temporada, calculado a partir das coleções planejadas com orçamento e preço médio."
           }>
             <div className="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/15 rounded-lg px-2.5 py-1 cursor-default">
-              <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Peças OTB</span>
+              <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Peças Orçamento</span>
               {topbarKpis.otbPiecesRemaining != null ? (
                 <span className={`text-xs font-bold ${
                   topbarKpis.otbPiecesRemaining > 0 ? "text-[#F6F3AA]" : "text-emerald-300"
@@ -1307,7 +1339,7 @@ export default function SortimentPlan() {
                             {STRATEGIC_FOCUS_LABELS[focus]}
                           </span>
                         </div>
-                        <Tooltip text="Indicadores da divisão selecionada. Receita, margem e OTB são específicos desta divisão na temporada, calculados a partir do Módulo 3 — Plano por Divisão." side="bottom">
+                        <Tooltip text="Indicadores da divisão selecionada. Receita, margem e Orçamento são específicos desta divisão na temporada, calculados a partir do Módulo 3 — Plano por Divisão." side="bottom">
                           <span className="flex items-center gap-1 text-[10px] text-[#28071C]/40 cursor-default">
                             Planejamento Estratégico <Info className="w-3 h-3" />
                           </span>
@@ -1335,7 +1367,7 @@ export default function SortimentPlan() {
                         <Tooltip text="Orçamento de compra estimado para esta divisão na temporada. Calculado como receita alvo × (1 − margem%). Em modelos híbridos, representa a soma de compra e produção." side="bottom">
                           <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
-                              OTB de Compra <Info className="w-3 h-3 opacity-40" />
+                              Orçamento de Compra <Info className="w-3 h-3 opacity-40" />
                             </div>
                             <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOtb)}</div>
                           </div>
@@ -2450,6 +2482,60 @@ export default function SortimentPlan() {
           </div>
         )}
       </main>
+
+      {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
+      {seasonId && (
+        <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3 print:hidden">
+          <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowSaveModal(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm"
+              >
+                <Save className="w-4 h-4" />
+                Salvar cenário
+              </button>
+              <button
+                onClick={() => { if (scenarios.length >= 2) { setCompareScenarioId(scenarios[scenarios.length - 1].id); setShowScenarioPanel(false); setShowCompareModal(true); } else { setShowScenarioPanel(true); } }}
+                disabled={scenarios.length === 0}
+                title={scenarios.length === 0 ? "Salve ao menos um cenário primeiro" : scenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : "Comparar cenários salvos"}
+                className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl text-sm font-semibold hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all"
+              >
+                <GitCompare className="w-4 h-4" />
+                Comparar
+                {scenarios.length >= 2 && (
+                  <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">
+                    {scenarios.length}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={exportPDF}
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 transition-colors"
+              >
+                <FileDown className="w-4 h-4" />
+                Exportar PDF
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                if (scenarios.length === 0) return;
+                const latest = scenarios[scenarios.length - 1];
+                loadScenario(latest);
+              }}
+              disabled={scenarios.length === 0}
+              title={scenarios.length === 0 ? "Salve um cenário antes de aplicar" : `Aplicar cenário "${scenarios[scenarios.length - 1]?.name ?? ''}"`}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+            >
+              <CheckCheck className="w-4 h-4" />
+              Aplicar cenário
+            </button>
+          </div>
+          <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
+            Cenários não alteram o plano atual até "Aplicar cenário" ser acionado.
+          </p>
+        </div>
+      )}
 
       {/* ── MODAL: Seleção / Troca de Temporada ─────────────────────────────── */}
       {showSeasonPicker && (

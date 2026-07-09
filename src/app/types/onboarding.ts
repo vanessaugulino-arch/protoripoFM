@@ -124,7 +124,11 @@ export interface TeamInvite {
 }
 
 // ─── Opção de importação de dados ────────────────────────────────────────────
-export type DataImportChoice = 'completa' | 'hierarquia' | 'deferred'
+export type DataImportChoice =
+  | 'erp_completo'   // ERP já tem tudo, incluindo hierarquia
+  | 'hierarquia'     // ERP para dados + planilha para hierarquia
+  | 'completa'       // tudo via planilhas (sem ERP)
+  | 'deferred'       // importar depois
 
 // ─── Perfil salvo após onboarding ────────────────────────────────────────────
 export interface OnboardingProfile {

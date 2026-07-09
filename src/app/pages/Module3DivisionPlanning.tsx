@@ -37,6 +37,8 @@ import {
   X,
   Play,
   FileDown,
+  GitCompare,
+  CheckCheck,
   HelpCircle,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
@@ -90,11 +92,17 @@ import {
   listModule3Scenarios,
   saveModule3Scenario,
 } from "../../services/module3ScenarioService";
+import {
+  listDivisionScenarios,
+  saveDivisionScenario,
+  deleteDivisionScenario,
+} from "../../services/supabase/divisionScenarioService";
 import { useModule3 } from "../../hooks/useModule3";
 
 // ─── Tipos locais ─────────────────────────────────────────────────────────────
 
 interface UserData {
+  id?: string;
   name: string;
   email: string;
   profile: string;
@@ -184,6 +192,7 @@ export default function Module3DivisionPlanning() {
   const navigate = useNavigate();
   const tour     = useTour("module3-division");
   const [user, setUser] = useState<UserData | null>(null);
+  const [tenantId, setTenantId] = useState<string>("");
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
@@ -194,6 +203,8 @@ export default function Module3DivisionPlanning() {
   const [scenarioDescription, setScenarioDescription] = useState("");
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [applySuccess, setApplySuccess] = useState(false);
 
   // ─── Inicialização ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -201,28 +212,42 @@ export default function Module3DivisionPlanning() {
     if (storedUser) {
       const userData = JSON.parse(storedUser);
       setUser(userData);
+      const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
+      setTenantId(tid);
       const hasAccess = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
       if (!hasAccess) navigate("/dashboard");
+
+      // Carregar temporadas do Supabase
+      if (tid) {
+        import("../../services/temporadaService").then(({ getTemporadas }) =>
+          getTemporadas(tid).then(seasons => {
+            if (seasons.length > 0) {
+              setTemporadas(seasons);
+              setSelectedSeasonId(String(seasons[0].id));
+              if (seasons.length > 1) setReferenceSeasonId(String(seasons[1].id));
+            } else {
+              setTemporadas(FALLBACK_TEMPORADAS);
+              setSelectedSeasonId(String(FALLBACK_TEMPORADAS[0].id));
+              setReferenceSeasonId(String(FALLBACK_TEMPORADAS[1].id));
+            }
+          })
+        ).catch(() => {
+          // Fallback para localStorage
+          try {
+            const stored = localStorage.getItem("fashionmind_temporadas");
+            if (stored) {
+              const parsed: Temporada[] = JSON.parse(stored);
+              setTemporadas(parsed);
+              if (parsed.length > 0) {
+                setSelectedSeasonId(String(parsed[0].id));
+                if (parsed.length > 1) setReferenceSeasonId(String(parsed[1].id));
+              }
+            }
+          } catch { /* ignore */ }
+        });
+      }
     } else {
       navigate("/");
-    }
-
-    try {
-      const stored = localStorage.getItem("fashionmind_temporadas");
-      if (stored) {
-        const parsed: Temporada[] = JSON.parse(stored);
-        setTemporadas(parsed);
-        if (parsed.length > 0) {
-          setSelectedSeasonId(String(parsed[0].id));
-          if (parsed.length > 1) setReferenceSeasonId(String(parsed[1].id));
-        }
-      } else {
-        setTemporadas(FALLBACK_TEMPORADAS);
-        setSelectedSeasonId(String(FALLBACK_TEMPORADAS[0].id));
-        setReferenceSeasonId(String(FALLBACK_TEMPORADAS[1].id));
-      }
-    } catch {
-      // temporadas não configuradas ainda
     }
 
     setIsLoading(false);
@@ -273,6 +298,9 @@ export default function Module3DivisionPlanning() {
 
   if (!user || isLoading) return null;
 
+  // Derivadas simples (não são hooks — podem vir depois do early return)
+  const activeScenario = scenarios.find(s => s.isActive) ?? null;
+
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
   const handleSaveScenario = () => {
@@ -285,6 +313,18 @@ export default function Module3DivisionPlanning() {
     setScenarioDescription("");
     setShowScenarioModal(false);
     setScenarioListVersion((v) => v + 1);
+
+    // Write-through → Supabase (fire-and-forget)
+    if (tenantId && selectedSeasonId) {
+      const yearNum = Number(selectedSeasonId.split("-")[0]) || new Date().getFullYear();
+      saveDivisionScenario(
+        tenantId, selectedSeasonId, yearNum,
+        scenarioName, scenarioDescription || null,
+        state.divisions as Record<string, unknown>,
+        state.consolidated as unknown as Record<string, unknown>,
+        undefined
+      ).catch(err => console.warn("[Module3] Supabase save:", err));
+    }
   };
 
   const handleApplyScenario = (scenarioId: string) => {
@@ -307,6 +347,25 @@ export default function Module3DivisionPlanning() {
     deleteModule3Scenario(selectedSeasonId, scenarioId);
     setScenarioListVersion((v) => v + 1);
     reloadScenarios();
+    // Write-through → Supabase
+    if (tenantId) {
+      deleteDivisionScenario(tenantId, scenarioId)
+        .catch(err => console.warn("[Module3] Supabase delete:", err));
+    }
+  };
+
+  const handleApplyMetas = () => {
+    const active = scenarios.find(s => s.isActive);
+    if (active) {
+      applyModule3Scenario(selectedSeasonId, active.id);
+      setScenarioListVersion(v => v + 1);
+    } else if (scenarios.length > 0) {
+      // aplica o primeiro cenário se nenhum estiver ativo
+      applyModule3Scenario(selectedSeasonId, scenarios[0].id);
+      setScenarioListVersion(v => v + 1);
+    }
+    setApplySuccess(true);
+    setTimeout(() => setApplySuccess(false), 2500);
   };
 
   const handleExport = () => {
@@ -329,9 +388,9 @@ export default function Module3DivisionPlanning() {
   const handleExportPDF = async () => {
     setIsExportingPDF(true);
     await exportToPDF({
-      elementId: "module3-export-content",
-      fileName:  `planejamento_divisao_${selectedSeasonId}`,
-      title:     `Planejamento por Divisão — ${selectedTemporada?.nome ?? selectedSeasonId}`,
+      elementId: "module3-scenarios-pdf",
+      fileName:  `cenarios_divisao_${selectedSeasonId}`,
+      title:     `Comparação de Cenários — ${selectedTemporada?.nome ?? selectedSeasonId}`,
     });
     setIsExportingPDF(false);
   };
@@ -649,35 +708,14 @@ export default function Module3DivisionPlanning() {
             {/* ══════════════════════════════════════════════════════════════ */}
 
             <div id="tour-m3-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl p-5 shadow-sm border-t-4 border-[#F6F3AA]">
-              <div className="flex items-center justify-between mb-5">
-                <div className="flex items-center gap-3">
-                  <BarChart3 className="w-5 h-5 text-[#28071C]" />
-                  <h2 className="text-[#28071C] font-bold text-lg">Cenários</h2>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowScenarioModal(true)}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl hover:bg-[#28071C]/90 transition-all text-sm font-semibold"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Salvar Cenário
-                  </button>
-                  <button
-                    onClick={handleExport}
-                    className="flex items-center gap-2 px-4 py-2 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl hover:bg-[#28071C]/5 transition-all text-sm font-semibold"
-                  >
-                    <Download className="w-4 h-4" />
-                    Exportar JSON
-                  </button>
-                  <button
-                    onClick={handleExportPDF}
-                    disabled={isExportingPDF}
-                    className="flex items-center gap-2 px-4 py-2 border-2 border-[#28071C]/20 text-[#28071C] rounded-xl hover:bg-[#28071C]/5 transition-all text-sm font-semibold disabled:opacity-40"
-                  >
-                    <FileDown className="w-4 h-4" />
-                    {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
-                  </button>
-                </div>
+              <div className="flex items-center gap-3 mb-5">
+                <BarChart3 className="w-5 h-5 text-[#28071C]" />
+                <h2 className="text-[#28071C] font-bold text-lg">Cenários</h2>
+                {scenarios.length > 0 && (
+                  <span className="text-xs text-[#28071C]/40 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                    {scenarios.length} {scenarios.length === 1 ? "salvo" : "salvos"}
+                  </span>
+                )}
               </div>
 
               {scenarios.length === 0 ? (
@@ -748,6 +786,62 @@ export default function Module3DivisionPlanning() {
         )}
       </main>
 
+      {/* ── BARRA DE AÇÕES ──────────────────────────────────────────────────── */}
+      <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowScenarioModal(true)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm"
+            >
+              <Save className="w-4 h-4" />
+              Salvar cenário
+            </button>
+            <button
+              onClick={() => setCompareOpen(true)}
+              disabled={scenarios.length < 2}
+              title={scenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : "Comparar cenários salvos"}
+              className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl text-sm font-semibold hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all"
+            >
+              <GitCompare className="w-4 h-4" />
+              Comparar
+              {scenarios.length >= 2 && (
+                <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">
+                  {scenarios.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={handleExportPDF}
+              disabled={isExportingPDF}
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+            >
+              <FileDown className="w-4 h-4" />
+              {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            {applySuccess && (
+              <span className="text-xs text-green-700 bg-green-50 border border-green-200 px-3 py-1.5 rounded-xl font-medium">
+                ✓ Metas aplicadas ao plano
+              </span>
+            )}
+            <button
+              onClick={handleApplyMetas}
+              disabled={scenarios.length === 0}
+              title={scenarios.length === 0 ? "Salve um cenário antes de aplicar" : activeScenario ? `Aplicar metas do cenário "${activeScenario.name}"` : "Aplicar metas do último cenário salvo"}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+            >
+              <CheckCheck className="w-4 h-4" />
+              Aplicar metas
+            </button>
+          </div>
+        </div>
+        <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
+          Cenários não alteram dados oficiais até "Aplicar metas" ser acionado.
+        </p>
+      </div>
+
       {/* ─── MODAL: Salvar Cenário ────────────────────────────────────────── */}
       {showScenarioModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -800,10 +894,116 @@ export default function Module3DivisionPlanning() {
         </div>
       )}
 
+      {/* ─── MODAL: Comparar Cenários ────────────────────────────────────── */}
+      {compareOpen && scenarios.length >= 2 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-[860px] max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#28071C]/8">
+              <h3 className="text-[#28071C] font-bold text-base">Comparação de Cenários — Módulo 3</h3>
+              <button onClick={() => setCompareOpen(false)} className="text-[#28071C]/40 hover:text-[#28071C] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="overflow-auto p-6">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr>
+                    <th className="text-left text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold py-2 pr-4">Indicador</th>
+                    {scenarios.map(sc => (
+                      <th key={sc.id} className={`text-right text-[10px] uppercase tracking-widest font-semibold py-2 px-3 ${sc.isActive ? "text-[#7598CF]" : "text-[#28071C]/40"}`}>
+                        {sc.name}
+                        {sc.isActive && <span className="ml-1 normal-case text-[9px] bg-[#7598CF]/15 px-1.5 py-0.5 rounded-full">ativo</span>}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: "Receita Total", fmt: (v: number) => fmtCurrency(v), key: "totalRevenue" },
+                    { label: "Margem Média", fmt: (v: number) => `${v.toFixed(1)}%`, key: "avgMargin" },
+                  ].map((row, i) => (
+                    <tr key={i} className="border-t border-[#28071C]/5 hover:bg-[#7598CF]/4 transition-colors">
+                      <td className="py-2.5 pr-4 text-[#28071C]/60">{row.label}</td>
+                      {scenarios.map(sc => (
+                        <td key={sc.id} className={`py-2.5 px-3 text-right font-mono font-semibold ${sc.isActive ? "text-[#7598CF]" : "text-[#28071C]"}`}>
+                          {row.fmt((sc.consolidated as any)[row.key] ?? 0)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                  <tr className="border-t border-[#28071C]/5">
+                    <td className="py-2.5 pr-4 text-[#28071C]/60">Criado em</td>
+                    {scenarios.map(sc => (
+                      <td key={sc.id} className="py-2.5 px-3 text-right text-[#28071C]/40 text-xs">
+                        {new Date(sc.createdAt).toLocaleDateString("pt-BR")}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr className="border-t border-[#28071C]/5">
+                    <td className="py-3 pr-4" />
+                    {scenarios.map(sc => (
+                      <td key={sc.id} className="py-3 px-3 text-right">
+                        <button
+                          onClick={() => { handleApplyScenario(sc.id); setCompareOpen(false); }}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${sc.isActive ? "bg-[#7598CF]/15 text-[#7598CF]" : "bg-[#28071C]/8 text-[#28071C]/60 hover:bg-[#7598CF]/10 hover:text-[#7598CF]"}`}
+                        >
+                          {sc.isActive ? "Ativo" : "Aplicar"}
+                        </button>
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── PRODUCT TOUR ─────────────────────────────────────────────────── */}
       {tour.isOpen && (
         <ProductTour steps={MODULE3_TOUR} onClose={tour.dismiss} />
       )}
+
+      {/* ── PDF: Comparação de Cenários (fora da tela, capturado pelo html2canvas) ── */}
+      <div
+        id="module3-scenarios-pdf"
+        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
+      >
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
+          Planejamento por Divisão — {selectedTemporada?.nome ?? selectedSeasonId}
+        </p>
+        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
+          Comparação de Cenários
+        </p>
+        {scenarios.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+            {scenarios.map(sc => (
+              <div key={sc.id} style={{ flex: '1 1 220px', minWidth: '200px', maxWidth: '260px', background: 'white', borderRadius: '12px', padding: '16px', borderTop: `4px solid ${sc.isActive ? '#7598CF' : '#28071C'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
+                  {sc.isActive && (
+                    <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>
+                  )}
+                </div>
+                {[
+                  { label: 'Indicador', plan: 'Plano', ref: 'vs Referência', isHeader: true },
+                  { label: 'Receita Total', plan: fmtCurrency(sc.consolidated.totalRevenue), ref: state.consolidated ? `${((sc.consolidated.totalRevenue / (state.consolidated.totalRevenue || 1) - 1) * 100).toFixed(1)}%` : '—' },
+                  { label: 'Margem Média', plan: `${sc.consolidated.avgMargin.toFixed(1)}%`, ref: state.consolidated ? `${(sc.consolidated.avgMargin - state.consolidated.avgMargin).toFixed(1)} p.p.` : '—' },
+                  { label: 'Criado em', plan: new Date(sc.createdAt).toLocaleDateString('pt-BR'), ref: '' },
+                ].map((row, i) => (
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '6px 0', borderBottom: '1px solid #F2F2F2', fontSize: row.isHeader ? '9px' : '11px', fontWeight: row.isHeader ? 700 : 400, color: row.isHeader ? 'rgba(40,7,28,0.4)' : '#28071C', textTransform: row.isHeader ? 'uppercase' : 'none', letterSpacing: row.isHeader ? '0.05em' : 0 }}>
+                    <span>{row.label}</span>
+                    <span style={{ textAlign: 'center', fontWeight: row.isHeader ? 700 : 600 }}>{row.plan}</span>
+                    <span style={{ textAlign: 'right', color: row.isHeader ? 'rgba(40,7,28,0.4)' : 'rgba(40,7,28,0.6)' }}>{row.ref}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -959,10 +1159,10 @@ function DivisionBlockCard({
         </div>
       </div>
 
-      {/* Bloco 4 — Volume / OTB + Cobertura */}
+      {/* Bloco 4 — Volume / Orçamento + Cobertura */}
       <div className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border-l-2 border-[#7598CF] shadow-sm">
         <div className="flex items-center justify-between mb-2">
-          <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Volume / OTB</div>
+          <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Volume / Orçamento</div>
           <div className="flex bg-[#28071C]/10 rounded p-0.5">
             <button
               onClick={() => setIsProducer(true)}
@@ -984,9 +1184,9 @@ function DivisionBlockCard({
             />
           ) : (
             <CompactField
-              label="OTB (R$)"
-              value={block.volumeCoverage.otbBudget ?? 0}
-              onChange={(v) => onUpdateVolume({ otbBudget: v })}
+              label="Orçamento (R$)"
+              value={block.volumeCoverage.orcamento ?? 0}
+              onChange={(v) => onUpdateVolume({ orcamento: v })}
               tooltip="Open-To-Buy — orçamento disponível para comprar mercadoria desta divisão. Controla o nível de investimento em estoque."
             />
           )}

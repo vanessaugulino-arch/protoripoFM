@@ -1,39 +1,47 @@
 // src/app/components/ColorBankCard.tsx
-// Card de Banco de Cores — aparece em OperationSettings
+// Banco Global de Cores — gerencia o dicionário compartilhado da plataforma.
 //
-// Mostra as cores dos produtos do tenant que ainda não foram classificadas.
-// Para cada cor: combobox de família + combobox de intensidade.
-// Ao salvar, grava no banco global (color_bank) e retro-alimenta products.color_group.
-//
-// Combobox = input text com datalist → permite selecionar existente OU digitar novo.
+// UX: adicionar cor (nome → família → intensidade) + visualizar banco agrupado.
+// O banco NÃO filtra por tenant ou hierarquia — é um recurso global da empresa.
 
-import { useState, useEffect, useRef, useId } from 'react'
+import { useState, useEffect, useId } from 'react'
 import {
-  Palette, ChevronDown, ChevronUp, CheckCircle2, AlertCircle,
-  Save, RefreshCw, X, Info, Sparkles,
+  Palette, ChevronDown, ChevronRight, CheckCircle2, AlertCircle,
+  Plus, RefreshCw, X, Info, Search, Trash2,
 } from 'lucide-react'
 import {
-  getUnclassifiedColors,
+  getColorBankGrouped,
   getColorFamilias,
   getColorIntensidades,
-  classifyColors,
-  getColorBankStats,
-  type UnclassifiedColor,
-  type ClassifyPayload,
-  type ColorBankStats,
+  addToColorBank,
+  deleteFromColorBank,
+  type ColorBankGroup,
+  type ColorBankEntry,
 } from '../../services/supabase/colorBankService'
 
-// ─── Famílias e intensidades padrão (fallback quando o banco está vazio) ───────
-const DEFAULT_FAMILIAS = [
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+const DEFAULT_FAMILIAS: string[] = [
   'Azul', 'Vermelho', 'Verde', 'Amarelo', 'Rosa', 'Laranja',
   'Roxo', 'Branco', 'Preto', 'Cinza', 'Bege', 'Marrom',
   'Caramelo', 'Dourado', 'Prata', 'Estampado',
 ]
-const DEFAULT_INTENSIDADES = [
-  'Claro', 'Médio', 'Escuro', 'Pastel', 'Neon',
-  'Mescla', 'Metálico', 'Marinho', 'Royal', 'Floral', 'Xadrez', 'Listrado',
+const DEFAULT_INTENSIDADES: string[] = [
+  'Claro', 'Médio', 'Escuro', 'Pastel', 'Neon', 'Mescla',
+  'Metálico', 'Marinho', 'Royal', 'Floral', 'Xadrez', 'Listrado',
   'Terra', 'Puro', 'Gelo', 'Cru', 'Jeans', 'Turquesa',
 ]
+
+// ─── Swatch por família ───────────────────────────────────────────────────────
+const FAMILIA_SWATCH: Record<string, string> = {
+  azul: '#3B82F6', vermelho: '#EF4444', verde: '#22C55E', amarelo: '#EAB308',
+  rosa: '#EC4899', laranja: '#F97316', roxo: '#A855F7', branco: '#E5E7EB',
+  preto: '#1C1C1C', cinza: '#9CA3AF', bege: '#F5F0E8', marrom: '#795548',
+  caramelo: '#C68642', dourado: '#FFD700', prata: '#C0C0C0', estampado: '#D946EF',
+}
+function familySwatch(familia: string): string {
+  const key = familia.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  return FAMILIA_SWATCH[key] ?? '#94A3B8'
+}
 
 // ─── Combobox com datalist ────────────────────────────────────────────────────
 interface ComboboxProps {
@@ -41,469 +49,377 @@ interface ComboboxProps {
   onChange:    (v: string) => void
   options:     string[]
   placeholder: string
-  listId:      string
+  disabled?:   boolean
 }
-
-function Combobox({ value, onChange, options, placeholder, listId }: ComboboxProps) {
+function Combobox({ value, onChange, options, placeholder, disabled }: ComboboxProps) {
+  const id = useId()
   return (
     <>
       <input
         type="text"
-        list={listId}
+        list={id}
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
+        disabled={disabled}
         className="
-          w-full px-2.5 py-1.5 text-sm border border-[#28071C]/15 rounded-lg
-          text-[#28071C] placeholder-[#28071C]/30
-          focus:outline-none focus:border-[#7598CF] focus:ring-1 focus:ring-[#7598CF]/20
-          bg-white transition-colors
+          w-full px-3 py-2 text-sm border border-[#28071C]/15 rounded-xl
+          text-[#28071C] placeholder-[#28071C]/30 bg-white transition-colors
+          focus:outline-none focus:border-[#7598CF]/60 focus:ring-1 focus:ring-[#7598CF]/20
+          disabled:opacity-40 disabled:cursor-not-allowed
         "
       />
-      <datalist id={listId}>
-        {options.map(opt => (
-          <option key={opt} value={opt} />
-        ))}
+      <datalist id={id}>
+        {options.map(opt => <option key={opt} value={opt} />)}
       </datalist>
     </>
   )
 }
 
-// ─── Linha de cor ─────────────────────────────────────────────────────────────
-interface ColorRowProps {
-  item:          UnclassifiedColor
-  familia:       string
-  intensidade:   string
-  onFamilia:     (v: string) => void
-  onIntensidade: (v: string) => void
-  familias:      string[]
-  intensidades:  string[]
-  index:         number
+// ─── Chip de cor ──────────────────────────────────────────────────────────────
+function ColorChip({ entry, onDelete }: { entry: ColorBankEntry; onDelete: () => void }) {
+  const swatch = familySwatch(entry.familia)
+  return (
+    <span className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 bg-white border border-[#28071C]/10 rounded-full text-xs text-[#28071C] group/chip hover:border-[#28071C]/20 transition-colors">
+      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: swatch }} />
+      {entry.cor_display}
+      <button
+        onClick={onDelete}
+        className="w-4 h-4 flex items-center justify-center rounded-full text-[#28071C]/30 opacity-0 group-hover/chip:opacity-100 hover:text-red-500 hover:bg-red-50 transition-all"
+        title="Remover"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </span>
+  )
 }
 
-function ColorRow({
-  item, familia, intensidade, onFamilia, onIntensidade,
-  familias, intensidades, index,
-}: ColorRowProps) {
-  const uid = useId()
+// ─── Componente principal ─────────────────────────────────────────────────────
+interface ColorBankCardProps {
+  tenantId?: string  // reservado para futuro: propagação de cores ao classificar produtos
+}
 
-  const swatch = getSwatchColor(item.cor_norm)
-  const colorGroup = familia && intensidade ? `${familia} ${intensidade}` : ''
+export function ColorBankCard({ tenantId: _tenantId }: ColorBankCardProps) {
+  // ── Dados ────────────────────────────────────────────────────────────────────
+  const [groups,      setGroups]      = useState<ColorBankGroup[]>([])
+  const [familias,    setFamilias]    = useState<string[]>(DEFAULT_FAMILIAS)
+  const [intensidades,setIntensidades]= useState<string[]>(DEFAULT_INTENSIDADES)
+  const [loading,     setLoading]     = useState(true)
 
+  // ── Formulário de adição ─────────────────────────────────────────────────────
+  const [newCor,       setNewCor]       = useState('')
+  const [newFamilia,   setNewFamilia]   = useState('')
+  const [newIntens,    setNewIntens]    = useState('')
+  const [adding,       setAdding]       = useState(false)
+  const [addFeedback,  setAddFeedback]  = useState<'ok' | 'err' | null>(null)
+  const [addErrMsg,    setAddErrMsg]    = useState('')
+
+  // ── Visualização ─────────────────────────────────────────────────────────────
+  const [search,     setSearch]    = useState('')
+  const [expanded,   setExpanded]  = useState<Set<string>>(new Set())
+  const [deleting,   setDeleting]  = useState<string | null>(null)
+
+  // ── Carrega dados ─────────────────────────────────────────────────────────────
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      const [grouped, fams] = await Promise.all([
+        getColorBankGrouped(),
+        getColorFamilias(),
+      ])
+      setGroups(grouped)
+      if (fams.length > 0) setFamilias([...new Set([...DEFAULT_FAMILIAS, ...fams])])
+      // Expande todas as famílias por padrão
+      setExpanded(new Set(grouped.map(g => g.familia)))
+    } catch (err) {
+      console.error('[ColorBankCard] Erro ao carregar:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { loadData() }, [])
+
+  // Ao mudar a família no form, atualiza intensidades disponíveis
+  useEffect(() => {
+    if (!newFamilia.trim()) { setIntensidades(DEFAULT_INTENSIDADES); return }
+    getColorIntensidades(newFamilia.trim())
+      .then(ints => setIntensidades(
+        ints.length > 0 ? [...new Set([...DEFAULT_INTENSIDADES, ...ints])] : DEFAULT_INTENSIDADES
+      ))
+      .catch(() => {})
+  }, [newFamilia])
+
+  // ── Adicionar cor ─────────────────────────────────────────────────────────────
+  const handleAdd = async () => {
+    const cor = newCor.trim()
+    const fam = newFamilia.trim()
+    const int = newIntens.trim()
+    if (!cor || !fam || !int) {
+      setAddErrMsg('Preencha nome da cor, família e intensidade.')
+      setAddFeedback('err')
+      setTimeout(() => setAddFeedback(null), 3000)
+      return
+    }
+    setAdding(true)
+    setAddFeedback(null)
+    try {
+      await addToColorBank({ cor_display: cor, familia: fam, intensidade: int })
+      setNewCor('')
+      // Mantém família e intensidade para facilitar adição em série
+      setAddFeedback('ok')
+      setTimeout(() => setAddFeedback(null), 2000)
+      await loadData()
+    } catch (err) {
+      setAddErrMsg(String(err))
+      setAddFeedback('err')
+      setTimeout(() => setAddFeedback(null), 3000)
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  // ── Remover cor ───────────────────────────────────────────────────────────────
+  const handleDelete = async (id: string) => {
+    setDeleting(id)
+    try {
+      await deleteFromColorBank(id)
+      await loadData()
+    } catch (err) {
+      console.error('[ColorBankCard] Erro ao remover:', err)
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  const toggleFamily = (fam: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(fam) ? next.delete(fam) : next.add(fam)
+      return next
+    })
+
+  // ── Filtro por busca ──────────────────────────────────────────────────────────
+  const filteredGroups: ColorBankGroup[] = search.trim()
+    ? groups
+        .map(g => ({
+          ...g,
+          intensidades: g.intensidades
+            .map(i => ({
+              ...i,
+              cores: i.cores.filter(c =>
+                c.cor_display.toLowerCase().includes(search.toLowerCase()) ||
+                c.intensidade.toLowerCase().includes(search.toLowerCase())
+              ),
+            }))
+            .filter(i => i.cores.length > 0),
+        }))
+        .filter(g => g.intensidades.length > 0)
+    : groups
+
+  const totalCores    = groups.reduce((s, g) => s + g.totalCores, 0)
+  const totalFamilias = groups.length
+
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className={`
-      grid grid-cols-[28px_1fr_200px_200px_140px] gap-3 items-center
-      px-4 py-2.5 border-b border-[#28071C]/6 last:border-0
-      ${index % 2 === 0 ? '' : 'bg-[#28071C]/1.5'}
-      hover:bg-[#7598CF]/4 transition-colors
-    `}>
-      {/* Swatch */}
-      <div
-        className="w-6 h-6 rounded-md border border-[#28071C]/12 flex-shrink-0"
-        style={{ backgroundColor: swatch }}
-        title={item.cor_bruta}
-      />
+    <div className="space-y-5">
 
-      {/* Cor bruta + badge de frequência */}
-      <div className="min-w-0">
-        <span className="text-[#28071C] text-sm font-medium truncate block">{item.cor_bruta}</span>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[10px] text-[#28071C]/40">
-            {item.count} produto{item.count !== 1 ? 's' : ''}
-          </span>
-          {item.already_in_bank && (
-            <span className="text-[9px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-              no banco global
-            </span>
-          )}
-        </div>
+      {/* ── Conceito ────────────────────────────────────────────────────────── */}
+      <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-4 py-3">
+        <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
+        <p className="text-[#28071C]/65 text-sm leading-relaxed">
+          O <strong>Banco de Cores</strong> é um dicionário global da plataforma que agrupa nomes de cores em{' '}
+          <strong>família</strong> (ex: Azul) e <strong>intensidade</strong> (ex: Royal, Marinho, Claro).
+          Toda cor cadastrada por qualquer cliente enriquece esse banco, que fica disponível para todos.
+        </p>
       </div>
 
-      {/* Família */}
-      <Combobox
-        value={familia}
-        onChange={onFamilia}
-        options={familias}
-        placeholder="Família de cor…"
-        listId={`${uid}-familia`}
-      />
+      {/* ── Formulário: adicionar nova cor ──────────────────────────────────── */}
+      <div className="bg-[#28071C]/3 border border-[#28071C]/8 rounded-xl p-4">
+        <p className="text-xs font-semibold text-[#28071C]/50 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+          <Plus className="w-3.5 h-3.5" /> Adicionar cor ao banco
+        </p>
 
-      {/* Intensidade */}
-      <Combobox
-        value={intensidade}
-        onChange={onIntensidade}
-        options={intensidades}
-        placeholder="Intensidade…"
-        listId={`${uid}-intensidade`}
-      />
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_auto] gap-3 items-end">
+          {/* Nome da cor */}
+          <div>
+            <label className="text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest block mb-1">
+              Nome da cor
+            </label>
+            <Combobox
+              value={newCor}
+              onChange={setNewCor}
+              options={[]}
+              placeholder="ex: Azul Royal, Marinho…"
+            />
+          </div>
 
-      {/* Preview do color_group */}
-      <div className="text-[11px]">
-        {colorGroup ? (
-          <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#7598CF]/10 text-[#7598CF] rounded-lg font-semibold">
-            <CheckCircle2 className="w-3 h-3" />
-            {colorGroup}
-          </span>
+          {/* Família */}
+          <div>
+            <label className="text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest block mb-1">
+              Família
+            </label>
+            <Combobox
+              value={newFamilia}
+              onChange={v => { setNewFamilia(v); setNewIntens('') }}
+              options={familias}
+              placeholder="Selecione ou crie…"
+            />
+          </div>
+
+          {/* Intensidade (filtrada pela família) */}
+          <div>
+            <label className="text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest block mb-1">
+              Intensidade
+            </label>
+            <Combobox
+              value={newIntens}
+              onChange={setNewIntens}
+              options={intensidades}
+              placeholder="Selecione ou crie…"
+              disabled={!newFamilia.trim()}
+            />
+          </div>
+
+          {/* Botão */}
+          <button
+            onClick={handleAdd}
+            disabled={adding || !newCor.trim() || !newFamilia.trim() || !newIntens.trim()}
+            className="
+              flex items-center gap-2 px-4 py-2 bg-[#7598CF] text-white rounded-xl text-sm font-semibold
+              hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all whitespace-nowrap
+            "
+          >
+            {adding
+              ? <><RefreshCw className="w-4 h-4 animate-spin" /> Salvando…</>
+              : <><Plus className="w-4 h-4" /> Adicionar</>}
+          </button>
+        </div>
+
+        {/* Feedback */}
+        {addFeedback === 'ok' && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-600">
+            <CheckCircle2 className="w-3.5 h-3.5" /> Cor adicionada ao banco global.
+          </div>
+        )}
+        {addFeedback === 'err' && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-red-500">
+            <AlertCircle className="w-3.5 h-3.5" /> {addErrMsg || 'Erro ao salvar. Tente novamente.'}
+          </div>
+        )}
+      </div>
+
+      {/* ── Banco de cores ───────────────────────────────────────────────────── */}
+      <div>
+        {/* Header com busca e stats */}
+        <div className="flex items-center justify-between mb-3 gap-3">
+          <div className="flex items-center gap-2 flex-1 bg-white border border-[#28071C]/15 rounded-xl px-3 py-2 focus-within:border-[#7598CF]/50 transition-colors">
+            <Search className="w-4 h-4 text-[#28071C]/30 shrink-0" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar cor, intensidade…"
+              className="flex-1 bg-transparent text-[#28071C] text-sm focus:outline-none placeholder:text-[#28071C]/30"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-[#28071C]/30 hover:text-[#28071C] transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="text-xs text-[#28071C]/40 whitespace-nowrap">
+            {loading ? '…' : `${totalCores} cores · ${totalFamilias} famílias`}
+          </div>
+
+          <button
+            onClick={loadData}
+            className="p-2 text-[#28071C]/30 hover:text-[#28071C] hover:bg-[#28071C]/6 rounded-lg transition-colors"
+            title="Recarregar"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {/* Lista agrupada */}
+        {loading ? (
+          <div className="flex items-center justify-center py-10 gap-2 text-[#28071C]/40">
+            <RefreshCw className="w-4 h-4 animate-spin" />
+            <span className="text-sm">Carregando banco de cores…</span>
+          </div>
+        ) : filteredGroups.length === 0 ? (
+          <div className="text-center py-10 text-[#28071C]/30 text-sm">
+            {search ? 'Nenhuma cor encontrada para essa busca.' : 'Banco ainda sem cores. Use o formulário acima para adicionar.'}
+          </div>
         ) : (
-          <span className="text-[#28071C]/25 italic">aguardando…</span>
+          <div className="space-y-2">
+            {filteredGroups.map(group => {
+              const isOpen = expanded.has(group.familia)
+              const dot    = familySwatch(group.familia)
+
+              return (
+                <div key={group.familia} className="border border-[#28071C]/8 rounded-xl overflow-hidden bg-white">
+                  {/* Cabeçalho da família */}
+                  <button
+                    onClick={() => toggleFamily(group.familia)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#28071C]/3 transition-colors text-left"
+                  >
+                    {isOpen
+                      ? <ChevronDown className="w-4 h-4 text-[#28071C]/30 shrink-0" />
+                      : <ChevronRight className="w-4 h-4 text-[#28071C]/30 shrink-0" />}
+                    <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: dot }} />
+                    <span className="text-[#28071C] font-semibold text-sm flex-1">{group.familia}</span>
+                    <span className="text-[#28071C]/35 text-xs">
+                      {group.totalCores} cor{group.totalCores !== 1 ? 'es' : ''}
+                    </span>
+                  </button>
+
+                  {/* Intensidades + chips de cores */}
+                  {isOpen && (
+                    <div className="border-t border-[#28071C]/6 divide-y divide-[#28071C]/5">
+                      {group.intensidades.map(intGroup => (
+                        <div key={intGroup.intensidade} className="px-4 py-3 flex items-start gap-3">
+                          <span className="text-xs text-[#28071C]/40 font-semibold w-28 shrink-0 pt-1">
+                            {intGroup.intensidade}
+                          </span>
+                          <div className="flex flex-wrap gap-1.5 flex-1">
+                            {intGroup.cores.map(cor => (
+                              <span
+                                key={cor.id}
+                                className={`inline-flex items-center gap-1.5 pl-2 pr-1 py-1 border rounded-full text-xs text-[#28071C] group/chip transition-colors ${
+                                  deleting === cor.id
+                                    ? 'bg-red-50 border-red-200 opacity-50'
+                                    : 'bg-[#28071C]/3 border-[#28071C]/10 hover:border-[#28071C]/20'
+                                }`}
+                              >
+                                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: dot }} />
+                                {cor.cor_display}
+                                <button
+                                  onClick={() => handleDelete(cor.id)}
+                                  disabled={!!deleting}
+                                  className="w-4 h-4 flex items-center justify-center rounded-full text-[#28071C]/20 opacity-0 group-hover/chip:opacity-100 hover:text-red-500 hover:bg-red-50 transition-all disabled:cursor-not-allowed"
+                                  title="Remover"
+                                >
+                                  {deleting === cor.id
+                                    ? <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                                    : <Trash2 className="w-2.5 h-2.5" />}
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-// ─── Mapeamento de swatches aproximados por cor_norm ─────────────────────────
-function getSwatchColor(corNorm: string): string {
-  const map: Record<string, string> = {
-    azul: '#3B82F6', marinho: '#1E3A5F', royal: '#4169E1', jeans: '#6B8BAE',
-    turquesa: '#40E0D0', serenity: '#B0C4DE',
-    vermelho: '#EF4444', vinho: '#722F37', bordo: '#800020', coral: '#FF7F7F',
-    terracota: '#C0632D', ferrugem: '#B7410E', telha: '#B04020',
-    verde: '#22C55E', militar: '#4B5320', menta: '#98FF98', musgo: '#8A9A5B', lima: '#BFFF00',
-    amarelo: '#EAB308', mostarda: '#DFBE00', champagne: '#F7E7CE',
-    rosa: '#EC4899', rose: '#FFC0CB', pink: '#FF69B4', blush: '#DE5D83', fuchsia: '#FF00FF',
-    laranja: '#F97316', salmao: '#FA8072', peach: '#FFDAB9',
-    roxo: '#A855F7', lilas: '#D8BFD8', uva: '#800080', lavanda: '#E6E6FA',
-    branco: '#F8F8F8', 'off-white': '#FAF0E6', cru: '#FDF5E6',
-    preto: '#1C1C1C', cinza: '#9CA3AF', grafite: '#4B5563', mescla: '#B0B0B0', prata: '#C0C0C0',
-    bege: '#F5F0E8', areia: '#F4A460', caramelo: '#C68642', marrom: '#795548',
-    chocolate: '#3C2005', dourado: '#FFD700', ouro: '#FFD700', bronze: '#CD7F32',
-  }
-  // Tenta match exato, senão busca prefixo
-  if (map[corNorm]) return map[corNorm]
-  for (const [key, val] of Object.entries(map)) {
-    if (corNorm.startsWith(key) || key.startsWith(corNorm)) return val
-  }
-  return '#E5E7EB'
-}
-
-// ─── Componente principal ─────────────────────────────────────────────────────
-interface ColorBankCardProps {
-  tenantId: string
-}
-
-export function ColorBankCard({ tenantId }: ColorBankCardProps) {
-  const [isExpanded,  setIsExpanded]  = useState(false)
-  const [isLoading,   setIsLoading]   = useState(false)
-  const [isSaving,    setIsSaving]    = useState(false)
-
-  const [items,       setItems]       = useState<UnclassifiedColor[]>([])
-  const [stats,       setStats]       = useState<ColorBankStats | null>(null)
-  const [familias,    setFamilias]    = useState<string[]>(DEFAULT_FAMILIAS)
-  const [intensidades,setIntensidades]= useState<string[]>(DEFAULT_INTENSIDADES)
-
-  // Mapa de classificações em andamento: cor_norm → { familia, intensidade }
-  const [draft, setDraft] = useState<Map<string, { familia: string; intensidade: string }>>(new Map())
-
-  const [saveResult, setSaveResult] = useState<{
-    classified: number; errors?: string[]
-  } | null>(null)
-
-  const firstLoad = useRef(false)
-
-  // ── Carrega dados quando expande ────────────────────────────────────────────
-  const loadData = async () => {
-    setIsLoading(true)
-    setSaveResult(null)
-    try {
-      const [unclassified, stats, fams, ints] = await Promise.all([
-        getUnclassifiedColors(tenantId),
-        getColorBankStats(tenantId),
-        getColorFamilias(),
-        getColorIntensidades(),
-      ])
-
-      setItems(unclassified)
-      setStats(stats)
-      if (fams.length > 0) setFamilias([...new Set([...fams, ...DEFAULT_FAMILIAS])])
-      if (ints.length > 0) setIntensidades([...new Set([...ints, ...DEFAULT_INTENSIDADES])])
-
-      // Pré-preenche o draft com classificações já existentes no banco global
-      const newDraft = new Map<string, { familia: string; intensidade: string }>()
-      for (const item of unclassified) {
-        if (item.existing_entry) {
-          newDraft.set(item.cor_norm, {
-            familia:     item.existing_entry.familia,
-            intensidade: item.existing_entry.intensidade,
-          })
-        }
-      }
-      setDraft(newDraft)
-    } catch (err) {
-      console.error('[ColorBankCard] Erro ao carregar:', err)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  // Carrega stats mesmo sem expandir para mostrar o badge
-  useEffect(() => {
-    if (firstLoad.current) return
-    firstLoad.current = true
-    getColorBankStats(tenantId)
-      .then(setStats)
-      .catch(() => {})
-  }, [tenantId])
-
-  const handleExpand = () => {
-    const next = !isExpanded
-    setIsExpanded(next)
-    if (next) loadData()
-  }
-
-  // ── Atualiza o draft ────────────────────────────────────────────────────────
-  const setDraftField = (corNorm: string, field: 'familia' | 'intensidade', value: string) => {
-    setDraft(prev => {
-      const next = new Map(prev)
-      const cur  = next.get(corNorm) ?? { familia: '', intensidade: '' }
-      next.set(corNorm, { ...cur, [field]: value })
-      return next
-    })
-  }
-
-  // ── Salva ────────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    const payload: ClassifyPayload[] = []
-    for (const item of items) {
-      const d = draft.get(item.cor_norm)
-      if (d?.familia && d?.intensidade) {
-        payload.push({
-          cor_norm:    item.cor_norm,
-          cor_display: item.cor_bruta,
-          familia:     d.familia,
-          intensidade: d.intensidade,
-        })
-      }
-    }
-    if (payload.length === 0) return
-
-    setIsSaving(true)
-    try {
-      const result = await classifyColors(tenantId, payload)
-      setSaveResult(result)
-      if (result.classified > 0) {
-        // Atualiza lista (remove classificadas com sucesso)
-        await loadData()
-      }
-    } catch (err) {
-      setSaveResult({ classified: 0, errors: [String(err)] })
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  // ── Contagem de rascunho preenchido ─────────────────────────────────────────
-  const readyCount = [...draft.values()].filter(d => d.familia && d.intensidade).length
-  const totalPending = items.length
-
-  return (
-    <div className="bg-white/60 backdrop-blur-sm rounded-2xl shadow-sm border-t-4 border-[#7598CF]">
-      {/* ── Header (sempre visível) ──────────────────────────────────────────── */}
-      <button
-        onClick={handleExpand}
-        className="w-full flex items-center justify-between px-6 py-5 hover:bg-[#7598CF]/4 transition-colors rounded-2xl"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#7598CF]/12 rounded-xl flex items-center justify-center flex-shrink-0">
-            <Palette className="w-5 h-5 text-[#7598CF]" />
-          </div>
-          <div className="text-left">
-            <h2 className="text-[#28071C] text-lg font-bold leading-tight">Banco de Cores</h2>
-            <p className="text-[#28071C]/50 text-sm mt-0.5">
-              Classifique as cores dos produtos por família e intensidade
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Badges de status */}
-          {stats && (
-            <div className="flex items-center gap-2">
-              {stats.naoClassificadas > 0 ? (
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-1">
-                  <AlertCircle className="w-3 h-3" />
-                  {stats.naoClassificadas} pendente{stats.naoClassificadas !== 1 ? 's' : ''}
-                </span>
-              ) : (
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  100% classificado
-                </span>
-              )}
-              <span className="text-[11px] text-[#28071C]/40">
-                {stats.coberturaPct}% cobertura
-              </span>
-            </div>
-          )}
-          {isExpanded
-            ? <ChevronUp className="w-5 h-5 text-[#28071C]/40" />
-            : <ChevronDown className="w-5 h-5 text-[#28071C]/40" />}
-        </div>
-      </button>
-
-      {/* ── Conteúdo expandido ───────────────────────────────────────────────── */}
-      {isExpanded && (
-        <div className="border-t border-[#28071C]/8">
-
-          {/* Explicação */}
-          <div className="mx-6 mt-4 mb-3 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-4 py-3">
-            <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-            <div className="text-[11px] text-[#28071C]/60 leading-relaxed">
-              <strong className="text-[#28071C]/75">Como funciona:</strong>{' '}
-              As cores abaixo são as cores brutas dos seus produtos sem classificação.
-              Para cada uma, selecione ou digite a <strong>Família</strong> (ex: Azul, Verde) e a <strong>Intensidade</strong> (ex: Marinho, Claro, Pastel).
-              O sistema guarda no banco global — todos os clientes futuros com as mesmas cores já encontrarão a classificação pronta.
-            </div>
-          </div>
-
-          {/* Barra de progresso */}
-          {stats && stats.totalCores > 0 && (
-            <div className="mx-6 mb-4">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[11px] text-[#28071C]/40">Cobertura do banco de cores</span>
-                <span className="text-[11px] font-semibold text-[#7598CF]">
-                  {stats.classificadas}/{stats.totalCores} cores
-                </span>
-              </div>
-              <div className="h-2 bg-[#28071C]/8 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-[#7598CF] to-[#9B8CD8] rounded-full transition-all duration-500"
-                  style={{ width: `${stats.coberturaPct}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12 gap-2 text-[#28071C]/40">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              <span className="text-sm">Carregando cores não classificadas…</span>
-            </div>
-          ) : items.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="w-12 h-12 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-3">
-                <CheckCircle2 className="w-6 h-6 text-emerald-600" />
-              </div>
-              <p className="text-[#28071C] font-semibold text-sm">Todas as cores classificadas!</p>
-              <p className="text-[#28071C]/40 text-xs mt-1">
-                Nenhuma cor dos seus produtos está pendente de classificação.
-              </p>
-              <button
-                onClick={loadData}
-                className="mt-4 flex items-center gap-1.5 mx-auto text-xs text-[#7598CF] hover:underline"
-              >
-                <RefreshCw className="w-3 h-3" /> Atualizar lista
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* Cabeçalho da tabela */}
-              <div className="grid grid-cols-[28px_1fr_200px_200px_140px] gap-3 items-center px-4 py-2.5 bg-[#28071C]/3 border-b border-[#28071C]/8 mx-0">
-                <div />
-                <span className="text-[9px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Cor do produto</span>
-                <span className="text-[9px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Família de cor</span>
-                <span className="text-[9px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Intensidade</span>
-                <span className="text-[9px] text-[#28071C]/40 uppercase tracking-widest font-semibold">Grupo gerado</span>
-              </div>
-
-              {/* Linhas */}
-              <div className="max-h-[480px] overflow-y-auto">
-                {items.map((item, i) => {
-                  const d = draft.get(item.cor_norm) ?? { familia: '', intensidade: '' }
-                  return (
-                    <ColorRow
-                      key={item.cor_norm}
-                      item={item}
-                      familia={d.familia}
-                      intensidade={d.intensidade}
-                      onFamilia={v  => setDraftField(item.cor_norm, 'familia', v)}
-                      onIntensidade={v => setDraftField(item.cor_norm, 'intensidade', v)}
-                      familias={familias}
-                      intensidades={intensidades}
-                      index={i}
-                    />
-                  )
-                })}
-              </div>
-
-              {/* Footer com salvar */}
-              <div className="px-6 py-4 border-t border-[#28071C]/8 bg-[#F2F2F2]/50 flex items-center justify-between gap-4">
-                <div className="text-xs text-[#28071C]/50">
-                  {readyCount > 0 ? (
-                    <span className="flex items-center gap-1.5 text-[#7598CF] font-semibold">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      {readyCount} de {totalPending} cor{totalPending !== 1 ? 'es' : ''} pronta{readyCount !== 1 ? 's' : ''} para salvar
-                    </span>
-                  ) : (
-                    <span>Preencha família e intensidade para cada cor.</span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={loadData}
-                    className="flex items-center gap-1.5 text-xs text-[#28071C]/50 hover:text-[#28071C] transition-colors px-3 py-2 rounded-lg hover:bg-[#28071C]/6"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" /> Atualizar
-                  </button>
-
-                  <button
-                    onClick={handleSave}
-                    disabled={readyCount === 0 || isSaving}
-                    className="
-                      flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl
-                      text-sm font-semibold hover:opacity-90 disabled:opacity-35
-                      disabled:cursor-not-allowed transition-all shadow-sm
-                    "
-                  >
-                    {isSaving ? (
-                      <><RefreshCw className="w-4 h-4 animate-spin" /> Salvando…</>
-                    ) : (
-                      <><Save className="w-4 h-4" /> Salvar {readyCount > 0 ? readyCount : ''} classificaç{readyCount === 1 ? 'ão' : 'ões'}</>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Feedback de resultado */}
-              {saveResult && (
-                <div className={`mx-6 mb-4 px-4 py-3 rounded-xl text-sm flex items-start gap-2 ${
-                  (saveResult.errors?.length ?? 0) > 0
-                    ? 'bg-red-50 border border-red-200 text-red-700'
-                    : 'bg-emerald-50 border border-emerald-200 text-emerald-700'
-                }`}>
-                  {(saveResult.errors?.length ?? 0) > 0 ? (
-                    <>
-                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                      <div>
-                        <strong>{saveResult.classified} classificaç{saveResult.classified === 1 ? 'ão' : 'ões'} salva{saveResult.classified === 1 ? '' : 's'}.</strong>
-                        {(saveResult.errors?.length ?? 0) > 0 && (
-                          <ul className="mt-1 space-y-0.5">
-                            {saveResult.errors!.map((e, i) => (
-                              <li key={i} className="text-xs">{e}</li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                      <span>
-                        <strong>{saveResult.classified} cor{saveResult.classified !== 1 ? 'es' : ''} classificada{saveResult.classified !== 1 ? 's' : ''}</strong>
-                        {' '}e propagada{saveResult.classified !== 1 ? 's' : ''} para o banco global e para os seus produtos.
-                      </span>
-                    </>
-                  )}
-                  <button onClick={() => setSaveResult(null)} className="ml-auto flex-shrink-0">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
+export { Palette }
