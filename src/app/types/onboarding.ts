@@ -1,31 +1,36 @@
 // ─── Segmentos de produto ─────────────────────────────────────────────────────
+// Fonte: Matriz_Exata_Segmentos.xlsx — coluna A (segmento exato da planilha)
 export type SegmentId =
-  | 'vest_fem' | 'vest_masc' | 'vest_inf'
-  | 'acc_fem' | 'acc_masc' | 'acc_inf'
-  | 'calc_fem' | 'calc_masc' | 'calc_inf'
-  | 'under_fem' | 'under_masc' | 'under_inf'
-  | 'fitness_fem' | 'fitness_masc' | 'fitness_inf'
-  | 'praia_fem' | 'praia_masc' | 'praia_inf'
+  | 'vest_fem'     | 'vest_masc'     | 'vest_inf'
+  | 'acc_bol_fem'  | 'acc_bol_masc'  | 'acc_bol_inf'
+  | 'acc_joia_fem' | 'acc_joia_masc' | 'acc_joia_inf'
+  | 'calc_fem'     | 'calc_masc'     | 'calc_inf'
+  | 'under_fem'    | 'under_masc'    | 'under_inf'
+  | 'fitness_fem'  | 'fitness_masc'  | 'fitness_inf'
+  | 'praia_fem'    | 'praia_masc'    | 'praia_inf'
 
 export const SEGMENT_LABELS: Record<SegmentId, string> = {
-  vest_fem:   'Vestuário Feminino',
-  vest_masc:  'Vestuário Masculino',
-  vest_inf:   'Vestuário Infantil',
-  acc_fem:    'Acessórios Feminino',
-  acc_masc:   'Acessórios Masculino',
-  acc_inf:    'Acessórios Infantil',
-  calc_fem:   'Calçados Femininos',
-  calc_masc:  'Calçados Masculinos',
-  calc_inf:   'Calçados Infantis',
-  under_fem:  'Underwear Feminino',
-  under_masc: 'Underwear Masculino',
-  under_inf:  'Underwear Infantil',
-  fitness_fem:  'Moda Fitness Feminino',
-  fitness_masc: 'Moda Fitness Masculino',
-  fitness_inf:  'Moda Fitness Infantil',
-  praia_fem:  'Moda Praia Feminino',
-  praia_masc: 'Moda Praia Masculino',
-  praia_inf:  'Moda Praia Infantil',
+  vest_fem:      'Vestuário Feminino',
+  vest_masc:     'Vestuário Masculino',
+  vest_inf:      'Vestuário Infantil',
+  acc_bol_fem:   'Acessórios Feminino',
+  acc_bol_masc:  'Acessórios Masculino',
+  acc_bol_inf:   'Acessórios Infantil',
+  acc_joia_fem:  'Acessórios Femininos (Jóias, Óculos e Bijuterias)',
+  acc_joia_masc: 'Acessórios Masculino (Jóias, Óculos e Bijuterias)',
+  acc_joia_inf:  'Acessórios Infantil (Jóias, Óculos e Bijuterias)',
+  calc_fem:      'Calçados Femininos',
+  calc_masc:     'Calçados Masculinos',
+  calc_inf:      'Calçados Infantis',
+  under_fem:     'Underwear Feminino',
+  under_masc:    'Underwear Masculino',
+  under_inf:     'Underwear Infantil',
+  fitness_fem:   'Moda Fitness Feminino',
+  fitness_masc:  'Moda Fitness Masculino',
+  fitness_inf:   'Moda Fitness Infantil',
+  praia_fem:     'Moda Praia Feminino',
+  praia_masc:    'Moda Praia Masculino',
+  praia_inf:     'Moda Praia Infantil',
 }
 
 // ─── Matérias-primas (grupos por impacto de indicador) ────────────────────────
@@ -74,7 +79,7 @@ export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
     label: 'Lonas e Tecidos Naturais de Forro',
     detail: 'Lonas, Forrações de Algodão, Tecidos Naturais de Forro',
     indicator: 'algodao',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
+    segments: ['acc_bol_fem', 'acc_bol_masc', 'acc_bol_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
   },
   {
     id: 'algodao_meia_malha',
@@ -88,7 +93,7 @@ export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
     label: 'Couro Legítimo e Peles',
     detail: 'Couro Legítimo, Camurça, Nobuck',
     indicator: 'couro',
-    segments: ['vest_fem', 'vest_masc', 'vest_inf', 'acc_fem', 'acc_masc', 'acc_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
+    segments: ['vest_fem', 'vest_masc', 'vest_inf', 'acc_bol_fem', 'acc_bol_masc', 'acc_bol_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
   },
   {
     id: 'sinteticos_vestuario',
@@ -109,7 +114,7 @@ export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
     label: 'Couro Sintético e Laminados',
     detail: 'PU (Couro Sintético), Nylon, Telas Sintéticas',
     indicator: 'petroleo',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_bol_fem', 'acc_bol_masc', 'acc_bol_inf'],
   },
   {
     id: 'solados_sinteticos',
@@ -123,7 +128,7 @@ export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
     label: 'Polímeros para Ótica',
     detail: 'Acetato de Celulose, TR90, Policarbonato',
     indicator: 'petroleo',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_joia_fem', 'acc_joia_masc', 'acc_joia_inf'],
   },
   {
     id: 'metais_aviamentos',
@@ -137,28 +142,28 @@ export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
     label: 'Ferragens de Acessórios',
     detail: 'Zinco, Cobre, Alumínio, Aço Inox (Alças, Fivelas, Fechos)',
     indicator: 'metais',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_bol_fem', 'acc_bol_masc', 'acc_bol_inf'],
   },
   {
     id: 'metais_joias',
     label: 'Metais para Semijoias e Bijuterias',
     detail: 'Zinco, Cobre, Alumínio, Aço Inox (Latão, Zamac)',
     indicator: 'metais',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_joia_fem', 'acc_joia_masc', 'acc_joia_inf'],
   },
   {
     id: 'metais_armacoes',
     label: 'Metais para Armações de Ótica',
     detail: 'Zinco, Cobre, Aço Inoxidável (Dobradiças, Hastes)',
     indicator: 'metais',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_joia_fem', 'acc_joia_masc', 'acc_joia_inf'],
   },
   {
     id: 'metais_nobres',
     label: 'Metais Nobres',
     detail: 'Ouro Puro (XAU), Prata (XAG), Ródio',
     indicator: 'metais_nobres',
-    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+    segments: ['acc_joia_fem', 'acc_joia_masc', 'acc_joia_inf'],
   },
 ]
 

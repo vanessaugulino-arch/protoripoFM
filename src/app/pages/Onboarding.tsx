@@ -33,12 +33,13 @@ import { saveRegraDefaultDb } from '../../services/supabase/seasonService'
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 const ALL_SEGMENTS: SegmentId[] = [
-  'vest_fem', 'vest_masc', 'vest_inf',
-  'acc_fem', 'acc_masc', 'acc_inf',
-  'calc_fem', 'calc_masc', 'calc_inf',
-  'under_fem', 'under_masc', 'under_inf',
-  'fitness_fem', 'fitness_masc', 'fitness_inf',
-  'praia_fem', 'praia_masc', 'praia_inf',
+  'vest_fem',     'vest_masc',     'vest_inf',
+  'acc_bol_fem',  'acc_bol_masc',  'acc_bol_inf',
+  'acc_joia_fem', 'acc_joia_masc', 'acc_joia_inf',
+  'calc_fem',     'calc_masc',     'calc_inf',
+  'under_fem',    'under_masc',    'under_inf',
+  'fitness_fem',  'fitness_masc',  'fitness_inf',
+  'praia_fem',    'praia_masc',    'praia_inf',
 ]
 
 const ORIGENS: OrigemPecas[] = [
@@ -470,10 +471,10 @@ export default function Onboarding() {
 
           {/* ── NEGÓCIO 2B: Insumos (esq) + Comércio Exterior (dir) ─────── */}
           {currentStepId === 'business' && bizSlide === 1 && (
-            <div className="flex gap-8 h-full">
+            <div className="flex gap-6 h-full">
               {/* Coluna esquerda — Matérias-primas (checklist filtrada por segmento) */}
               {showMaterials ? (
-                <div className="flex-1 min-w-0 flex flex-col">
+                <div className="w-[340px] flex-shrink-0 flex flex-col">
                   <div className="flex items-center gap-2 mb-1">
                     <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
                       Matérias-primas relevantes
@@ -506,24 +507,24 @@ export default function Onboarding() {
                         }
                         return (
                           <button key={group.id} onClick={() => toggleMaterial(group.id)}
-                            className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors ${
+                            className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
                               selected ? 'bg-[#7598CF]/6' : 'hover:bg-[#28071C]/3'
                             }`}>
-                            <div className={`mt-0.5 w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${
+                            <div className={`w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${
                               selected ? 'border-[#7598CF] bg-[#7598CF]' : 'border-[#28071C]/20'
                             }`}>
-                              {selected && <Check className="w-2.5 h-2.5 text-white" />}
+                              {selected && <Check className="w-2 h-2 text-white" />}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className={`text-sm font-semibold ${selected ? 'text-[#28071C]' : 'text-[#28071C]/75'}`}>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className={`text-xs font-semibold leading-snug ${selected ? 'text-[#28071C]' : 'text-[#28071C]/75'}`}>
                                   {group.label}
                                 </span>
-                                <span className="text-[10px] bg-[#28071C]/8 text-[#28071C]/50 rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">
+                                <span className="text-[9px] bg-[#28071C]/8 text-[#28071C]/45 rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">
                                   {INDICATOR_BADGE[group.indicator] ?? group.indicator}
                                 </span>
                               </div>
-                              <p className="text-[11px] text-[#28071C]/40 mt-0.5 leading-snug">{group.detail}</p>
+                              <p className="text-[10px] text-[#28071C]/35 leading-snug truncate">{group.detail}</p>
                             </div>
                           </button>
                         )
@@ -537,7 +538,7 @@ export default function Onboarding() {
               {showMaterials && <div className="w-px bg-[#28071C]/8 self-stretch flex-shrink-0" />}
 
               {/* Coluna direita — Comércio Exterior */}
-              <div className={`flex flex-col gap-6 ${showMaterials ? 'w-72 flex-shrink-0' : 'max-w-md w-full'}`}>
+              <div className={`flex flex-col gap-6 ${showMaterials ? 'flex-1 min-w-0' : 'max-w-md w-full'}`}>
                 <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
                   Comércio exterior
                 </label>
