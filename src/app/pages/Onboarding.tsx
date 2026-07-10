@@ -474,7 +474,7 @@ export default function Onboarding() {
             <div className="flex gap-6 h-full">
               {/* Coluna esquerda — Matérias-primas (checklist filtrada por segmento) */}
               {showMaterials ? (
-                <div className="w-[340px] flex-shrink-0 flex flex-col">
+                <div className="flex-1 min-w-0 flex flex-col">
                   <div className="flex items-center gap-2 mb-1">
                     <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
                       Matérias-primas relevantes
@@ -498,13 +498,6 @@ export default function Onboarding() {
                     <div className="flex-1 overflow-y-auto bg-white border border-[#28071C]/10 rounded-xl divide-y divide-[#28071C]/6">
                       {availableMaterialGroups.map(group => {
                         const selected = selectedMaterials.includes(group.id)
-                        const INDICATOR_BADGE: Record<string, string> = {
-                          algodao:       'CEPEA Algodão',
-                          petroleo:      'Petróleo Brent',
-                          couro:         'CEPEA Couro',
-                          metais:        'LME Metais',
-                          metais_nobres: 'Metais Nobres',
-                        }
                         return (
                           <button key={group.id} onClick={() => toggleMaterial(group.id)}
                             className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
@@ -516,14 +509,9 @@ export default function Onboarding() {
                               {selected && <Check className="w-2 h-2 text-white" />}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`text-xs font-semibold leading-snug ${selected ? 'text-[#28071C]' : 'text-[#28071C]/75'}`}>
-                                  {group.label}
-                                </span>
-                                <span className="text-[9px] bg-[#28071C]/8 text-[#28071C]/45 rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">
-                                  {INDICATOR_BADGE[group.indicator] ?? group.indicator}
-                                </span>
-                              </div>
+                              <span className={`text-xs font-semibold leading-snug ${selected ? 'text-[#28071C]' : 'text-[#28071C]/75'}`}>
+                                {group.label}
+                              </span>
                               <p className="text-[10px] text-[#28071C]/35 leading-snug truncate">{group.detail}</p>
                             </div>
                           </button>
@@ -538,7 +526,7 @@ export default function Onboarding() {
               {showMaterials && <div className="w-px bg-[#28071C]/8 self-stretch flex-shrink-0" />}
 
               {/* Coluna direita — Comércio Exterior */}
-              <div className={`flex flex-col gap-6 ${showMaterials ? 'flex-1 min-w-0' : 'max-w-md w-full'}`}>
+              <div className={`flex flex-col gap-6 ${showMaterials ? 'flex-1 min-w-0' : 'max-w-lg w-full'}`}>
                 <label className="text-[#28071C]/60 text-xs font-bold uppercase tracking-widest">
                   Comércio exterior
                 </label>
