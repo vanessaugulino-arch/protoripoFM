@@ -507,8 +507,8 @@ export default function SortimentPlan() {
     const vals      = macroPlan?.versions[0]?.values ?? {};
     const macroRec  = (vals["receitaBruta"] as number | null) ?? null;
     const macroMgm  = (vals["margemBruta"]  as number | null) ?? null;
-    const macroOtb  = (vals["otbCompra"]    as number | null) ?? null;
-    const macroPmv  = (vals["pmv"]          as number | null) ?? null;
+    const macroOrcamento = (vals["orcamento"] as number | null) ?? null;
+    const macroPmv       = (vals["pmv"]       as number | null) ?? null;
 
     // Peças + receita já planejadas nas coleções cadastradas
     let allocPieces  = 0;
@@ -524,31 +524,31 @@ export default function SortimentPlan() {
     });
     allocPieces = Math.round(allocPieces);
 
-    // Sell-through implícito: COGS_alvo / OTB_custo
+    // Sell-through implícito: COGS_alvo / Orçamento_custo
     // COGS_alvo = receita × (1 – margem%)  →  ST = COGS_alvo / Orçamento
     let sellThrough: number | null = null;
-    if (macroRec != null && macroMgm != null && macroOtb != null && macroOtb > 0) {
-      sellThrough = Math.round(((macroRec * (1 - macroMgm / 100)) / macroOtb) * 1000) / 10;
+    if (macroRec != null && macroMgm != null && macroOrcamento != null && macroOrcamento > 0) {
+      sellThrough = Math.round(((macroRec * (1 - macroMgm / 100)) / macroOrcamento) * 1000) / 10;
     }
 
     // Peças de Orçamento disponíveis (capacidade total – peças já planejadas)
     // PMV ponderado para calcular peças alvo: usa macroPmv ou calcula das divisões
     const pmvRef = macroPmv ?? (allocPieces > 0 ? allocRevenue / allocPieces : null);
-    let otbPiecesTarget: number | null = null;
-    let otbPiecesRemaining: number | null = null;
-    if (macroOtb != null && pmvRef != null && pmvRef > 0 && macroMgm != null) {
-      const avgCost      = pmvRef * (1 - macroMgm / 100);
-      otbPiecesTarget    = avgCost > 0 ? Math.round(macroOtb / avgCost) : null;
-      otbPiecesRemaining = otbPiecesTarget != null ? otbPiecesTarget - allocPieces : null;
+    let orcamentoPecasAlvo: number | null = null;
+    let orcamentoPecasRestantes: number | null = null;
+    if (macroOrcamento != null && pmvRef != null && pmvRef > 0 && macroMgm != null) {
+      const avgCost          = pmvRef * (1 - macroMgm / 100);
+      orcamentoPecasAlvo     = avgCost > 0 ? Math.round(macroOrcamento / avgCost) : null;
+      orcamentoPecasRestantes = orcamentoPecasAlvo != null ? orcamentoPecasAlvo - allocPieces : null;
     }
 
     return {
       allocPieces,
       allocRevenue,
       sellThrough,
-      otbPiecesTarget,
-      otbPiecesRemaining,
-      macroRec, macroMgm, macroOtb, macroPmv,
+      orcamentoPecasAlvo,
+      orcamentoPecasRestantes,
+      macroRec, macroMgm, macroOrcamento, macroPmv,
       focus: macroPlan?.focus ?? null,
       focusYear: macroPlan?.year ?? null,
     };
@@ -1125,11 +1125,11 @@ export default function SortimentPlan() {
           )}
 
           {/* Orçamento disponível R$ */}
-          {topbarKpis.macroOtb != null && (
-            <HeaderTooltip text="Orçamento total de compras disponível. Cada coleção planejada consome parte deste orçamento — o saldo diminui conforme o plano é construído.">
+          {topbarKpis.macroOrcamento != null && (
+            <HeaderTooltip text="Estimativa de orçamento previsto para a temporada. Previsão inicial — refina-se conforme o plano de coleção avança.">
               <div className="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/15 rounded-lg px-2.5 py-1 cursor-default">
                 <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Orçamento</span>
-                <span className="text-xs font-bold text-[#F6F3AA]">{fmtCurrency(topbarKpis.macroOtb)}</span>
+                <span className="text-xs font-bold text-[#F6F3AA]">{fmtCurrency(topbarKpis.macroOrcamento)}</span>
                 <Info className="w-3 h-3 text-[#F6F3AA]/40" />
               </div>
             </HeaderTooltip>
@@ -1139,18 +1139,18 @@ export default function SortimentPlan() {
 
           {/* Peças do Orçamento disponíveis — abate conforme coleções são planejadas */}
           <HeaderTooltip text={
-            topbarKpis.otbPiecesRemaining != null
-              ? `Saldo de peças ainda disponíveis no Orçamento. Total estimado: ${fmtNum(topbarKpis.otbPiecesTarget ?? 0)} peças — já planejadas: ${fmtNum(topbarKpis.allocPieces)} peças. Este número diminui à medida que as coleções são planejadas com orçamento e preço médio.`
+            topbarKpis.orcamentoPecasRestantes != null
+              ? `Saldo de peças ainda disponíveis no orçamento previsto. Total estimado: ${fmtNum(topbarKpis.orcamentoPecasAlvo ?? 0)} peças — já planejadas: ${fmtNum(topbarKpis.allocPieces)} peças. Este número diminui à medida que as coleções são planejadas com orçamento e preço médio.`
               : "Volume de peças novas previstas para a temporada, calculado a partir das coleções planejadas com orçamento e preço médio."
           }>
             <div className="flex-shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/15 rounded-lg px-2.5 py-1 cursor-default">
               <span className="text-[10px] text-[#F6F3AA]/60 uppercase tracking-widest">Peças Orçamento</span>
-              {topbarKpis.otbPiecesRemaining != null ? (
+              {topbarKpis.orcamentoPecasRestantes != null ? (
                 <span className={`text-xs font-bold ${
-                  topbarKpis.otbPiecesRemaining > 0 ? "text-[#F6F3AA]" : "text-emerald-300"
+                  topbarKpis.orcamentoPecasRestantes > 0 ? "text-[#F6F3AA]" : "text-emerald-300"
                 }`}>
-                  {topbarKpis.otbPiecesRemaining > 0
-                    ? `${fmtNum(topbarKpis.otbPiecesRemaining)} restantes`
+                  {topbarKpis.orcamentoPecasRestantes > 0
+                    ? `${fmtNum(topbarKpis.orcamentoPecasRestantes)} restantes`
                     : `${fmtNum(topbarKpis.allocPieces)} ✓`}
                 </span>
               ) : (
@@ -1322,7 +1322,7 @@ export default function SortimentPlan() {
                   // Dados reais da divisão ativa (Módulos 3 e 4)
                   const divReceita = activeDivision.revenueTarget;
                   const divMargem  = activeDivision.targetMarginPct;
-                  const divOtb     = divReceita * (1 - divMargem / 100);
+                  const divOrcamento = divReceita * (1 - divMargem / 100);
                   const p          = activeDivision.pricePyramid;
                   const divPmv     = (activeDivision.avgPriceP1 * p.p1 + activeDivision.avgPriceP2 * p.p2 + activeDivision.avgPriceP3 * p.p3) / 100;
 
@@ -1369,7 +1369,7 @@ export default function SortimentPlan() {
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               Orçamento de Compra <Info className="w-3 h-3 opacity-40" />
                             </div>
-                            <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOtb)}</div>
+                            <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOrcamento)}</div>
                           </div>
                         </Tooltip>
                         <Tooltip text="Preço médio de venda ponderado pelas faixas P1, P2 e P3 desta divisão. Calculado a partir da pirâmide de preços e dos preços médios definidos no Módulo 3." side="bottom">

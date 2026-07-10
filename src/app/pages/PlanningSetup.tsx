@@ -38,11 +38,11 @@ function classifyOrigem(origem: OrigemPecas | undefined): 'produtor' | 'comprado
  *
  * Produtor (própria/white/private label):
  *   - NÃO usa Orçamento de Compra (não compra de terceiros como principal alavanca)
- *   - Substitui otbCompra → producaoPecas nos indicadores sugeridos
+ *   - Substitui orcamento → producaoPecas nos indicadores sugeridos
  *
  * Comprador (multimarca/revenda):
  *   - NÃO usa indicadores de produção
- *   - Substitui producaoPecas → otbCompra nos indicadores sugeridos
+ *   - Substitui producaoPecas → orcamento nos indicadores sugeridos
  *
  * Híbrido: mantém ambos, sem troca.
  */
@@ -58,22 +58,22 @@ function adaptPrioritiesForOrigem(
   const rest      = [...defaults.slice(suggestedCount)]
 
   if (tipo === 'produtor') {
-    const otbIdx  = suggested.indexOf('otbCompra')
+    const orcIdx  = suggested.indexOf('orcamento')
     const prodIdx = suggested.indexOf('producaoPecas')
-    if (otbIdx >= 0 && prodIdx < 0) {
-      suggested[otbIdx] = 'producaoPecas'
+    if (orcIdx >= 0 && prodIdx < 0) {
+      suggested[orcIdx] = 'producaoPecas'
       const prodRestIdx = rest.indexOf('producaoPecas')
       if (prodRestIdx >= 0) rest.splice(prodRestIdx, 1)
-      rest.unshift('otbCompra')
+      rest.unshift('orcamento')
     }
   } else {
     // comprador
     const prodIdx = suggested.indexOf('producaoPecas')
-    const otbIdx  = suggested.indexOf('otbCompra')
-    if (prodIdx >= 0 && otbIdx < 0) {
-      suggested[prodIdx] = 'otbCompra'
-      const otbRestIdx = rest.indexOf('otbCompra')
-      if (otbRestIdx >= 0) rest.splice(otbRestIdx, 1)
+    const orcIdx  = suggested.indexOf('orcamento')
+    if (prodIdx >= 0 && orcIdx < 0) {
+      suggested[prodIdx] = 'orcamento'
+      const orcRestIdx = rest.indexOf('orcamento')
+      if (orcRestIdx >= 0) rest.splice(orcRestIdx, 1)
       rest.unshift('producaoPecas')
     }
   }
@@ -86,7 +86,7 @@ const INDICATOR_TOOLTIPS: Record<string, string> = {
   receitaBruta:  'Volume total de vendas no período. Ponto de partida obrigatório — define o tamanho do mercado que você quer capturar.',
   margemBruta:   'Percentual que sobra da receita após deduzir o custo dos produtos. Indica a eficiência do mix e da precificação.',
   pmv:           'Preço médio pelo qual suas peças são vendidas. Impacta diretamente a margem e o posicionamento da marca.',
-  otbCompra:     'Orçamento disponível para comprar ou produzir mercadoria no período. Controla o nível de investimento em estoque.',
+  orcamento:     'Estimativa de investimento previsto para comprar ou produzir mercadoria neste ciclo. Previsão inicial — refina-se conforme o plano de coleção avança.',
   giro:          'Quantas vezes o estoque é renovado no período. Giro alto = menos capital parado, mais liquidez.',
   cobertura:     'Quantos dias de estoque você tem disponível com base na velocidade de vendas atual. Cobertura alta pode indicar risco de estoque parado.',
   producaoPecas: 'Volume total de peças planejadas para produção ou compra no período. Direciona o plano de coleção e os pedidos de compra.',

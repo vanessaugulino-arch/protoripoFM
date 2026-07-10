@@ -810,7 +810,7 @@ export default function Onboarding() {
                       },
                       {
                         icon: '💰',
-                        mod: 'Orçamento (OTB)',
+                        mod: 'Orçamento',
                         uso: 'Verba distribuída por agrupamentos lógicos (Divisão → Categoria), não por SKU isolado.',
                       },
                       {

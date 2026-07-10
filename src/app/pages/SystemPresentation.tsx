@@ -118,7 +118,7 @@ export default function SystemPresentation() {
               {/* 4 cards de problema */}
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { title: "OTBs e MFPs param na quantidade de compra",    desc: "Não chegam à arquitetura do sortimento." },
+                  { title: "Orçamentos e MFPs param na quantidade de compra", desc: "Não chegam à arquitetura do sortimento." },
                   { title: "PLMs assumem a arquitetura já decidida",        desc: "Partem do produto, não da meta financeira." },
                   { title: "Entre o número e a criação há um vazio",       desc: "Nenhuma ferramenta preenche esse gap com método." },
                   { title: "Decisões sem base de dados integrada",          desc: "Estilo e comercial trabalham desconectados." },

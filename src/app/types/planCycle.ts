@@ -58,10 +58,10 @@ export const PLAN_INDICATORS: PlanIndicator[] = [
 ]
 
 // Número de indicadores sugeridos por foco (inclui Receita Bruta)
-// CAIXA:       receita + giro, mkdPct, otbCompra, ticketMedio            = 5
+// CAIXA:       receita + giro, mkdPct, orcamento, ticketMedio            = 5
 // MARGEM:      receita + margemBruta, mkdPct, gmroi, pmv                 = 5
-// CRESCIMENTO: receita + producaoPecas, otbCompra, ticketMedio, giro     = 5
-// DEFENSIVO:   receita + cobertura, margemBruta, otbCompra, pmv          = 5
+// CRESCIMENTO: receita + producaoPecas, orcamento, ticketMedio, giro     = 5
+// DEFENSIVO:   receita + cobertura, margemBruta, orcamento, pmv          = 5
 export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
   caixa:       5,
   margem:      5,
@@ -74,19 +74,19 @@ export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
 // O restante fica disponível para liberação manual pelo usuário (máx. 2 adicionais).
 export const DEFAULT_PRIORITIES: Record<StrategicFocus, string[]> = {
   // Foco em Caixa: acelerar conversão de estoque → liquidez
-  caixa:       ['receitaBruta', 'giro', 'mkdPct', 'otbCompra', 'ticketMedio',
+  caixa:       ['receitaBruta', 'giro', 'mkdPct', 'orcamento', 'ticketMedio',
                  'cobertura', 'margemBruta', 'producaoPecas', 'pmv', 'gmroi', 'custoMedio'],
   // Foco em Margem: maximizar rentabilidade preservando markup
   margem:      ['receitaBruta', 'margemBruta', 'mkdPct', 'gmroi', 'pmv',
-                 'otbCompra', 'giro', 'cobertura', 'producaoPecas', 'ticketMedio', 'custoMedio'],
+                 'orcamento', 'giro', 'cobertura', 'producaoPecas', 'ticketMedio', 'custoMedio'],
   // Foco em Crescimento: expandir volume e participação de mercado
-  crescimento: ['receitaBruta', 'producaoPecas', 'otbCompra', 'ticketMedio', 'giro',
+  crescimento: ['receitaBruta', 'producaoPecas', 'orcamento', 'ticketMedio', 'giro',
                  'margemBruta', 'pmv', 'cobertura', 'mkdPct', 'gmroi', 'custoMedio'],
   // Ano Defensivo: preservar caixa e reduzir risco
-  defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'otbCompra', 'pmv',
+  defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'orcamento', 'pmv',
                  'giro', 'mkdPct', 'producaoPecas', 'gmroi', 'ticketMedio', 'custoMedio'],
   // Personalizado: apenas receita obrigatória; usuário seleciona livremente o resto
-  custom:      ['receitaBruta', 'margemBruta', 'otbCompra', 'giro', 'cobertura',
+  custom:      ['receitaBruta', 'margemBruta', 'orcamento', 'giro', 'cobertura',
                  'producaoPecas', 'pmv', 'mkdPct', 'ticketMedio', 'gmroi', 'custoMedio'],
 }
 

@@ -51,7 +51,7 @@ export interface CollectionCycle {
   // Dados estratégicos (definidos pelo CEO - Murilo)
   section_murilo_estrategico: {
     metaReceitaTotal: number;
-    orcamentoOTB: number;
+    orcamento: number;
     margemAlvo: number;
     observacoes?: string;
     approvedAt?: string;

@@ -1187,7 +1187,7 @@ function DivisionBlockCard({
               label="Orçamento (R$)"
               value={block.volumeCoverage.orcamento ?? 0}
               onChange={(v) => onUpdateVolume({ orcamento: v })}
-              tooltip="Open-To-Buy — orçamento disponível para comprar mercadoria desta divisão. Controla o nível de investimento em estoque."
+              tooltip="Estimativa de orçamento previsto para comprar ou produzir mercadoria desta divisão. Calculado a partir da receita alvo e margem definidas — previsão inicial, a confirmar com o desenvolvimento da coleção."
             />
           )}
           <CompactField
