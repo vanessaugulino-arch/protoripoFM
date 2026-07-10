@@ -85,7 +85,7 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
   pmv:           "PMV (R$)",
   ticketMedio:   "Ticket Médio (R$)",
   producaoPecas: "Produção / Peças",
-  orcamento:     "Orçamento de Compra (R$)",
+  orcamento:     "Orçamento Previsto (R$)",
   mkdPct:        "Markdown (%)",
   giro:          "Giro de Estoque",
   cobertura:     "Cobertura (dias)",

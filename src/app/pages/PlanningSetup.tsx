@@ -450,8 +450,8 @@ export default function PlanningSetup() {
                   <p className="text-amber-800/80 leading-snug">
                     <strong>Perfil detectado:</strong> {ORIGEM_LABELS[origemPerfil]}.{' '}
                     {tipoPerfil === 'produtor'
-                      ? 'Os indicadores sugeridos vão priorizar Produção de Peças em vez de Orçamento de Compra.'
-                      : 'Os indicadores vão priorizar Orçamento de Compra e não incluir indicadores de produção própria.'}
+                      ? 'Os indicadores sugeridos vão priorizar Produção de Peças em vez de Orçamento Previsto.'
+                      : 'Os indicadores vão priorizar Orçamento Previsto e não incluir indicadores de produção própria.'}
                   </p>
                 </div>
               )}
@@ -597,8 +597,8 @@ export default function PlanningSetup() {
                   <span>{tipoPerfil === 'produtor' ? '🏭' : '🛒'}</span>
                   <span>
                     {tipoPerfil === 'produtor'
-                      ? 'Modelo produtivo: Produção de Peças priorizado em vez de Orçamento.'
-                      : 'Modelo de revenda: Orçamento de Compra priorizado — indicadores de produção em somente leitura.'}
+                      ? 'Modelo produtivo: Produção de Peças priorizado em vez de Orçamento Previsto.'
+                      : 'Modelo de revenda: Orçamento Previsto priorizado — indicadores de produção em somente leitura.'}
                   </span>
                 </div>
               )}

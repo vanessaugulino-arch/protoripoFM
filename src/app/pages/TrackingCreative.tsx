@@ -62,6 +62,7 @@ export default function TrackingCreative() {
   // Dados reais do Supabase (com fallback para mock)
   const [groupPerformanceState, setGroupPerformanceState] = useState<null | typeof groupPerformanceFallback>(null);
   const [themeDataState, setThemeDataState] = useState<null | typeof themeDataFallback>(null);
+  const [metaTotal, setMetaTotal] = useState<number>(0);
 
   useEffect(() => {
     const storedUser = sessionStorage.getItem("currentUser");
@@ -76,6 +77,20 @@ export default function TrackingCreative() {
 
     // Carrega dados reais do Supabase
     const loadRealData = async () => {
+      // 0. Busca cenário aplicado do Módulo 1 para metaTotal (receitaBruta)
+      const { data: scenarios } = await supabase
+        .from("planning_scenarios")
+        .select("values, is_applied")
+        .eq("tenant_id", tid)
+        .eq("is_applied", true)
+        .limit(1);
+
+      if (scenarios && scenarios.length > 0) {
+        const vals = scenarios[0].values as Record<string, unknown>;
+        const receita = typeof vals["receitaBruta"] === "number" ? vals["receitaBruta"] : 0;
+        if (receita > 0) setMetaTotal(receita);
+      }
+
       // 1. Receita por divisão (agrupa sales_history por category)
       const { data: salesData } = await supabase
         .from("sales_history")
@@ -147,8 +162,9 @@ export default function TrackingCreative() {
 
   // Calculate overall performance
   const totalReceita = groupPerformance.reduce((sum, item) => sum + item.receita, 0);
-  const metaTotal = 1550000;
-  const performanceGeral = ((totalReceita / metaTotal) * 100 - 100).toFixed(1);
+  // metaTotal vem do cenário aplicado do Módulo 1 (receitaBruta); fallback = soma dos grupos (sem distorção)
+  const metaEfetiva = metaTotal > 0 ? metaTotal : totalReceita || 1;
+  const performanceGeral = ((totalReceita / metaEfetiva) * 100 - 100).toFixed(1);
   const performancePositiva = parseFloat(performanceGeral) >= 0;
 
   // Find best performing group
@@ -226,7 +242,7 @@ export default function TrackingCreative() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div>
-              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Direção Criativa</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Operacional</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Acompanhamento de Coleção</span>
             </div>
           </div>
@@ -275,8 +291,12 @@ export default function TrackingCreative() {
               <DollarSign className="w-5 h-5 text-[#28071C]/70" />
               <p className="text-[#28071C]/60 text-xs uppercase tracking-wide">Receita Total Acumulada</p>
             </div>
-            <p className="text-[#28071C] text-2xl font-bold">R$ 1.505.000</p>
-            <p className="text-green-600 text-sm mt-1">Meta: R$ 1.550.000 (96.8%)</p>
+            <p className="text-[#28071C] text-2xl font-bold">
+              {totalReceita > 0 ? `R$ ${totalReceita.toLocaleString("pt-BR")}` : "—"}
+            </p>
+            <p className={`text-sm mt-1 ${performancePositiva ? "text-green-600" : "text-red-500"}`}>
+              Meta: {metaTotal > 0 ? `R$ ${metaTotal.toLocaleString("pt-BR")}` : "Sem plano aplicado"}{metaTotal > 0 ? ` (${(100 + parseFloat(performanceGeral)).toFixed(1)}%)` : ""}
+            </p>
           </div>
 
           <div className="bg-white rounded-xl p-6 shadow-sm">

@@ -14,7 +14,7 @@ const PLANNING_GATEWAY_TOUR: TourStep[] = [
   {
     targetId: "tour-pg-title",
     title: "Módulo 1 — Planejamento Estratégico",
-    content: "Aqui você define a meta macro do ciclo: receita, margem e Orçamento. Os outros módulos partem desses números.",
+    content: "Aqui você define a meta macro do ciclo: receita, margem e Orçamento Previsto. Os outros módulos partem desses números.",
   },
   {
     targetId: "tour-pg-acc",
@@ -161,8 +161,8 @@ export default function PlanningGateway() {
     },
     {
       fieldKey: "orcamento",
-      label: "Orçamento de Compra",
-      tooltip: "Orçamento disponível para comprar ou produzir mercadoria no período. Controla o nível de investimento em estoque e o risco financeiro.",
+      label: "Orçamento Previsto",
+      tooltip: "Estimativa de investimento previsto para comprar ou produzir mercadoria no ciclo. Previsão inicial — refina-se conforme o plano de coleção avança.",
       ref: fmtBRL(refProrated.orcamento),
       acc: fmtBRL(ACC_ACTUAL.orcamento),
       ...delta(ACC_ACTUAL.orcamento, refProrated.orcamento),
@@ -288,7 +288,7 @@ export default function PlanningGateway() {
         {/* ─── FRASE DE CONTEXTO ───────────────────────────────────────────── */}
         <div className="bg-gradient-to-r from-[#28071C]/5 to-[#7598CF]/10 border border-[#7598CF]/20 rounded-2xl px-6 py-4 text-center">
           <p className="text-[#28071C] font-semibold text-base leading-snug">
-            Defina a <span className="text-[#7598CF]">meta macro do ciclo</span> — receita, margem e Orçamento — e mantenha todos os módulos alinhados a um único norte estratégico.
+            Defina a <span className="text-[#7598CF]">meta macro do ciclo</span> — receita, margem e Orçamento Previsto — e inicie o fluxo do macro ao sortimento. Todos os módulos seguintes partem destes números.
           </p>
         </div>
 

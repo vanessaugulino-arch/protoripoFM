@@ -21,6 +21,7 @@ import {
   listEtapasByModeloDb, replaceEtapasDb,
   calcPrazoTotal,
 } from "../../services/supabase/matrizAbastecimentoService";
+import { fetchHierarchyPaths } from "../../services/supabase/productHierarchyService";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Constantes
@@ -51,6 +52,12 @@ const GATILHO_COLORS: Record<TipoGatilho, string> = {
 };
 
 const MOEDAS = ["BRL", "USD", "EUR", "GBP", "CNY", "ARS"];
+
+const ETAPAS_SUGERIDAS = [
+  "Modelagem", "Plotagem", "Corte", "Costura", "Montagem",
+  "Bordado", "Estamparia", "Lavanderia", "Tingimento",
+  "Acabamento", "Revisão de qualidade", "Embalagem",
+];
 
 // Cores por grupo de etapa (para DnD visual)
 const GRUPO_BORDER_COLORS = [
@@ -124,6 +131,14 @@ interface StageForm {
   observacoes: string;
 }
 
+interface PrestRow {
+  _key: string;
+  etapa: string;
+  prestador: string;
+  leadTime: string;
+  condicaoId: string;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Componente principal
 // ══════════════════════════════════════════════════════════════════════════════
@@ -131,7 +146,7 @@ interface StageForm {
 export default function MatrizAbastecimento() {
   const navigate   = useNavigate();
   const user       = getUser();
-  const hierarquia = useState(() => loadHierarquia())[0];
+  const [hierarquia, setHierarquia] = useState<HierItem[]>(() => loadHierarquia());
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<Tab>("modelo_fornecedor");
@@ -164,16 +179,36 @@ export default function MatrizAbastecimento() {
     setLoading(true);
     setError(null);
     try {
-      const [f, c, m, mod] = await Promise.all([
+      const [f, c, m, mod, paths] = await Promise.all([
         listFornecedoresDb(user.tenant_id),
         listCondicoesDb(user.tenant_id),
         listMatrizDb(user.tenant_id),
         listModelosProducaoDb(user.tenant_id),
+        fetchHierarchyPaths(user.tenant_id).catch(() => []),
       ]);
       setFornecedores(f);
       setCondicoes(c);
       setMatriz(m);
       setModelos(mod);
+
+      // Hierarquia via DB (products table) — fallback para localStorage se vazio
+      if (paths.length > 0) {
+        const seen = new Set<string>();
+        const hierItems: HierItem[] = paths
+          .filter(p => p.division && p.category)
+          .map(p => ({
+            divisao:     p.division!,
+            categoria:   p.category!,
+            subcategoria: p.subcategory ?? null,
+          }))
+          .filter(h => {
+            const key = `${h.divisao}|${h.categoria}|${h.subcategoria ?? ""}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        if (hierItems.length > 0) setHierarquia(hierItems);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -240,6 +275,23 @@ export default function MatrizAbastecimento() {
     if (!confirm("Excluir este fornecedor?")) return;
     await deleteFornecedorDb(id);
     setFornecedores(prev => prev.filter(f => f.id !== id));
+  }
+
+  async function handleQuickAddFornecedor(nome: string): Promise<string> {
+    if (!user?.tenant_id) return "";
+    const created = await insertFornecedorDb(user.tenant_id, {
+      nome: nome.trim(),
+      codigo_erp: "FM-" + Math.random().toString(36).slice(2, 8).toUpperCase(),
+      tipo: "white_label" as TipoFornecimento,
+      pais_origem: null,
+      moeda_padrao: "BRL",
+      contato_nome: null,
+      contato_email: null,
+      observacoes: null,
+      ativo: true,
+    });
+    setFornecedores(prev => [...prev, created]);
+    return created.id;
   }
 
   // ── Handlers: Condições ────────────────────────────────────────────────────
@@ -574,6 +626,9 @@ export default function MatrizAbastecimento() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold text-[#28071C]">{f.nome}</span>
+                            {f.codigo_erp && (
+                              <span className="text-[10px] font-mono bg-[#7598CF]/10 text-[#7598CF] px-1.5 py-0.5 rounded-md">{f.codigo_erp}</span>
+                            )}
                             {f.pais_origem && <span className="text-[#28071C]/40 text-xs">{f.pais_origem}</span>}
                           </div>
                           <div className="flex items-center gap-3 mt-1 text-xs text-[#28071C]/50">
@@ -668,6 +723,7 @@ export default function MatrizAbastecimento() {
           condicoes={condicoes}
           onSave={handleSaveMatriz}
           onClose={() => setMatrizModal(null)}
+          onQuickAdd={handleQuickAddFornecedor}
         />
       )}
       {producaoModal && (
@@ -833,7 +889,7 @@ function EtapasReadOnly({ etapas }: { etapas: ProducaoEtapa[] }) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function MatrizEntradaModal({
-  initial, hierarquia, fornecedores, condicoes, onSave, onClose,
+  initial, hierarquia, fornecedores, condicoes, onSave, onClose, onQuickAdd,
 }: {
   initial?: MatrizEntry;
   hierarquia: HierItem[];
@@ -844,22 +900,27 @@ function MatrizEntradaModal({
     extraCategorias?: HierItem[]
   ) => Promise<void>;
   onClose: () => void;
+  onQuickAdd: (nome: string) => Promise<string>;
 }) {
   const isEdit = !!initial;
+
+  // Parse observacoes JSON (backwards-compat: may be plain text)
+  const _parsed: Record<string, unknown> = (() => {
+    const raw = initial?.observacoes;
+    if (!raw) return {};
+    try { const p = JSON.parse(raw); return (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>; }
+    catch { return { obs: raw }; }
+  })();
 
   // ── Picker de nova categoria ──────────────────────────────────────────────
   const [pickDiv,  setPickDiv]  = useState("");
   const [pickCat,  setPickCat]  = useState("");
   const [pickSub,  setPickSub]  = useState("");
-
-  // Lista de categorias selecionadas
   const [selectedCats, setSelectedCats] = useState<HierItem[]>(
-    isEdit
-      ? [{ divisao: initial.divisao, categoria: initial.categoria, subcategoria: initial.subcategoria }]
-      : []
+    isEdit ? [{ divisao: initial.divisao, categoria: initial.categoria, subcategoria: initial.subcategoria }] : []
   );
 
-  // ── Campos do fornecedor ──────────────────────────────────────────────────
+  // ── Campos principais ─────────────────────────────────────────────────────
   const [fornId,    setFornId]    = useState(initial?.fornecedor_id ?? "");
   const [tipo,      setTipo]      = useState<TipoFornecimento>(initial?.tipo_fornecimento ?? "white_label");
   const [diasProd,  setDiasProd]  = useState(String(initial?.dias_producao  ?? "30"));
@@ -867,54 +928,101 @@ function MatrizEntradaModal({
   const [condId,    setCondId]    = useState(initial?.condicao_pagamento_id ?? "");
   const [peso,      setPeso]      = useState(String(initial?.peso_participacao ?? "100"));
   const [moeda,     setMoeda]     = useState(initial?.moeda ?? "BRL");
-  const [obs,       setObs]       = useState(initial?.observacoes ?? "");
+  const [obs,       setObs]       = useState((_parsed.obs as string) ?? "");
   const [saving,    setSaving]    = useState(false);
 
+  // ── Matéria Prima (produção própria) ──────────────────────────────────────
+  const [mpOrigem, setMpOrigem] = useState<"nacional" | "internacional">(
+    (_parsed.mp_origem as "nacional" | "internacional") ?? "nacional"
+  );
+  const [mpPct,  setMpPct]  = useState(String(_parsed.mp_pct  ?? "60"));
+  const [mpLead, setMpLead] = useState(String(_parsed.mp_lead ?? "45"));
+  const _mpPagRaw = (_parsed.mp_pag as { g: string; pct: number; d: number }[] | undefined) ?? [];
+  const [mpPag, setMpPag] = useState([
+    { g: "PEDIDO"      as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "PEDIDO")?.pct      ?? "30"),  d: String(_mpPagRaw.find(p => p.g === "PEDIDO")?.d      ?? "0")  },
+    { g: "FATURAMENTO" as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "FATURAMENTO")?.pct ?? "70"),  d: String(_mpPagRaw.find(p => p.g === "FATURAMENTO")?.d ?? "30") },
+    { g: "ENTREGA"     as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "ENTREGA")?.pct     ?? "0"),   d: String(_mpPagRaw.find(p => p.g === "ENTREGA")?.d     ?? "0")  },
+  ]);
+
+  // ── Prestadores de Serviços (produção própria) ────────────────────────────
+  let _pk = 0;
+  const newPK = () => `p${++_pk}`;
+  const [prestadores, setPrestadores] = useState<PrestRow[]>(() => {
+    const raw = _parsed.prest as { e: string; p: string; lt: number; c: string }[] | undefined;
+    if (!raw || raw.length === 0) return [];
+    return raw.map(r => ({ _key: newPK(), etapa: r.e ?? "", prestador: r.p ?? "", leadTime: String(r.lt ?? 0), condicaoId: r.c ?? "" }));
+  });
+
   const leadTotal = (Number(diasProd) || 0) + (Number(diasTrans) || 0);
+  const isProducaoPropria = tipo === "producao_propria";
 
   // Derived pickers
   const divisoes   = [...new Set(hierarquia.map(h => h.divisao))];
-  const categorias = [...new Set(
-    hierarquia.filter(h => !pickDiv || h.divisao === pickDiv).map(h => h.categoria)
-  )];
-  const subcats    = [...new Set(
-    hierarquia.filter(h => h.categoria === pickCat).map(h => h.subcategoria).filter(Boolean) as string[]
-  )];
+  const categorias = [...new Set(hierarquia.filter(h => !pickDiv || h.divisao === pickDiv).map(h => h.categoria))];
+  const subcats    = [...new Set(hierarquia.filter(h => h.categoria === pickCat).map(h => h.subcategoria).filter(Boolean) as string[])];
 
   function addCategoria() {
     if (!pickDiv || !pickCat) return;
     const item: HierItem = { divisao: pickDiv, categoria: pickCat, subcategoria: pickSub || null };
-    if (!selectedCats.some(c =>
-      c.divisao === item.divisao && c.categoria === item.categoria && c.subcategoria === item.subcategoria
-    )) {
+    if (!selectedCats.some(c => c.divisao === item.divisao && c.categoria === item.categoria && c.subcategoria === item.subcategoria)) {
       setSelectedCats(prev => [...prev, item]);
     }
     setPickDiv(""); setPickCat(""); setPickSub("");
   }
 
+  function updateMpPag(idx: number, field: "pct" | "d", val: string) {
+    setMpPag(prev => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r));
+  }
+
+  function addPrestador() {
+    setPrestadores(prev => [...prev, { _key: newPK(), etapa: "", prestador: "", leadTime: "", condicaoId: "" }]);
+  }
+
+  function updatePrest(key: string, field: keyof PrestRow, val: string) {
+    setPrestadores(prev => prev.map(p => p._key === key ? { ...p, [field]: val } : p));
+  }
+
+  function removePrest(key: string) {
+    setPrestadores(prev => prev.filter(p => p._key !== key));
+  }
+
   async function submit() {
-    if (selectedCats.length === 0 && !isEdit) {
-      alert("Selecione ao menos uma categoria."); return;
-    }
+    if (selectedCats.length === 0 && !isEdit) { alert("Selecione ao menos uma categoria."); return; }
     setSaving(true);
+
+    // Build observacoes JSON
+    const obsData: Record<string, unknown> = {};
+    if (obs.trim()) obsData.obs = obs.trim();
+    if (isProducaoPropria) {
+      obsData.mp_origem = mpOrigem;
+      obsData.mp_pct    = Number(mpPct)  || 0;
+      obsData.mp_lead   = Number(mpLead) || 0;
+      const pagAtivas = mpPag.filter(p => Number(p.pct) > 0);
+      if (pagAtivas.length > 0) obsData.mp_pag = pagAtivas.map(p => ({ g: p.g, pct: Number(p.pct), d: Number(p.d) }));
+      const prestAtivos = prestadores.filter(p => p.etapa || p.prestador);
+      if (prestAtivos.length > 0) obsData.prest = prestAtivos.map(p => ({ e: p.etapa, p: p.prestador, lt: Number(p.leadTime) || 0, c: p.condicaoId }));
+    }
+
     const baseValues: Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "updated_at" | "fornecedor" | "condicao"> = {
-      hierarquia_id:       null,
-      divisao:             selectedCats[0]?.divisao    ?? initial?.divisao    ?? "",
-      categoria:           selectedCats[0]?.categoria  ?? initial?.categoria  ?? "",
-      subcategoria:        selectedCats[0]?.subcategoria ?? initial?.subcategoria ?? null,
-      fornecedor_id:       fornId || null,
-      tipo_fornecimento:   tipo,
-      dias_producao:       Number(diasProd)  || 0,
-      dias_transito:       Number(diasTrans) || 0,
+      hierarquia_id:         null,
+      divisao:               selectedCats[0]?.divisao       ?? initial?.divisao       ?? "",
+      categoria:             selectedCats[0]?.categoria     ?? initial?.categoria     ?? "",
+      subcategoria:          selectedCats[0]?.subcategoria  ?? initial?.subcategoria  ?? null,
+      fornecedor_id:         fornId || null,
+      tipo_fornecimento:     tipo,
+      dias_producao:         Number(diasProd)  || 0,
+      dias_transito:         Number(diasTrans) || 0,
       condicao_pagamento_id: condId || null,
-      peso_participacao:   Number(peso) || 100,
+      peso_participacao:     Number(peso) || 100,
       moeda,
-      observacoes:         obs || null,
-      ativo:               true,
+      observacoes:           Object.keys(obsData).length > 0 ? JSON.stringify(obsData) : null,
+      ativo:                 true,
     };
     await onSave(baseValues, isEdit ? undefined : selectedCats);
     setSaving(false);
   }
+
+  const prestadoresNomes = [...new Set(fornecedores.map(f => f.nome))];
 
   return (
     <Modal title={isEdit ? "Editar Fornecedor na Matriz" : "Adicionar Fornecedor"} onClose={onClose} wide>
@@ -960,8 +1068,7 @@ function MatrizEntradaModal({
                   {c.categoria}{c.subcategoria ? ` › ${c.subcategoria}` : ""}
                   <span className="text-[#28071C]/30 text-[10px] ml-0.5">{c.divisao}</span>
                   {!isEdit && (
-                    <button type="button"
-                      onClick={() => setSelectedCats(prev => prev.filter((_, j) => j !== i))}
+                    <button type="button" onClick={() => setSelectedCats(prev => prev.filter((_, j) => j !== i))}
                       className="ml-0.5 text-[#7598CF]/60 hover:text-[#7598CF]">
                       <X className="w-3 h-3" />
                     </button>
@@ -979,9 +1086,12 @@ function MatrizEntradaModal({
           <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Fornecedor</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-2">
-              <SelectField value={fornId} onChange={setFornId}
-                options={fornecedores.map(f => ({ value: f.id, label: f.nome }))}
-                allowEmpty="Nenhum / Produção Própria" />
+              <FornecedorCombobox
+                value={fornId}
+                onChange={setFornId}
+                fornecedores={fornecedores}
+                onQuickAdd={onQuickAdd}
+              />
             </div>
             <Field label="Peso/participação (%)">
               <input type="number" min={0} max={100} step={1} value={peso}
@@ -997,6 +1107,165 @@ function MatrizEntradaModal({
           <SelectField value={tipo} onChange={v => setTipo(v as TipoFornecimento)}
             options={Object.entries(TIPO_FORNECIMENTO_LABELS).map(([k, l]) => ({ value: k, label: l }))} />
         </Field>
+
+        {/* ── PRODUÇÃO PRÓPRIA: Matéria Prima ──────────────────────────────── */}
+        {isProducaoPropria && (
+          <>
+            <div className="bg-[#F6F3AA]/30 border border-[#F6F3AA] rounded-2xl p-4 space-y-4">
+              <p className="text-xs font-bold text-[#28071C]/70 uppercase tracking-wide">Matéria Prima</p>
+
+              {/* Origem */}
+              <div>
+                <label className="block text-xs font-semibold text-[#28071C]/60 mb-2 uppercase tracking-wide">Origem</label>
+                <div className="flex gap-2">
+                  {(["nacional", "internacional"] as const).map(opt => (
+                    <button key={opt} type="button" onClick={() => setMpOrigem(opt)}
+                      className={`flex-1 py-2 rounded-xl text-sm font-semibold border-2 transition-all ${
+                        mpOrigem === opt
+                          ? "bg-[#28071C] text-white border-[#28071C]"
+                          : "bg-white text-[#28071C]/60 border-[#28071C]/15 hover:border-[#28071C]/30"
+                      }`}>
+                      {opt === "nacional" ? "Nacional" : "Internacional"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* % custo + Lead time */}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="% médio do custo destinado à MP">
+                  <div className="relative">
+                    <input type="number" min={0} max={100} step={1} value={mpPct}
+                      onChange={e => setMpPct(e.target.value)}
+                      className="w-full px-3 py-2 pr-8 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
+                      placeholder="60" />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40 font-medium">%</span>
+                  </div>
+                </Field>
+                <div>
+                  <label className="block text-xs font-semibold text-[#28071C]/60 mb-1.5 uppercase tracking-wide">
+                    Lead time de entrega da MP (dias)
+                  </label>
+                  <input type="number" min={0} value={mpLead}
+                    onChange={e => setMpLead(e.target.value)}
+                    className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
+                    placeholder="45" />
+                  <p className="text-[10px] text-[#28071C]/40 mt-1 leading-tight">
+                    Prazo de chegada no estoque desde o envio do pedido ao fornecedor
+                  </p>
+                </div>
+              </div>
+
+              {/* Forma de pagamento MP */}
+              <div>
+                <label className="block text-xs font-semibold text-[#28071C]/60 mb-2 uppercase tracking-wide">Forma de pagamento</label>
+                <div className="space-y-2">
+                  {mpPag.map((row, i) => (
+                    <div key={row.g} className="flex items-center gap-2">
+                      <span className={`text-xs font-bold px-2 py-1 rounded-lg w-[100px] text-center shrink-0 ${GATILHO_COLORS[row.g]}`}>
+                        {TIPO_GATILHO_LABELS[row.g]}
+                      </span>
+                      <div className="relative flex-1">
+                        <input type="number" min={0} max={100} step={1} value={row.pct}
+                          onChange={e => updateMpPag(i, "pct", e.target.value)}
+                          className="w-full px-3 py-1.5 pr-6 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
+                          placeholder="0" />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40">%</span>
+                      </div>
+                      <span className="text-xs text-[#28071C]/30">+</span>
+                      <div className="relative flex-1">
+                        <input type="number" min={0} step={1} value={row.d}
+                          onChange={e => updateMpPag(i, "d", e.target.value)}
+                          className="w-full px-3 py-1.5 pr-7 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
+                          placeholder="0" />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40">d</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Alert agrupamento */}
+              <div className={`flex items-start gap-2 p-3 rounded-xl text-xs leading-relaxed ${
+                mpOrigem === "internacional"
+                  ? "bg-[#7598CF]/10 text-[#7598CF]"
+                  : "bg-emerald-50 text-emerald-700"
+              }`}>
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  {mpOrigem === "internacional"
+                    ? "MP importada de todos os modelos e categorias será agrupada para compra antecipada com chegada na mesma data, garantindo mínimo de compra internacional que viabilize custo, frete e riscos de atraso."
+                    : "MP nacional de todos os modelos e categorias seguirá o mesmo modelo de compra agrupada, otimizando frete e condições comerciais."}
+                </span>
+              </div>
+            </div>
+
+            {/* ── Prestadores de Serviços ──────────────────────────────────── */}
+            <div className="bg-white border border-[#28071C]/10 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold text-[#28071C]/70 uppercase tracking-wide flex items-center gap-2">
+                  <Scissors className="w-3.5 h-3.5" />
+                  Prestadores de Serviços
+                </p>
+                <button type="button" onClick={addPrestador}
+                  className="flex items-center gap-1 text-xs text-[#7598CF] font-semibold hover:underline">
+                  <Plus className="w-3.5 h-3.5" /> Adicionar etapa
+                </button>
+              </div>
+
+              {prestadores.length === 0 ? (
+                <p className="text-xs text-[#28071C]/35 italic py-2 text-center">
+                  Nenhuma etapa cadastrada. Clique em "Adicionar etapa" para incluir.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_1fr_72px_1fr_28px] gap-2 text-[10px] font-bold text-[#28071C]/40 uppercase tracking-wide px-1">
+                    <span>Etapa</span><span>Prestador</span><span>Lead (d)</span><span>Pagamento</span><span />
+                  </div>
+                  {prestadores.map(p => (
+                    <div key={p._key} className="grid grid-cols-[1fr_1fr_72px_1fr_28px] gap-2 items-center">
+                      <ComboboxFreetext
+                        value={p.etapa}
+                        onChange={v => updatePrest(p._key, "etapa", v)}
+                        suggestions={ETAPAS_SUGERIDAS}
+                        placeholder="Ex: Corte"
+                      />
+                      <ComboboxFreetext
+                        value={p.prestador}
+                        onChange={v => updatePrest(p._key, "prestador", v)}
+                        suggestions={prestadoresNomes}
+                        placeholder="Nome / empresa"
+                      />
+                      <div className="relative">
+                        <input type="number" min={0} value={p.leadTime}
+                          onChange={e => updatePrest(p._key, "leadTime", e.target.value)}
+                          className="w-full px-2 py-1.5 pr-5 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
+                          placeholder="0" />
+                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-[#28071C]/40">d</span>
+                      </div>
+                      <div className="relative">
+                        <select value={p.condicaoId}
+                          onChange={e => updatePrest(p._key, "condicaoId", e.target.value)}
+                          className="w-full pl-2 pr-6 py-1.5 border border-[#28071C]/10 rounded-lg text-xs text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40 appearance-none cursor-pointer">
+                          <option value="">—</option>
+                          {condicoes.map(c => <option key={c.id} value={c.id}>{c.descricao}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#28071C]/30 pointer-events-none" />
+                      </div>
+                      <button type="button" onClick={() => removePrest(p._key)}
+                        className="p-1 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-[#28071C]/35 italic px-1">
+                    Lead time: tempo de entrega da etapa concluída até envio para início da próxima etapa.
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         {/* ── Lead time ─────────────────────────────────────────────────────── */}
         <div>
@@ -1396,6 +1665,7 @@ function FornecedorModal({
   onSave: (v: Omit<Fornecedor, "id" | "tenant_id" | "created_at" | "updated_at">) => Promise<void>;
   onClose: () => void;
 }) {
+  const [codigoErp, setCodigoErp] = useState(initial?.codigo_erp ?? "");
   const [nome,   setNome]   = useState(initial?.nome          ?? "");
   const [tipo,   setTipo]   = useState<TipoFornecimento>(initial?.tipo ?? "white_label");
   const [pais,   setPais]   = useState(initial?.pais_origem   ?? "");
@@ -1406,10 +1676,16 @@ function FornecedorModal({
   const [ativo,  setAtivo]  = useState(initial?.ativo         ?? true);
   const [saving, setSaving] = useState(false);
 
+  function gerarCodigoErp(): string {
+    return "FM-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+  }
+
   async function submit() {
     if (!nome.trim()) return alert("Informe o nome do fornecedor.");
+    const codigo = codigoErp.trim() || gerarCodigoErp();
     setSaving(true);
     await onSave({
+      codigo_erp:    codigo,
       nome: nome.trim(), tipo,
       pais_origem:   pais  || null,
       moeda_padrao:  moeda,
@@ -1424,10 +1700,17 @@ function FornecedorModal({
   return (
     <Modal title={initial ? "Editar Fornecedor" : "Novo Fornecedor"} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="Nome *">
-          <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Ex: Têxtil Sul S.A."
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Nome *">
+            <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Ex: Têxtil Sul S.A."
+              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
+          </Field>
+          <Field label="Código ERP">
+            <input value={codigoErp} onChange={e => setCodigoErp(e.target.value)}
+              placeholder="Ex: FOR-001 (gerado automaticamente)"
+              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
+          </Field>
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Tipo">
             <SelectField value={tipo} onChange={v => setTipo(v as TipoFornecimento)}
@@ -1585,6 +1868,117 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="block text-xs font-semibold text-[#28071C]/60 mb-1.5 uppercase tracking-wide">{label}</label>
       {children}
+    </div>
+  );
+}
+
+// ── FornecedorCombobox — busca + adicionar inline ─────────────────────────
+
+function FornecedorCombobox({
+  value, onChange, fornecedores, onQuickAdd,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  fornecedores: Fornecedor[];
+  onQuickAdd: (nome: string) => Promise<string>;
+}) {
+  const [text,   setText]   = useState(() => fornecedores.find(f => f.id === value)?.nome ?? "");
+  const [open,   setOpen]   = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    const nome = fornecedores.find(f => f.id === value)?.nome;
+    if (nome) setText(nome);
+    else if (!value) setText("");
+  }, [value, fornecedores]);
+
+  const filtered   = text.trim() ? fornecedores.filter(f => f.nome.toLowerCase().includes(text.toLowerCase())) : fornecedores;
+  const exactMatch = fornecedores.some(f => f.nome.toLowerCase() === text.trim().toLowerCase());
+  const showAdd    = text.trim().length > 0 && !exactMatch;
+
+  async function handleAdd() {
+    if (!text.trim()) return;
+    setAdding(true);
+    try {
+      const newId = await onQuickAdd(text.trim());
+      onChange(newId);
+      setOpen(false);
+    } finally { setAdding(false); }
+  }
+
+  return (
+    <div className="relative">
+      <input
+        value={text}
+        onChange={e => { setText(e.target.value); if (value) onChange(""); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 160)}
+        placeholder="Buscar ou adicionar fornecedor…"
+        className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
+      />
+      {open && (filtered.length > 0 || showAdd) && (
+        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-white border border-[#28071C]/10 rounded-xl shadow-xl max-h-52 overflow-y-auto">
+          {filtered.length === 0 && !showAdd && (
+            <p className="px-3 py-2 text-xs text-[#28071C]/40 italic">Nenhum resultado</p>
+          )}
+          {filtered.map(f => (
+            <button key={f.id} type="button"
+              onMouseDown={() => { onChange(f.id); setText(f.nome); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-[#7598CF]/8 transition-colors flex items-center gap-2 ${f.id === value ? "bg-[#7598CF]/8 font-semibold text-[#7598CF]" : "text-[#28071C]"}`}>
+              <span className="flex-1 truncate">{f.nome}</span>
+              {f.codigo_erp && <span className="text-[10px] text-[#28071C]/30 font-mono shrink-0">{f.codigo_erp}</span>}
+            </button>
+          ))}
+          {showAdd && (
+            <button type="button" onMouseDown={handleAdd} disabled={adding}
+              className="w-full text-left px-3 py-2 text-sm text-[#7598CF] font-semibold hover:bg-[#7598CF]/8 border-t border-[#28071C]/8 flex items-center gap-2 disabled:opacity-50">
+              {adding
+                ? <><div className="w-3.5 h-3.5 border-2 border-[#7598CF]/30 border-t-[#7598CF] rounded-full animate-spin shrink-0" /> Adicionando…</>
+                : <><Plus className="w-3.5 h-3.5 shrink-0" /> Adicionar "{text.trim()}"</>}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ComboboxFreetext — sugestões + texto livre ────────────────────────────
+
+function ComboboxFreetext({
+  value, onChange, suggestions, placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  suggestions: string[];
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const filtered = value.trim()
+    ? suggestions.filter(s => s.toLowerCase().includes(value.toLowerCase()) && s.toLowerCase() !== value.trim().toLowerCase())
+    : suggestions;
+
+  return (
+    <div className="relative">
+      <input
+        value={value}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 160)}
+        placeholder={placeholder}
+        className="w-full px-2 py-1.5 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
+      />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-white border border-[#28071C]/10 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+          {filtered.map(s => (
+            <button key={s} type="button"
+              onMouseDown={() => { onChange(s); setOpen(false); }}
+              className="w-full text-left px-3 py-1.5 text-xs text-[#28071C] hover:bg-[#7598CF]/8 transition-colors">
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

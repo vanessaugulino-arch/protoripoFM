@@ -39,6 +39,7 @@ export interface HierarquiaProduto {
 export interface Fornecedor {
   id: string;
   tenant_id: string;
+  codigo_erp: string | null;
   nome: string;
   tipo: TipoFornecimento;
   pais_origem: string | null;

@@ -15,7 +15,10 @@ import {
   TrendingUp,
   Package,
   DollarSign,
+  HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
 
 interface User {
   name: string;
@@ -235,6 +238,31 @@ export default function CollectionPlanning() {
 
   const consolidated = calculateConsolidated();
 
+  const COLLECTION_TOUR: TourStep[] = [
+    {
+      targetId: "tour-cp-header",
+      title: "Planejamento de Coleção",
+      content: "Aqui você estrutura a coleção por temas, looks e cores — conectando a direção criativa ao plano financeiro de cada categoria.",
+    },
+    {
+      targetId: "tour-cp-metas",
+      title: "Metas da Direção Criativa",
+      content: "Estes são os alvos vindos do plano macro: PMV esperado, volume de produção e margem. Seu planejamento deve convergir para esses números.",
+    },
+    {
+      targetId: "tour-cp-status",
+      title: "Status do Planejamento",
+      content: "Acompanhe em tempo real o gap entre o que você planejou por subcategoria e as metas da direção criativa. Verde significa alinhamento.",
+    },
+    {
+      targetId: "tour-cp-categories",
+      title: "Planejamento por Categoria",
+      content: "Ajuste participação, preço médio, volume e margem de cada subcategoria. O sistema recalcula automaticamente o consolidado.",
+    },
+  ];
+
+  const tour = useTour("collection-planning");
+
   if (!user) {
     return null;
   }
@@ -257,7 +285,7 @@ export default function CollectionPlanning() {
                 <ArrowLeft className="w-6 h-6" />
               </button>
               <div>
-                <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Coleção</span>
+                <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Operacional</span>
                 <span className="text-[#F6F3AA]/70 text-sm ml-3">Definição de Temas e Looks</span>
               </div>
             </div>
@@ -496,6 +524,7 @@ export default function CollectionPlanning() {
   // Tela 2: Planejamento de Coleção
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
+      {tour.isOpen && <ProductTour steps={COLLECTION_TOUR} onClose={tour.dismiss} />}
       {/* Topbar */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
@@ -506,8 +535,8 @@ export default function CollectionPlanning() {
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
-              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Coleção</span>
+            <div id="tour-cp-header">
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Operacional</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Planejamento de Coleção</span>
             </div>
           </div>
@@ -519,6 +548,13 @@ export default function CollectionPlanning() {
             >
               <Edit3 className="w-4 h-4 mr-2" />
               Revisar Temas
+            </button>
+            <button
+              onClick={tour.reopen}
+              title="Tour da tela"
+              className="text-[#F6F3AA]/70 hover:text-[#F6F3AA] transition-colors"
+            >
+              <HelpCircle className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
@@ -537,11 +573,11 @@ export default function CollectionPlanning() {
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-6 py-5">
         {/* Container 1: Metas da Direção Criativa */}
-        <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm border-t-4 border-[#7598CF]">
+        <div id="tour-cp-metas" className="bg-white rounded-2xl p-6 mb-6 shadow-sm border-t-4 border-[#7598CF]">
           <h2 className="text-[#28071C] text-xl mb-6">Metas Definidas pela Direção Criativa - Grupo Feminino</h2>
 
           <div className="grid grid-cols-4 gap-6">
-            <div>
+            <div className="relative group cursor-default">
               <div className="flex items-center space-x-2 mb-2">
                 <DollarSign className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -562,9 +598,12 @@ export default function CollectionPlanning() {
                   <span className="text-[#28071C]">R$ {creativeMetas.priceRanges.p3}</span>
                 </div>
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Faixas de preço de venda definidas pela direção criativa: Entrada (P1), Médio (P2) e Premium (P3). Cada subcategoria deve concentrar seus SKUs nestas faixas.
+              </div>
             </div>
 
-            <div>
+            <div className="relative group cursor-default">
               <div className="flex items-center space-x-2 mb-2">
                 <TrendingUp className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -574,9 +613,12 @@ export default function CollectionPlanning() {
               <div className="text-2xl text-[#28071C]">
                 R$ {creativeMetas.avgPrice}
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Preço Médio de Venda esperado consolidado para o grupo. O PMV planejado por subcategoria deve convergir para este valor ao ponderar volumes.
+              </div>
             </div>
 
-            <div>
+            <div className="relative group cursor-default">
               <div className="flex items-center space-x-2 mb-2">
                 <Package className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -586,9 +628,12 @@ export default function CollectionPlanning() {
               <div className="text-2xl text-[#28071C]">
                 {creativeMetas.volume.toLocaleString('pt-BR')} pçs
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Total de peças a produzir/comprar para o ciclo. A soma dos volumes por subcategoria deve atingir esta quantidade.
+              </div>
             </div>
 
-            <div>
+            <div className="relative group cursor-default">
               <div className="flex items-center space-x-2 mb-2">
                 <DollarSign className="w-4 h-4 text-[#28071C]/70" />
                 <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -598,16 +643,19 @@ export default function CollectionPlanning() {
               <div className="text-2xl text-[#28071C]">
                 {creativeMetas.expectedMargin}%
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Percentual de margem bruta esperado para o grupo. SKUs com margem abaixo deste patamar são sinalizados — revise preço ou custo de produção.
+              </div>
             </div>
           </div>
         </div>
 
         {/* Container 2: Status Atual da Categoria */}
-        <div className="bg-white rounded-2xl p-6 mb-6 shadow-sm border-t-4 border-[#F6F3AA]">
+        <div id="tour-cp-status" className="bg-white rounded-2xl p-6 mb-6 shadow-sm border-t-4 border-[#F6F3AA]">
           <h2 className="text-[#28071C] text-xl mb-6">Status Atual do Planejamento</h2>
 
           <div className="grid grid-cols-4 gap-6">
-            <div>
+            <div className="relative group cursor-default">
               <label className="text-[#28071C]/70 text-sm uppercase tracking-wide mb-2 block">
                 PMV Consolidado Atual
               </label>
@@ -617,9 +665,12 @@ export default function CollectionPlanning() {
               <div className={`text-sm flex items-center ${consolidated.gapPMV >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {consolidated.gapPMV >= 0 ? '+' : ''}{consolidated.gapPMV.toFixed(2)} vs meta
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                PMV calculado a partir dos preços e volumes que você definiu por subcategoria. Ajuste volumes ou preços para aproximar da meta.
+              </div>
             </div>
 
-            <div>
+            <div className="relative group cursor-default">
               <label className="text-[#28071C]/70 text-sm uppercase tracking-wide mb-2 block">
                 Volume Planejado
               </label>
@@ -629,9 +680,12 @@ export default function CollectionPlanning() {
               <div className={`text-sm flex items-center ${consolidated.gapVolume >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {consolidated.gapVolume >= 0 ? '+' : ''}{consolidated.gapVolume.toLocaleString('pt-BR')} vs meta
               </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Soma do volume de todas as subcategorias. Gap negativo significa que o mix planejado ainda não atinge o volume necessário para o ciclo.
+              </div>
             </div>
 
-            <div>
+            <div className="relative group cursor-default">
               <label className="text-[#28071C]/70 text-sm uppercase tracking-wide mb-2 block">
                 Margem Projetada
               </label>
@@ -640,6 +694,9 @@ export default function CollectionPlanning() {
               </div>
               <div className={`text-sm flex items-center ${consolidated.gapMargin >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {consolidated.gapMargin >= 0 ? '+' : ''}{consolidated.gapMargin.toFixed(1)}% vs meta
+              </div>
+              <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                Média ponderada de margem bruta do mix atual. Verifique subcategorias com margem abaixo da meta e corrija preço ou composição de custo.
               </div>
             </div>
 
@@ -660,8 +717,8 @@ export default function CollectionPlanning() {
         </div>
 
         {/* Container 3+: Planejamento das Categorias */}
-        {categories.map((category) => (
-          <div key={category.id} className="bg-white rounded-2xl p-6 mb-6 shadow-sm">
+        {categories.map((category, catIdx) => (
+          <div key={category.id} id={catIdx === 0 ? "tour-cp-categories" : undefined} className="bg-white rounded-2xl p-6 mb-6 shadow-sm">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-[#28071C] text-xl">{category.name}</h2>
               <button

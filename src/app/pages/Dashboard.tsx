@@ -460,16 +460,23 @@ export default function Dashboard() {
         {kpis.loaded && (kpis.products > 0 || kpis.sales > 0) && (
           <div className="max-w-4xl mx-auto mt-4 grid grid-cols-4 gap-3">
             {[
-              { label: "Produtos", value: kpis.products.toLocaleString("pt-BR"), icon: "📦" },
-              { label: "Ordens",   value: kpis.orders.toLocaleString("pt-BR"),   icon: "🚚" },
-              { label: "Estoques", value: kpis.inventory.toLocaleString("pt-BR"),icon: "📊" },
-              { label: "Vendas",   value: kpis.sales.toLocaleString("pt-BR"),    icon: "📈" },
-            ].map(({ label, value, icon }) => (
-              <div key={label} className="bg-white/15 backdrop-blur-sm rounded-xl px-4 py-3 flex items-center gap-3">
+              { label: "Produtos", value: kpis.products.toLocaleString("pt-BR"), icon: "📦",
+                tip: "Total de produtos cadastrados no catálogo. Cada produto é uma referência única identificada por SKU — base para o planejamento de sortimento." },
+              { label: "Ordens",   value: kpis.orders.toLocaleString("pt-BR"),   icon: "🚚",
+                tip: "Total de ordens de produção e compra registradas. Cada ordem representa um pedido de mercadoria para o ciclo — usado no calendário de demanda financeira." },
+              { label: "Estoques", value: kpis.inventory.toLocaleString("pt-BR"),icon: "📊",
+                tip: "Snapshots de estoque importados. Representa o inventário físico disponível em um dado momento — base para calcular cobertura e giro." },
+              { label: "Vendas",   value: kpis.sales.toLocaleString("pt-BR"),    icon: "📈",
+                tip: "Registros de vendas importados. Usados para calcular histórico de receita, giro, sell-through e comparar com as metas do planejamento." },
+            ].map(({ label, value, icon, tip }) => (
+              <div key={label} className="relative group bg-white/15 backdrop-blur-sm rounded-xl px-4 py-3 flex items-center gap-3 cursor-default">
                 <span className="text-xl">{icon}</span>
                 <div>
                   <p className="text-white/60 text-xs uppercase tracking-wide">{label}</p>
                   <p className="text-white font-bold text-lg leading-tight">{value}</p>
+                </div>
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  {tip}
                 </div>
               </div>
             ))}

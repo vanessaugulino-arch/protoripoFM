@@ -16,7 +16,10 @@ import {
   FileText,
   Package,
   TrendingUp,
+  HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
 
 interface User {
   name: string;
@@ -291,12 +294,38 @@ export default function ProductMix() {
     ? products.reduce((sum, p) => sum + p.markup, 0) / products.length
     : 0;
 
+  const PRODUCT_MIX_TOUR: TourStep[] = [
+    {
+      targetId: "tour-pm-header",
+      title: "Mix de Produtos",
+      content: "Aqui você define a estrutura do mix: quais categorias compõem a coleção, qual o peso de cada uma, e cadastra os itens com custo, markup e preço de venda.",
+    },
+    {
+      targetId: "tour-pm-overview",
+      title: "Visão Geral da Coleção",
+      content: "Distribua a participação percentual entre as categorias principais. A soma deve ser 100% — esse equilíbrio define a identidade do mix da coleção.",
+    },
+    {
+      targetId: "tour-pm-indicators",
+      title: "Indicadores do Mix",
+      content: "Métricas consolidadas: total de itens, preço médio de venda e markup médio. Compare com as metas do plano macro para validar o posicionamento.",
+    },
+    {
+      targetId: "tour-pm-items",
+      title: "Itens de Produtos",
+      content: "Cadastro item a item com custo, markup e preço. O preço de venda é calculado automaticamente ao alterar custo ou markup — ajuste para encaixar na faixa de preço correta.",
+    },
+  ];
+
+  const tour = useTour("product-mix");
+
   if (!user) {
     return null;
   }
 
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
+      {tour.isOpen && <ProductTour steps={PRODUCT_MIX_TOUR} onClose={tour.dismiss} />}
       {/* Topbar */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
@@ -307,13 +336,20 @@ export default function ProductMix() {
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
+            <div id="tour-pm-header">
               <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Mix de Produtos</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Estrutura do Mix de Produtos</span>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
+            <button
+              onClick={tour.reopen}
+              title="Tour da tela"
+              className="text-[#F6F3AA]/70 hover:text-[#F6F3AA] transition-colors"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
             <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
@@ -350,7 +386,7 @@ export default function ProductMix() {
         {/* SEÇÃO 1: VISÃO GERAL DA COLEÇÃO */}
         {/* ======================================== */}
 
-        <div className="mb-8">
+        <div id="tour-pm-overview" className="mb-8">
           {/* Header da Seção */}
           <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm border-t-4 border-[#7598CF]">
             <div className="flex items-center justify-between">
@@ -374,9 +410,9 @@ export default function ProductMix() {
           </div>
 
           {/* Indicadores da Visão Geral */}
-          <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm">
+          <div id="tour-pm-indicators" className="bg-white rounded-2xl p-6 mb-4 shadow-sm">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
+              <div className="relative group bg-[#F2F2F2]/50 rounded-lg p-4 cursor-default">
                 <div className="flex items-center space-x-2 mb-2">
                   <Percent className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -398,9 +434,12 @@ export default function ProductMix() {
                     Dentro da meta
                   </div>
                 )}
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  Soma das participações de todas as categorias. Deve totalizar 100% para garantir que o mix está completo e sem lacunas.
+                </div>
               </div>
 
-              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
+              <div className="relative group bg-[#F2F2F2]/50 rounded-lg p-4 cursor-default">
                 <div className="flex items-center space-x-2 mb-2">
                   <Package className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -409,6 +448,9 @@ export default function ProductMix() {
                 </div>
                 <div className="text-2xl text-[#28071C]">
                   {totalItensOverview} itens
+                </div>
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  Quantidade total de itens previstos na visão macro das categorias. Deve refletir a capacidade produtiva do ciclo.
                 </div>
               </div>
             </div>
@@ -533,7 +575,7 @@ export default function ProductMix() {
         {/* SEÇÃO 2: ITENS DE PRODUTOS */}
         {/* ======================================== */}
 
-        <div className="mb-8">
+        <div id="tour-pm-items" className="mb-8">
           {/* Header da Seção */}
           <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm border-t-4 border-[#F6F3AA]">
             <div className="flex items-center justify-between">
@@ -559,7 +601,7 @@ export default function ProductMix() {
           {/* Indicadores dos Itens */}
           <div className="bg-white rounded-2xl p-6 mb-4 shadow-sm">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
+              <div className="relative group bg-[#F2F2F2]/50 rounded-lg p-4 cursor-default">
                 <div className="flex items-center space-x-2 mb-2">
                   <Package className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -569,9 +611,12 @@ export default function ProductMix() {
                 <div className="text-2xl text-[#28071C]">
                   {totalItensProducts} itens
                 </div>
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  Número de SKUs já registrados nesta tela. Compare com o total de itens planejado na Visão Geral para verificar se o detalhamento está completo.
+                </div>
               </div>
 
-              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
+              <div className="relative group bg-[#F2F2F2]/50 rounded-lg p-4 cursor-default">
                 <div className="flex items-center space-x-2 mb-2">
                   <DollarSign className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -581,9 +626,12 @@ export default function ProductMix() {
                 <div className="text-2xl text-[#28071C]">
                   R$ {precoMedioProducts.toFixed(2)}
                 </div>
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  Média aritmética dos preços de venda cadastrados. Deve se aproximar do PMV esperado pela direção criativa — divergência indica necessidade de revisão de preços ou volumes.
+                </div>
               </div>
 
-              <div className="bg-[#F2F2F2]/50 rounded-lg p-4">
+              <div className="relative group bg-[#F2F2F2]/50 rounded-lg p-4 cursor-default">
                 <div className="flex items-center space-x-2 mb-2">
                   <Percent className="w-4 h-4 text-[#28071C]/70" />
                   <label className="text-[#28071C]/70 text-sm uppercase tracking-wide">
@@ -592,6 +640,9 @@ export default function ProductMix() {
                 </div>
                 <div className="text-2xl text-[#28071C]">
                   {markupMedioProducts.toFixed(2)}x
+                </div>
+                <div className="absolute bottom-full left-0 mb-2 w-60 px-3 py-2 bg-[#28071C] text-white text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed">
+                  Múltiplo médio sobre o custo de produção. Markup de 2.0x equivale a 50% de margem bruta. Acompanhe para garantir que o mix sustenta a margem meta do ciclo.
                 </div>
               </div>
             </div>

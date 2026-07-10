@@ -31,7 +31,33 @@ import {
   ChevronRight,
   CheckCheck,
   FileDown,
+  HelpCircle,
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+
+const SORTIMENT_TOUR: TourStep[] = [
+  {
+    targetId: "tour-sort-header",
+    title: "Plano de Sortimento — Módulo 5",
+    content: "Aqui você transforma as metas estratégicas em um plano concreto de produtos. Comece selecionando a temporada e veja os indicadores macro que guiam todo o planejamento.",
+  },
+  {
+    targetId: "tour-sort-kpis",
+    title: "Indicadores Macro do Plano",
+    content: "Esses valores vêm diretamente do seu planejamento estratégico (Módulo 1). Receita alvo, margem e orçamento são os limites que o sortimento deve respeitar.",
+  },
+  {
+    targetId: "tour-sort-divisions",
+    title: "Divisões da Coleção",
+    content: "Cada divisão (Feminino, Masculino, Acessórios…) tem sua própria meta de receita, número de SKUs e distribuição de preços. Adicione divisões conforme a estrutura da sua marca.",
+  },
+  {
+    targetId: "tour-sort-scenarios",
+    title: "Salve e Compare Simulações",
+    content: "Crie quantas composições quiser — conservadora, agressiva, focada em margem — salve como simulação e compare lado a lado antes de aplicar o plano final.",
+  },
+];
 import { supabase } from "../../lib/supabase";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
 import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
@@ -308,6 +334,7 @@ function monthLabel(ym: string) {
 
 export default function SortimentPlan() {
   const navigate = useNavigate();
+  const tour = useTour("sortiment-plan");
   const [user, setUser] = useState<UserData | null>(null);
   const [activeView, setActiveView] = useState<ModuleView>("sortiment");
   // ── Temporada selecionada ─────────────────────────────────────────────────────
@@ -998,6 +1025,10 @@ export default function SortimentPlan() {
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
 
+      {tour.isOpen && (
+        <ProductTour steps={SORTIMENT_TOUR} onClose={tour.dismiss} />
+      )}
+
       {/* ── Topbar ─────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg print:hidden">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
@@ -1009,7 +1040,7 @@ export default function SortimentPlan() {
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
+            <div id="tour-sort-header">
               <span className="text-[#F6F3AA] text-base font-semibold">
                 Fashion Mind · Módulo 5
               </span>
@@ -1039,6 +1070,7 @@ export default function SortimentPlan() {
           <div className="flex items-center gap-3">
             {/* Scenario actions — só disponíveis com temporada selecionada */}
             <button
+              id="tour-sort-scenarios"
               onClick={() => setShowSaveModal(true)}
               title="Salvar simulação atual como cenário"
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
@@ -1068,6 +1100,13 @@ export default function SortimentPlan() {
               <span className="text-sm">{user.name}</span>
             </div>
             <button
+              onClick={tour.reopen}
+              className="p-2 text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-colors"
+              title="Ver tour desta tela"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+            <button
               onClick={handleLogout}
               title="Sair"
               className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
@@ -1078,7 +1117,7 @@ export default function SortimentPlan() {
         </div>
 
         {/* ── KPI strip — segunda linha do header ──────────────────────────── */}
-        <div className="max-w-[1600px] mx-auto px-6 pb-2.5 flex items-center gap-1.5 overflow-x-auto print:hidden">
+        <div id="tour-sort-kpis" className="max-w-[1600px] mx-auto px-6 pb-2.5 flex items-center gap-1.5 overflow-x-auto print:hidden">
           {/* Foco estratégico badge */}
           {topbarKpis.focus && (
             <span className="flex-shrink-0 text-[10px] font-bold uppercase tracking-widest bg-white/10 text-[#F6F3AA] px-2.5 py-1 rounded-full">
@@ -1311,7 +1350,7 @@ export default function SortimentPlan() {
             </div>
 
             {/* ── Card de Metas da Divisão — FIXO durante a rolagem ──────────────── */}
-            <div className="sticky top-[156px] z-30 mb-4">
+            <div id="tour-sort-divisions" className="sticky top-[156px] z-30 mb-4">
               <div className="bg-white rounded-xl shadow-md border border-[#28071C]/8 overflow-hidden">
                 {(() => {
                   // macroPlan é sempre definido quando seasonId está ativo (temporada planejada)
@@ -1364,10 +1403,10 @@ export default function SortimentPlan() {
                             <div className="text-lg font-bold text-[#28071C]">{fmtPct(divMargem)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Orçamento de compra estimado para esta divisão na temporada. Calculado como receita alvo × (1 − margem%). Em modelos híbridos, representa a soma de compra e produção." side="bottom">
+                        <Tooltip text="Orçamento previsto para esta divisão na temporada. Calculado como receita alvo × (1 − margem%). Em modelos híbridos, representa a soma de compra e produção." side="bottom">
                           <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
-                              Orçamento de Compra <Info className="w-3 h-3 opacity-40" />
+                              Orçamento Previsto <Info className="w-3 h-3 opacity-40" />
                             </div>
                             <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOrcamento)}</div>
                           </div>

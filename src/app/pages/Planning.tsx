@@ -111,7 +111,7 @@ const FIELD_DEFS: FieldDef[] = [
     getHelp: (y, h) => `Base ${y}: R$ ${h.pmv}`,
   },
   {
-    key: "orcamento", label: "Orçamento de Compra (R$)", format: "currency",
+    key: "orcamento", label: "Orçamento Previsto (R$)", format: "currency",
     getValue: v => v.orcamento, getState: s => s.orcamento,
     getHelp: (y, h) => `Base ${y}: R$ ${h.orcamento.toLocaleString("pt-BR")}`,
   },

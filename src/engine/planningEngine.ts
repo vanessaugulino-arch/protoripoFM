@@ -1,5 +1,39 @@
 // src/engine/planningEngine.ts
 // v4 — todos indicadores derivados, baseline robusto, T1 com fallback de RL
+//
+// ─── HIERARQUIA DE DECISÃO DOS CLUSTERS ───────────────────────────────────────
+// Ver documentação completa em: src/engine/INDICATOR_HIERARCHY.md
+//
+// PRINCÍPIO UNIVERSAL:
+//   "Último toque = gatilho. Campo mais antigo/não tocado = absorvedor.
+//    Campo mais estratégico = mais protegido."
+//
+// CLUSTER T1 — RECEITA × PMV × PEÇAS VENDIDAS
+//   Hierarquia: PMV > Receita > Peças
+//   Escala proporcional (só Receita tocada):
+//     Escalam:    pecasVendidas, orcamento, producaoPecas, estoqueMediao, comprasPecas
+//     Não escalam: pmv, margemBruta, custoMedio, giro, gmroi, cobertura, mkdPct, ticketMedio
+//     MKD R$ = Receita × MKD% → escala como consequência natural (% fica, R$ acompanha)
+//
+// CLUSTER T2 — GIRO × ESTOQUE MÉDIO R$ × COBERTURA
+//   Hierarquia: Giro > Cobertura > Estoque Médio
+//
+// CLUSTER T3 — MARGEM% × CUSTO MÉDIO × MKD%
+//   Hierarquia: Custo Médio > Margem% > MKD% (MKD absorve por padrão)
+//
+// CLUSTER T4 — ORÇAMENTO PREVISTO × COMPRAS EM PEÇAS   [NOVO em v4.1]
+//   Natureza: BIDIRECIONAL — sem hierarquia fixa, LIFO (último tocado = driver)
+//   Bridge com T3: CustoMédio (ComprasPeças = Orçamento / CustoMédio)
+//   Soberania pós-commit: o último campo definido vira âncora do cenário
+//   Cascata para T2: ComprasPeças muda → EstMed muda → Giro/Cobertura ajustam
+//   Nota: LIFO completo requer touchOrder[] — implementado parcialmente em v4.1,
+//         completo na reescrita v5 (task #36)
+//
+// ALWAYS_CALCULATED (v4.1):
+//   mkdRS, totalPecas, gmroi, receitaLiquida, producaoValor, orcamentoTotal,
+//   estoqueMedioPecas, giroUnidades, idadeMediaEstoque
+//   REMOVIDO: comprasPecas → agora FREE em T4
+// ──────────────────────────────────────────────────────────────────────────────
 
 export type FieldKey =
   | 'receitaBruta'
@@ -40,6 +74,7 @@ export interface PlanningState {
 }
 
 // ─── Campos sempre calculados (nunca livres) ───────────────────────────────
+// comprasPecas REMOVIDO daqui — passou a FREE (entra em CLUSTER T4)
 export const ALWAYS_CALCULATED: FieldKey[] = [
   'mkdRS',
   'totalPecas',
@@ -47,7 +82,6 @@ export const ALWAYS_CALCULATED: FieldKey[] = [
   'receitaLiquida',
   'producaoValor',
   'orcamentoTotal',
-  'comprasPecas',
   'estoqueMedioPecas',
   'giroUnidades',
   'idadeMediaEstoque',
@@ -75,7 +109,7 @@ export const INITIAL_STATES: Record<FieldKey, FieldState> = {
   orcamentoTotal:     'calculated',
   producaoPecas:     'free',
   producaoValor:     'calculated',
-  comprasPecas:      'calculated',
+  comprasPecas:      'free',       // T4 — bidirecional com orcamento
   totalPecas:        'calculated',
   gmroi:             'calculated',
   custoMedio:        'free',
@@ -170,16 +204,26 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
 // ─── Motor de recálculo principal ─────────────────────────────────────────
 // Ordem de passes:
 //   1.  Receita Líquida (com fallback devolucoes=0)
-//   2.  Escala proporcional (só receitaBruta tocada)
-//   3.  T1 — Receita ↔ PMV ↔ Peças Vendidas
-//   4.  T3 — Margem ↔ CustoMédio ↔ Receita + regra mkdPct selection-aware
+//   2.  T1 — Escala proporcional (SOMENTE receitaBruta tocada, nenhum principal)
+//            Escalam:     pecasVendidas, orcamento, producaoPecas, estoqueMediao, comprasPecas
+//            Não escalam: pmv, margemBruta, custoMedio, giro, cobertura, mkdPct, ticketMedio
+//            MKD R$:      escala como consequência (= Receita × mkdPct% — passo 9)
+//   3.  T1 — Receita ↔ PMV ↔ Peças (quando há toques além da receita)
+//            Hierarquia: PMV > Receita > Peças
+//   4.  T3 — Margem% ↔ CustoMédio ↔ MKD%
+//            Hierarquia: Custo > Margem > MKD% (MKD absorve por padrão)
+//            Selection-aware: activeKeys determina qual combinação está ativa
 //   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura
-//   6.  Orçamento delta
-//   7.  Produção em valor / Estoque Final / Orçamento Total
-//   8.  Peças Compradas / Total de Peças
-//   9.  MKD (R$)
-//  10.  GMROI
-//  11.  Estoque Médio (peças) + Giro (peças) — campos derivados novos
+//            Hierarquia: Giro > Cobertura > EstMed
+//   6.  T4 — Orçamento ↔ ComprasPeças  [BIDIRECIONAL]
+//            LIFO: último tocado entre orcamento/comprasPecas = driver
+//            Bridge: CustoMédio (ComprasPeças = Orcamento / CustoMédio)
+//            Cascata: ComprasPeças → EstMed → Giro/Cobertura
+//   7.  Produção em valor / Estoque Final / Orçamento Total (derivados)
+//   8.  Total de Peças (derivado)
+//   9.  MKD R$ (derivado: Receita × MKD%)
+//  10.  GMROI (derivado: LucroBruto / EstMed)
+//  11.  EstMed Peças + Giro Peças + Idade Média (derivados)
 //  12.  Enforce ALWAYS_CALCULATED
 export function recalculate(state: PlanningState, activeKeys?: string[]): PlanningState {
   const v       = { ...state.values }
@@ -195,13 +239,27 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     s.receitaLiquida = 'calculated'
   }
 
-  // ── PASSO 2: Escala Proporcional pela Receita ─────────────────────────────
+  // ── PASSO 2: T1 — Escala Proporcional pela Receita ───────────────────────
+  // CLUSTER T1 — regra de escala proporcional
   // Aplica SOMENTE quando receitaBruta é o ÚNICO campo principal tocado.
-  // PMV NÃO é bloqueado: como peças e RL escalam pelo mesmo fator,
-  // PMV = RL/peças permanece igual ao baseline (matematicamente consistente).
+  //
+  // ESCALAM pelo fator (fator = RB_novo / RB_base):
+  //   pecasVendidas, orcamento, producaoPecas, estoqueMediao, comprasPecas, estoqueInicial
+  //
+  // NÃO ESCALAM (são taxas ou decisões independentes):
+  //   pmv           → PMV = RL/Peças, ambos escalam → PMV permanece inalterado ✓
+  //   margemBruta   → Margem = (RL−Custo×Peças)/RL, tudo escala → Margem permanece ✓
+  //   custoMedio    → decisão de sourcing, independe da receita
+  //   giro          → RL/EstMed, ambos escalam → Giro permanece ✓
+  //   cobertura     → EstMed×365/RL, ambos escalam → Cobertura permanece ✓
+  //   gmroi         → RL×Margem/EstMed, tudo escala → GMROI permanece ✓
+  //   mkdPct        → política comercial, não escala
+  //   ticketMedio   → decisão de pricing
+  //
+  // MKD R$ = Receita × MKD% → calculado no Passo 9 (escala como consequência natural)
   const CAMPOS_PRINCIPAIS: FieldKey[] = [
     'pmv', 'pecasVendidas', 'margemBruta', 'custoMedio',
-    'giro', 'cobertura', 'estoqueMediao', 'orcamento', 'producaoPecas',
+    'giro', 'cobertura', 'estoqueMediao', 'orcamento', 'producaoPecas', 'comprasPecas',
   ]
   const soAlterouReceita =
     touched.has('receitaBruta') &&
@@ -210,17 +268,30 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   if (soAlterouReceita && v.receitaBruta && base.receitaBruta) {
     const fator = v.receitaBruta / base.receitaBruta
 
+    // Campos que escalam proporcionalmente
     if (base.estoqueMediao   != null) { v.estoqueMediao   = base.estoqueMediao   * fator;                   s.estoqueMediao   = 'free' }
     if (base.orcamento       != null) { v.orcamento       = base.orcamento       * fator;                   s.orcamento       = 'free' }
     if (base.producaoPecas   != null) { v.producaoPecas   = Math.round(base.producaoPecas * fator);         s.producaoPecas   = 'free' }
     if (base.pecasVendidas   != null) { v.pecasVendidas   = Math.round((base.pecasVendidas ?? 0) * fator);  s.pecasVendidas   = 'free' }
-    if (base.cobertura       != null) { v.cobertura       = base.cobertura;                                  s.cobertura       = 'free' }
-    if (base.giro            != null) { v.giro            = base.giro;                                      s.giro            = 'free' }
     if (base.estoqueInicial  != null) { v.estoqueInicial  = base.estoqueInicial  * fator;                   s.estoqueInicial  = 'calculated' }
+    // T4: comprasPecas escala junto (= Orcamento/Custo, ambos de base × fator / custo_fixo)
+    if (base.comprasPecas    != null) { v.comprasPecas    = Math.round(base.comprasPecas * fator);          s.comprasPecas    = 'free' }
+
+    // Campos que NÃO escalam — mantidos explicitamente no valor de base
+    if (base.cobertura != null) { v.cobertura = base.cobertura; s.cobertura = 'free' }
+    if (base.giro      != null) { v.giro      = base.giro;      s.giro      = 'free' }
+    // pmv, margemBruta, custoMedio, mkdPct, ticketMedio: não tocados, permanecem em v[]
   }
 
-  // ── PASSO 3: Triângulo T1 — Receita ↔ PMV ↔ Peças Vendidas ───────────────
-  // Quando receita + PMV ambos mudaram → deriva peças.
+  // ── PASSO 3: CLUSTER T1 — Receita ↔ PMV ↔ Peças Vendidas ────────────────
+  // Hierarquia: PMV > Receita > Peças (campo de menor hierarquia absorve)
+  //
+  // Receita + PMV tocados → Peças absorve   (Peças = RL/PMV)
+  // Receita + Peças tocadas → PMV absorve   (PMV = RL/Peças)
+  // PMV + Peças tocados → Receita absorve   (Receita = PMV × Peças)
+  // Só PMV tocado → Peças absorve silenciosamente
+  // Só Peças tocadas → PMV absorve silenciosamente
+  //
   // Usa receitaBruta como fallback de RL quando devolucoes não está disponível.
   if (!soAlterouReceita) {
     const hasRL  = touched.has('receitaBruta') || touched.has('receitaLiquida')
@@ -258,8 +329,27 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
   }
 
-  // ── PASSO 4: Triângulo T3 — Margem ↔ CustoMédio ↔ Receita ───────────────
+  // ── PASSO 4: CLUSTER T3 — Margem% ↔ CustoMédio ↔ MKD% ──────────────────
+  // Hierarquia: CustoMédio > Margem% > MKD%  (MKD absorve por padrão)
   // Margem% = ((RL - CustoMédio × Peças) / RL) × 100
+  //
+  // Editar Margem%:
+  //   nenhum tocado → MKD% absorve (remarcação reduz/aumenta para fechar)
+  //   MKD% tocado   → CustoMédio absorve (Custo = RL×(1-Margem%)/Peças)
+  //   Custo tocado  → MKD% absorve (Custo protegido)
+  //   ambos tocados → MKD% absorve (Custo tem prioridade máxima)
+  //
+  // Editar MKD%:
+  //   nenhum tocado  → Margem% ajusta (reflexo direto)
+  //   Margem% tocada → CustoMédio absorve (margem protegida)
+  //   Custo tocado   → Margem% absorve
+  //   ambos tocados  → Margem% absorve (Custo máxima prioridade)
+  //
+  // Editar CustoMédio:
+  //   nenhum tocado  → Margem% absorve (Custo↑ → Margem espreme; MKD mantido)
+  //   Margem% tocada → MKD% absorve (MKD compensa para manter margem)
+  //   MKD% tocado    → Margem% absorve
+  //   ambos tocados  → MKD% absorve (Margem protegida sobre MKD)
   //
   // Selection-aware (activeKeys):
   //   • mkdPct E custoMedio ambos ativos → editar Margem: trava custo, deriva mkdPct
@@ -346,7 +436,26 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
   }
 
-  // ── PASSO 5: Triângulo T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura ─────
+  // ── PASSO 5: CLUSTER T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura ──────
+  // Hierarquia: Giro > Cobertura > Estoque Médio (EstMed absorve por padrão)
+  //
+  // Editar Giro:
+  //   nenhum tocado   → EstMed = RL/Giro; Cobertura = 365/Giro
+  //   EstMed tocado   → Cobertura absorve (⚠ alerta divergência matemática)
+  //   Cobertura tocada → EstMed absorve
+  //   ambos tocados   → EstMed absorve (Giro soberano)
+  //
+  // Editar EstMed:
+  //   nenhum tocado  → Giro = RL/EstMed; Cobertura segue
+  //   Giro tocado    → Cobertura absorve (Giro protegido; ⚠ alerta divergência)
+  //   Cobertura tocada → Giro absorve
+  //   ambos tocados  → Cobertura absorve (Giro protegido)
+  //
+  // Editar Cobertura:
+  //   nenhum tocado → EstMed = (RL/365)×Cob; Giro = 365/Cob
+  //   EstMed tocado → Giro absorve (⚠ alerta divergência)
+  //   Giro tocado   → EstMed absorve
+  //   ambos tocados → EstMed absorve (Giro protegido)
   {
     const hasGiro   = touched.has('giro')
     const hasEstMed = touched.has('estoqueMediao')
@@ -392,18 +501,66 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
   }
 
-  // ── PASSO 6: Orçamento com fórmula delta ────────────────────────────────────
-  if (!touched.has('orcamento')) {
-    const pec     = v.pecasVendidas
-    const custo   = v.custoMedio
-    const estPlan = v.estoqueMediao
-    const estBase = base.estoqueMediao ?? 0
+  // ── PASSO 6: CLUSTER T4 — Orçamento ↔ ComprasPeças [BIDIRECIONAL] ─────────
+  // Hierarquia: BIDIRECIONAL — LIFO (último tocado = driver)
+  // Bridge: CustoMédio (ComprasPeças = Orçamento / CustoMédio)
+  // Soberania pós-commit: último campo definido vira âncora do cenário
+  //
+  // Regras (v4.1 — LIFO parcial via Set; LIFO completo requer touchOrder[] em v5):
+  //   orcamento tocado + comprasPecas NÃO tocado → ComprasPeças = Orcamento/Custo
+  //   comprasPecas tocado + orcamento NÃO tocado → Orcamento = ComprasPeças × Custo
+  //   ambos tocados                               → orcamento prevalece (soberano)
+  //   nenhum tocado                               → derivar orcamento por fórmula delta
+  //
+  // Efeito de CustoMédio (T3) em T4:
+  //   CustoMédio mudou + orcamento foi o último tocado → ComprasPeças = Orcamento/novo_Custo
+  //   CustoMédio mudou + comprasPecas foi o último tocado → Orcamento = ComprasPeças×novo_Custo
+  //
+  // Cascata para T2: ComprasPeças → EstMed → Giro/Cobertura
+  //   ComprasPeças↓ → EstMed↓ → Giro↑, Cobertura↓ (eficiência)
+  //   ComprasPeças↑ → EstMed↑ → Giro↓, Cobertura↑ (reserva de estoque)
+  //
+  // Gap intencional: PecasVendidas (T1) ≠ ComprasPeças (T4)
+  //   diferença = variação de estoque no período — não é erro, exibir como alerta visual
+  {
+    const custo = v.custoMedio
+    const hasOrc = touched.has('orcamento')
+    const hasCmp = touched.has('comprasPecas')
 
-    if (pec !== null && custo !== null && custo > 0 && estPlan !== null) {
-      const orcCalc = (pec * custo) + (estPlan - estBase)
-      v.orcamento   = Math.max(0, orcCalc)
-      if (touched.has('producaoPecas')) {
+    if (hasOrc && !hasCmp) {
+      // Orcamento é o driver → ComprasPeças deriva
+      if (v.orcamento !== null && custo && custo > 0) {
+        v.comprasPecas = Math.round(v.orcamento / custo)
+        s.comprasPecas = 'calculated'
+      }
+    } else if (hasCmp && !hasOrc) {
+      // ComprasPeças é o driver → Orcamento deriva
+      if (v.comprasPecas !== null && custo && custo > 0) {
+        v.orcamento = v.comprasPecas * custo
         s.orcamento = 'calculated'
+      }
+    } else if (hasOrc && hasCmp) {
+      // Ambos tocados → orcamento prevalece (soberano quando Set não preserva ordem)
+      // TODO v5: usar touchOrder[] para determinar qual foi o último
+      if (v.orcamento !== null && custo && custo > 0) {
+        v.comprasPecas = Math.round(v.orcamento / custo)
+        s.comprasPecas = 'calculated'
+      }
+    } else {
+      // Nenhum tocado → fórmula delta (comportamento legado)
+      const pec     = v.pecasVendidas
+      const estPlan = v.estoqueMediao
+      const estBase = base.estoqueMediao ?? 0
+
+      if (pec !== null && custo !== null && custo > 0 && estPlan !== null) {
+        const orcCalc = (pec * custo) + (estPlan - estBase)
+        v.orcamento   = Math.max(0, orcCalc)
+        if (touched.has('producaoPecas')) {
+          s.orcamento = 'calculated'
+        }
+        // ComprasPeças deriva do orcamento calculado
+        v.comprasPecas = Math.round(v.orcamento / custo)
+        s.comprasPecas = 'calculated'
       }
     }
   }
@@ -427,16 +584,14 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     s.orcamentoTotal = 'calculated'
   }
 
-  // ── PASSO 8: Peças Compradas / Total de Peças ─────────────────────────────
-  if (v.orcamento !== null && custo && custo > 0) {
-    v.comprasPecas = Math.round(v.orcamento / custo)
-    s.comprasPecas = 'calculated'
-  }
-
+  // ── PASSO 8: Total de Peças (derivado) ───────────────────────────────────
+  // ComprasPeças já foi resolvido no Passo 6 (T4). Aqui apenas soma o total.
   v.totalPecas = (v.comprasPecas ?? 0) + (v.producaoPecas ?? 0)
   s.totalPecas = 'calculated'
 
-  // ── PASSO 9: MKD (R$) ────────────────────────────────────────────────────
+  // ── PASSO 9: MKD R$ (derivado) ───────────────────────────────────────────
+  // MKD R$ = Receita × MKD%  (ALWAYS_CALCULATED — nunca editável)
+  // Comportamento na escala T1: MKD% fica fixo → MKD R$ escala junto com Receita ✓
   if (v.receitaBruta && v.mkdPct !== null) {
     v.mkdRS = v.receitaBruta * (v.mkdPct / 100)
     s.mkdRS = 'calculated'
@@ -501,6 +656,13 @@ export function resetToBaseline(baseline: Partial<PlanningValues>): PlanningStat
 }
 
 // ─── Commita o estado ao salvar cenário ────────────────────────────────────
+// Ao fazer commit:
+//   • Todos os campos LOCKED e CALCULATED (exceto ALWAYS_CALCULATED) voltam a FREE
+//   • O mapa de `touched` é zerado
+//   • O novo baseline = valores atuais (definido externamente ao salvar no banco)
+//   • T4: o último campo editado (orcamento ou comprasPecas) vira âncora deste cenário
+//         Para mudar a âncora, abrir novo cenário
+//   ALWAYS_CALCULATED nunca viram FREE (mkdRS, totalPecas, gmroi, etc.)
 export function commitScenarioState(state: PlanningState): PlanningState {
   const s: Record<FieldKey, FieldState> = { ...state.states }
 

@@ -5,8 +5,33 @@ import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
   AlertTriangle, TrendingUp, TrendingDown, X, Info,
-  ChevronRight, BarChart3
+  ChevronRight, BarChart3, HelpCircle
 } from "lucide-react";
+import { ProductTour, type TourStep } from "../components/ProductTour";
+import { useTour } from "../hooks/useTour";
+
+const CYCLE_VALIDATION_TOUR: TourStep[] = [
+  {
+    targetId: "tour-cv-header",
+    title: "Validação de Ciclo — Módulo 4",
+    content: "Aqui você valida o ritmo mensal da coleção: distribua a receita mês a mês por canal e calibre a curva de entrada de mercadoria para evitar ruptura ou excesso de estoque.",
+  },
+  {
+    targetId: "tour-cv-indicators",
+    title: "Indicadores Base do Ciclo",
+    content: "Esses números vêm do planejamento macro aprovado. Use-os como referência ao distribuir a receita — o total planejado deve se aproximar da meta de receita do ciclo.",
+  },
+  {
+    targetId: "tour-cv-revenue",
+    title: "Curva de Receita por Mês",
+    content: "Ajuste quanto cada mês e canal vão vender. Clique nos valores da tabela para editar. O gráfico atualiza em tempo real mostrando a distribuição vs. ano anterior.",
+  },
+  {
+    targetId: "tour-cv-entry",
+    title: "Curva de Entrada de Mercadoria",
+    content: "Define a quantidade de peças que entra em cada mês. Garante que o estoque suporte a receita planejada — o sistema aponta divergências entre o que você planeja vender e o que está programado para entrar.",
+  },
+];
 import { exportToPDF } from "../../utils/exportPDF";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
@@ -117,6 +142,7 @@ const ChartTooltip = ({ active, payload, label, money = true }: any) => {
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function CycleValidation() {
   const navigate = useNavigate();
+  const tour = useTour("cycle-validation");
 
   // Auth
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -404,6 +430,10 @@ export default function CycleValidation() {
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
 
+      {tour.isOpen && (
+        <ProductTour steps={CYCLE_VALIDATION_TOUR} onClose={tour.dismiss} />
+      )}
+
       {/* ── Topbar ── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
@@ -411,7 +441,7 @@ export default function CycleValidation() {
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div>
+            <div id="tour-cv-header">
               <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 4</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Validação de Sazonalidade</span>
             </div>
@@ -421,6 +451,13 @@ export default function CycleValidation() {
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
             </div>
+            <button
+              onClick={tour.reopen}
+              className="p-2 text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-colors"
+              title="Ver tour desta tela"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
             <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <LogOut className="w-5 h-5" />
             </button>
@@ -453,7 +490,7 @@ export default function CycleValidation() {
         {selectedCycle && (
           <>
             {/* ── STICKY INDICATORS CARD ── */}
-            <div className="sticky top-16 z-40">
+            <div id="tour-cv-indicators" className="sticky top-16 z-40">
               <div className="bg-[#28071C] rounded-2xl px-6 py-4 shadow-xl">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-white/80 text-xs uppercase tracking-widest">
@@ -465,7 +502,7 @@ export default function CycleValidation() {
                 </div>
                 <div className="grid grid-cols-5 gap-4 divide-x divide-white/10">
                   {/* Receita — always shown */}
-                  <div className="text-center">
+                  <div className="relative group text-center cursor-default">
                     <div className="text-xl font-bold text-[#F6F3AA]">
                       {fmtR(BASE.metaReceita)}
                     </div>
@@ -479,23 +516,35 @@ export default function CycleValidation() {
                         ? `Ajustado: ${divergence > 0 ? "+" : ""}${fmtR(divergence)}`
                         : "✓ Alinhado"}
                     </div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
+                      Receita total planejada para o ciclo. Divergência indica ajuste feito na curva de vendas em relação ao plano macro.
+                    </div>
                   </div>
-                  <div className="text-center pl-4">
+                  <div className="relative group text-center pl-4 cursor-default">
                     <div className="text-xl font-bold text-white">{BASE.margemMeta}%</div>
                     <div className="text-xs text-white/60 mt-1">Margem Meta</div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
+                      Percentual de margem bruta definido no plano macro. Serve como referência para validar se a curva de preços do mix é consistente.
+                    </div>
                   </div>
-                  <div className="text-center pl-4">
+                  <div className="relative group text-center pl-4 cursor-default">
                     <div className="text-xl font-bold text-white">{fmtN(BASE.estoqueInicio)}</div>
                     <div className="text-xs text-white/60 mt-1">Estoque Início (pçs)</div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
+                      Quantidade de peças em estoque no início do ciclo. Influencia diretamente a curva de entrada — quanto maior o estoque inicial, menor a necessidade de compra imediata.
+                    </div>
                   </div>
-                  <div className="text-center pl-4">
+                  <div className="relative group text-center pl-4 cursor-default">
                     <div className="text-xl font-bold text-white">{fmtR(BASE.orcamento)}</div>
                     <div className="text-xs text-white/60 mt-1">Orçamento Aprovado</div>
                     <div className="text-xs text-white/40 mt-0.5">
                       Uso: {orcamentoUsoPct.toFixed(0)}%
                     </div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
+                      Orçamento previsto para compra/produção do ciclo. O % de uso mostra quanto da verba já está comprometido pela curva de entrada planejada.
+                    </div>
                   </div>
-                  <div className="text-center pl-4">
+                  <div className="relative group text-center pl-4 cursor-default">
                     <div className="text-xl font-bold text-white">
                       {Math.round(coverageDays)}
                     </div>
@@ -507,13 +556,16 @@ export default function CycleValidation() {
                     }`}>
                       {coverageDays < 60 ? "⚠ Baixa" : coverageDays > 120 ? "⚠ Elevada" : "✓ Adequada"}
                     </div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
+                      Quantos dias o estoque planejado sustenta as vendas projetadas. Entre 60 e 120 dias é considerado adequado — abaixo indica risco de ruptura, acima indica excesso.
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* ── SECTION: CURVA DE VENDAS POR CANAL ── */}
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+            <div id="tour-cv-revenue" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
               <div className="border-t-4 border-[#7598CF] px-6 pt-5 pb-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-[#28071C] font-semibold text-base">
@@ -736,7 +788,7 @@ export default function CycleValidation() {
             </div>
 
             {/* ── SECTION: CURVA DE ENTRADA DE PRODUTOS ── */}
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+            <div id="tour-cv-entry" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
               <div className="border-t-4 border-[#9B8CD8] px-6 pt-5 pb-6">
                 <div className="flex items-center justify-between mb-4">
                   <div>
