@@ -717,10 +717,10 @@ export default function Planning() {
         {/* ═══════════════════════════════════════════════════════════════════
             COLUNA 1 — Indicadores Selecionados para Planejamento
             ═══════════════════════════════════════════════════════════════════ */}
-        <div id="tour-plan-indicators" className="w-[380px] flex-shrink-0 sticky top-[52px] max-h-[calc(100vh-68px)] overflow-y-auto pb-4">
+        <div id="tour-plan-indicators" className="w-[340px] flex-shrink-0 sticky top-[52px] max-h-[calc(100vh-68px)] overflow-y-auto pb-4">
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
 
-            <div className="px-5 py-4 border-b border-[#28071C]/8 bg-gradient-to-r from-[#28071C]/4 to-transparent">
+            <div className="px-4 py-3 border-b border-[#28071C]/8 bg-gradient-to-r from-[#28071C]/4 to-transparent">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">
@@ -757,7 +757,7 @@ export default function Planning() {
             </div>
 
             {/* Banner de simulação */}
-            <div className="mx-4 mt-3 mb-1 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-3 py-2.5">
+            <div className="mx-4 mt-2 mb-0.5 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-3 py-1.5">
               <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
               <p className="text-[11px] text-[#28071C]/55 leading-relaxed">
                 <strong className="text-[#28071C]/70">Ambiente de simulação.</strong>{' '}
@@ -766,10 +766,10 @@ export default function Planning() {
               </p>
             </div>
 
-            <div className="p-4 space-y-3">
+            <div className="p-3 space-y-2">
               {/* ACTIVE FIELDS only — indicators selected in setup */}
               {activeDefs.length > 0 && (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {activeDefs.map(f => {
                     const meta    = getFieldPriority(f.key)
                     const isRef   = meta?.isReference ?? false
@@ -872,12 +872,12 @@ export default function Planning() {
 
               {/* CALCULATED FIELDS */}
               <div>
-                <div className="flex items-center gap-1.5 mb-2 mt-3">
+                <div className="flex items-center gap-1.5 mb-1 mt-2">
                   <span className="text-[9px] text-[#28071C]/35 uppercase tracking-widest font-bold">
                     Derivados — calculados automaticamente
                   </span>
                 </div>
-                <div className="space-y-2 opacity-70">
+                <div className="space-y-1.5 opacity-70">
                   {calcDefs.map(f => (
                     <PlanningField
                       key={f.key}
@@ -900,10 +900,10 @@ export default function Planning() {
         {/* ═══════════════════════════════════════════════════════════════════
             COLUNA 2 — Cenário Consolidado do Plano (todos os indicadores)
             ═══════════════════════════════════════════════════════════════════ */}
-        <div className="flex-1 min-w-0 flex flex-col gap-5">
+        <div className="flex-1 min-w-0 flex flex-col gap-3">
 
           <div id="tour-plan-central" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-[#28071C]/8 flex items-center justify-between">
+            <div className="px-5 py-3 border-b border-[#28071C]/8 flex items-center justify-between">
               <div>
                 <h3 className="text-[#28071C] font-bold text-sm uppercase tracking-wide">
                   Cenário Consolidado
@@ -919,8 +919,8 @@ export default function Planning() {
               )}
             </div>
 
-            <div className="p-5">
-              <div className="grid grid-cols-12 gap-2 mb-3 pb-2 border-b-2 border-[#28071C]/10">
+            <div className="p-4">
+              <div className="grid grid-cols-12 gap-2 mb-2 pb-1.5 border-b-2 border-[#28071C]/10">
                 <span className="col-span-5 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold">Indicador</span>
                 <span className="col-span-4 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right">Plano {year}</span>
                 <span className="col-span-3 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right">vs Referência</span>
@@ -932,7 +932,7 @@ export default function Planning() {
                   return (
                     <>
                       {isFirstOther && (
-                        <div key={`sep-${i}`} className="flex items-center gap-2 pt-3 pb-1 px-1">
+                        <div key={`sep-${i}`} className="flex items-center gap-2 pt-2 pb-0.5 px-1">
                           <div className="flex-1 h-px bg-[#28071C]/8" />
                           <span className="text-[9px] text-[#28071C]/30 uppercase tracking-widest font-semibold whitespace-nowrap">
                             Demais indicadores
@@ -940,7 +940,7 @@ export default function Planning() {
                           <div className="flex-1 h-px bg-[#28071C]/8" />
                         </div>
                       )}
-                      <div key={row.key} className="grid grid-cols-12 gap-2 items-center py-2.5 border-b border-[#28071C]/5 last:border-0 hover:bg-[#7598CF]/4 rounded-lg px-1 transition-colors">
+                      <div key={row.key} className="grid grid-cols-12 gap-2 items-center py-1.5 border-b border-[#28071C]/5 last:border-0 hover:bg-[#7598CF]/4 rounded-lg px-1 transition-colors">
                         <span className={`col-span-5 text-sm ${i < planSplitAt ? "text-[#28071C]/70" : "text-[#28071C]/40"}`}>{row.label}</span>
                         <span className={`col-span-4 text-right text-sm font-semibold ${i < planSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtPlan(row.label, row.plan)}</span>
                         <div className="col-span-3 flex items-center justify-end gap-0.5">
@@ -960,11 +960,11 @@ export default function Planning() {
           {/* Cenários Salvos */}
           {scenarios.length > 0 && (
             <div id="tour-plan-scenarios" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-6 py-4 border-b border-[#28071C]/8">
+              <div className="px-5 py-3 border-b border-[#28071C]/8">
                 <h3 className="text-[#28071C] font-semibold text-base">Cenários Salvos</h3>
                 <p className="text-[#28071C]/40 text-xs mt-0.5">Clique em um cenário para carregá-lo e depois aplicar as metas</p>
               </div>
-              <div className="p-5 flex flex-wrap gap-3">
+              <div className="p-4 flex flex-wrap gap-2">
                 {scenarios.map((sc, i) => {
                   const isActive = activeScenario?.name === sc.name
                   return (
