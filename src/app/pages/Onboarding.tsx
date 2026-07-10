@@ -57,7 +57,7 @@ const ORIGEM_DESCRIPTIONS: Record<OrigemPecas, string> = {
 const UPLOAD_FIELDS = [
   { key: 'catalog',   label: 'Cadastro de Produtos',       required: true,  description: 'SKU, nome, divisão, categoria, subcategoria, preço, custo, cor, coleção.' },
   { key: 'sales',     label: 'Histórico de Vendas',        required: true,  description: 'SKU, data, quantidade, receita bruta, canal, desconto.'                    },
-  { key: 'orders',    label: 'Pedidos / Ordens de Compra', required: false, description: 'Número do pedido, SKU, data, quantidade, fornecedor, status.'               },
+  { key: 'orders',    label: 'Ordens de Produção & Compra', required: false, description: 'Número da ordem (OC/OP), SKU, data, quantidade, fornecedor, status.'        },
   { key: 'inventory', label: 'Estoque Histórico',          required: false, description: 'SKU, data da posição (1º ou último dia do mês), quantidade, valor.'        },
 ]
 
@@ -718,7 +718,7 @@ export default function Onboarding() {
                     {[
                       { icon: '📦', t: 'Produtos & SKUs',         d: 'Base do sortimento — hierarquia, preço, custo e coleção.' },
                       { icon: '📈', t: 'Histórico de Vendas',     d: 'Ativa sell-through, GMROI e análise por canal.' },
-                      { icon: '🚚', t: 'Pedidos / Ordens',        d: 'Acompanhamento de entregas e lead times reais.' },
+                      { icon: '🚚', t: 'Ordens de Produção & Compra', d: 'Volume de mercadoria planejado — base para projetar o orçamento previsto e o calendário de demanda financeira do ciclo.' },
                       { icon: '🏪', t: 'Posições de Estoque',     d: 'Calcula cobertura e giro com precisão.' },
                     ].map(item => (
                       <div key={item.t} className="bg-white border border-[#28071C]/8 rounded-xl px-3 py-2.5 flex items-start gap-2.5">

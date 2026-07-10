@@ -532,17 +532,17 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
     ],
   },
 
-  // ── Pedidos / Ordens de Compra → public.purchase_orders ─────────────────
+  // ── Ordens de Produção & Compra → public.purchase_orders ─────────────────
   orders: {
-    label: "Pedidos / Ordens de Compra",
+    label: "Ordens de Produção & Compra",
     description:
-      "Pedidos de compra ou produção. Alimenta o módulo de Validação de Ciclo e Matriz de Abastecimento.",
+      "Ordens de produção ou compra. Alimenta o módulo de Validação de Ciclo e Matriz de Abastecimento.",
     icon: "🚚",
     fields: [
       {
         key: "order_number",
-        label: "Número do Pedido",
-        description: "Identificador único do pedido (OC, OP, etc.)",
+        label: "Número da Ordem",
+        description: "Identificador único da ordem (OC, OP, etc.)",
         required: true,
         valueType: "text",
         sampleValue: "OC-2025-001",
@@ -550,23 +550,23 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       {
         key: "sku",
         label: "Código (SKU)",
-        description: "Código do produto pedido",
+        description: "Código do produto da ordem",
         required: true,
         valueType: "text",
         sampleValue: "SKU001",
       },
       {
         key: "order_date",
-        label: "Data do Pedido",
-        description: "Data de emissão do pedido. Formatos: AAAA-MM-DD ou DD/MM/AAAA",
+        label: "Data da Ordem",
+        description: "Data de emissão da ordem. Formatos: AAAA-MM-DD ou DD/MM/AAAA",
         required: true,
         valueType: "date",
         sampleValue: "2025-01-10",
       },
       {
         key: "quantity_ordered",
-        label: "Quantidade Pedida",
-        description: "Número total de unidades pedidas",
+        label: "Quantidade da Ordem",
+        description: "Número total de unidades da ordem",
         required: true,
         valueType: "number",
         sampleValue: "200",
@@ -574,7 +574,7 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       {
         key: "unit_cost",
         label: "Custo Unitário (R$)",
-        description: "Custo por unidade neste pedido. Use ponto decimal.",
+        description: "Custo por unidade nesta ordem. Use ponto decimal.",
         required: false,
         valueType: "optional_number",
         sampleValue: "32.00",
@@ -598,7 +598,7 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       {
         key: "delivery_date",
         label: "Data de Entrega Real",
-        description: "Data em que o pedido foi efetivamente entregue (deixe vazio se pendente)",
+        description: "Data em que a ordem foi efetivamente entregue (deixe vazio se pendente)",
         required: false,
         valueType: "optional_date",
         sampleValue: "2025-04-05",
@@ -1167,7 +1167,7 @@ export async function persistImport(
       else importedRows  += Math.min(BATCH, records.length - i);
     }
 
-  // ── Pedidos de Compra ────────────────────────────────────────────────────
+  // ── Ordens de Produção & Compra ──────────────────────────────────────────
   } else if (dataType === "orders") {
     const records = dataRows
       .map(row => ({

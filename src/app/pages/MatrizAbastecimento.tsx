@@ -558,7 +558,7 @@ export default function MatrizAbastecimento() {
             {activeTab === "fornecedores" && (
               <div>
                 <div className="flex items-center justify-between mb-6">
-                  <p className="text-[#28071C]/60 text-sm">Catálogo de fornecedores — reutilizável na Matriz e em Pedidos de Compra</p>
+                  <p className="text-[#28071C]/60 text-sm">Catálogo de fornecedores — reutilizável na Matriz de Abastecimento e no planejamento de compras e produção</p>
                   <button onClick={() => setFornModal({})}
                     className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm">
                     <Plus className="w-4 h-4" /> Novo fornecedor
@@ -566,7 +566,7 @@ export default function MatrizAbastecimento() {
                 </div>
                 {fornecedores.length === 0 ? (
                   <EmptyState icon={Package} title="Nenhum fornecedor cadastrado"
-                    desc="Cadastre fornecedores para usar na Matriz e em Pedidos de Compra." />
+                    desc="Cadastre fornecedores para usar na Matriz de Abastecimento e no planejamento de compras e produção." />
                 ) : (
                   <div className="grid gap-3">
                     {fornecedores.map(f => (

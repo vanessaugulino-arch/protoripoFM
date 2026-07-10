@@ -130,7 +130,7 @@ const OPERATION_SETTINGS_TOUR: TourStep[] = [
   {
     targetId: "tour-op-leadtimes",
     title: "Lead Times de Suprimento",
-    content: "Configure os prazos de suprimento por grupo, categoria e nível de risco — seja por produção ou pedido. O sistema usa esses lead times para calcular datas de entrada de mercadoria e alertar gaps de prazo.",
+    content: "Configure os prazos de suprimento por grupo, categoria e nível de risco — seja por produção ou compra. O sistema usa esses lead times para calcular datas de entrada de mercadoria e alertar gaps de prazo.",
   },
   {
     targetId: "tour-op-basicos",
@@ -2475,7 +2475,7 @@ export default function OperationSettings() {
                   </span>
                   <span className="text-[#28071C]/20 text-xs">·</span>
                   <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
-                    <ShoppingCart className="w-3.5 h-3.5" />{dbCounts.orders.toLocaleString('pt-BR')} pedidos
+                    <ShoppingCart className="w-3.5 h-3.5" />{dbCounts.orders.toLocaleString('pt-BR')} ordens
                   </span>
                   <span className="text-[#28071C]/20 text-xs">·</span>
                   <span className="flex items-center gap-1 text-xs text-[#28071C]/50">
@@ -2500,7 +2500,7 @@ export default function OperationSettings() {
         >
           <div className="flex items-center justify-between mt-1 mb-4">
             <p className="text-[#28071C]/50 text-sm">
-              Importe catálogo, vendas, pedidos, estoque ou hierarquia de códigos
+              Importe catálogo, vendas, ordens de produção/compra, estoque ou hierarquia de códigos
             </p>
             {activeImportType && (
               <button

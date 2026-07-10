@@ -89,7 +89,7 @@ const INDICATOR_TOOLTIPS: Record<string, string> = {
   orcamento:     'Estimativa de investimento previsto para comprar ou produzir mercadoria neste ciclo. Previsão inicial — refina-se conforme o plano de coleção avança.',
   giro:          'Quantas vezes o estoque é renovado no período. Giro alto = menos capital parado, mais liquidez.',
   cobertura:     'Quantos dias de estoque você tem disponível com base na velocidade de vendas atual. Cobertura alta pode indicar risco de estoque parado.',
-  producaoPecas: 'Volume total de peças planejadas para produção ou compra no período. Direciona o plano de coleção e os pedidos de compra.',
+  producaoPecas: 'Volume total de peças planejadas para produção ou compra no período. Alimenta a projeção de orçamento e o calendário de demanda financeira do ciclo.',
   mkdPct:        'Percentual de desconto aplicado sobre o preço original. Controla o impacto do markdown na margem bruta.',
   custoMedio:    'Custo médio por peça produzida ou comprada. Base para calcular o Orçamento e a margem bruta do período.',
   gmroi:         'Mostra quanto de lucro bruto a empresa gera para cada real investido em produtos. GMROI > 1 significa retorno positivo sobre o estoque.',

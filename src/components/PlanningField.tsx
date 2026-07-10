@@ -1,6 +1,6 @@
 // src/components/PlanningField.tsx
 // v3 — 3 estados visuais (livre / cadeado laranja / calculado cinza)
-//      suporte a campos OTB separados (compra vs produção)
+//      suporte a campos de orçamento separados (compra vs produção)
 
 import { Lock, RotateCcw } from 'lucide-react'
 import { FieldKey, FieldState } from '../engine/planningEngine'

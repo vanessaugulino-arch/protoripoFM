@@ -461,7 +461,7 @@ export default function Dashboard() {
           <div className="max-w-4xl mx-auto mt-4 grid grid-cols-4 gap-3">
             {[
               { label: "Produtos", value: kpis.products.toLocaleString("pt-BR"), icon: "📦" },
-              { label: "Pedidos",  value: kpis.orders.toLocaleString("pt-BR"),   icon: "🛒" },
+              { label: "Ordens",   value: kpis.orders.toLocaleString("pt-BR"),   icon: "🚚" },
               { label: "Estoques", value: kpis.inventory.toLocaleString("pt-BR"),icon: "📊" },
               { label: "Vendas",   value: kpis.sales.toLocaleString("pt-BR"),    icon: "📈" },
             ].map(({ label, value, icon }) => (
