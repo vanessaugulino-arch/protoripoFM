@@ -207,6 +207,14 @@ export default function Planning() {
   // Compare modal
   const [compareOpen, setCompareOpen] = useState(false)
 
+  // Balloon de simulação — some quando o usuário começa a editar
+  const [simBalloonVisible, setSimBalloonVisible] = useState(true)
+  const [simBalloonFading,  setSimBalloonFading]  = useState(false)
+  const dismissSimBalloon = () => {
+    setSimBalloonFading(true)
+    setTimeout(() => setSimBalloonVisible(false), 350)
+  }
+
   // Receita toggle: input em valor absoluto (R$) ou percentual de crescimento (%)
   const [receitaMode, setReceitaMode] = useState<'value' | 'percent'>('value')
   const [receitaPctStr, setReceitaPctStr] = useState<string>('')
@@ -303,6 +311,12 @@ export default function Planning() {
       if (effectiveProfile !== "CEO") navigate("/dashboard")
     } else navigate("/")
   }, [navigate, routeState])
+
+  // ── Auto-dismiss do balloon quando o usuário começa a editar ─────────────────
+  useEffect(() => {
+    if (isDirty && simBalloonVisible && !simBalloonFading) dismissSimBalloon()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDirty])
 
   // ── Buscar histórico real de vendas do Supabase ──────────────────────────────
   useEffect(() => {
@@ -756,15 +770,33 @@ export default function Planning() {
               </div>
             </div>
 
-            {/* Banner de simulação */}
-            <div className="mx-4 mt-2 mb-0.5 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-3 py-1.5">
-              <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
-              <p className="text-[11px] text-[#28071C]/55 leading-relaxed">
-                <strong className="text-[#28071C]/70">Ambiente de simulação.</strong>{' '}
-                Ajuste os indicadores, salve cenários e compare impactos antes de definir as metas finais.
-                O painel central mostra o efeito de cada decisão no conjunto completo.
-              </p>
-            </div>
+            {/* Balloon de simulação — some ao primeiro edit */}
+            {simBalloonVisible && (
+              <div
+                className={`relative mx-3 mt-2 mb-3 rounded-xl border shadow-sm transition-all duration-350 ${
+                  simBalloonFading
+                    ? 'opacity-0 -translate-y-1 pointer-events-none'
+                    : 'opacity-100 translate-y-0'
+                } bg-[#28071C] border-[#28071C]`}
+                style={{ transition: 'opacity 350ms ease, transform 350ms ease' }}
+              >
+                <div className="px-3 py-2.5 flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 text-[#F6F3AA] flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-white/75 leading-relaxed flex-1">
+                    <strong className="text-[#F6F3AA]">Ambiente de simulação.</strong>{' '}
+                    Ajuste os indicadores abaixo, salve cenários e compare impactos antes de definir as metas finais.
+                  </p>
+                  <button
+                    onClick={dismissSimBalloon}
+                    className="flex-shrink-0 text-white/30 hover:text-white/70 transition-colors -mt-0.5 ml-1"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                {/* Caret apontando para os campos abaixo */}
+                <div className="absolute -bottom-[7px] left-6 w-3.5 h-3.5 bg-[#28071C] rotate-45 rounded-sm" />
+              </div>
+            )}
 
             <div className="p-3 space-y-2">
               {/* ACTIVE FIELDS only — indicators selected in setup */}

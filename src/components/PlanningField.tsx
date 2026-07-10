@@ -86,7 +86,7 @@ export function PlanningField({
   return (
     <div
       className={`
-        relative rounded-xl p-4 border-2 transition-all duration-200
+        relative rounded-xl p-3 border-2 transition-all duration-200
         ${isFree       ? 'bg-white border-transparent shadow-sm'                  : ''}
         ${isLocked     ? 'bg-amber-50 border-amber-400 shadow-amber-100'          : ''}
         ${isHighlight  ? 'bg-white border-[#7598CF]/25 shadow-sm'                 : ''}
@@ -95,7 +95,7 @@ export function PlanningField({
       `}
     >
       {/* Header: label + ícone de estado */}
-      <div className="flex items-center justify-between mb-2 gap-2">
+      <div className="flex items-center justify-between mb-1 gap-2">
         <span
           className={`
             text-xs uppercase tracking-wide font-semibold leading-tight
