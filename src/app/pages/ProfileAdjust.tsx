@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router"
-import { ArrowLeft, Save, Check, User, LogOut, ChevronUp, ChevronDown, Info } from "lucide-react"
+import { ArrowLeft, Save, Check, User, LogOut, Info } from "lucide-react"
 import {
-  SEGMENT_LABELS, ALL_RAW_MATERIALS, RAW_MATERIAL_LABELS,
+  SEGMENT_LABELS, RAW_MATERIAL_GROUPS,
   ORIGEM_LABELS, ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
   getStoredProfile,
 } from "../types/onboarding"
-import type { SegmentId, RawMaterialId, OrigemPecas, OnboardingProfile, RankedMaterial } from "../types/onboarding"
+import type { SegmentId, RawMaterialGroupId, OrigemPecas, OnboardingProfile } from "../types/onboarding"
 import { MONTHS, DEFAULT_REGRA, computeMesFim } from "../../services/temporadaService"
 import { getRegraDefaultDb, saveRegraDefaultDb } from "../../services/supabase/seasonService"
 
@@ -20,7 +20,7 @@ export default function ProfileAdjust() {
 
   const [user,         setUser]         = useState<UserData | null>(null)
   const [segments,     setSegments]     = useState<SegmentId[]>([])
-  const [materials,    setMaterials]    = useState<RankedMaterial[]>([])
+  const [materials,    setMaterials]    = useState<RawMaterialGroupId[]>([])
   const [origem,       setOrigem]       = useState<OrigemPecas>("white_label")
   const [hasImport,    setHasImport]    = useState(false)
   const [hasExport,    setHasExport]    = useState(false)
@@ -42,9 +42,6 @@ export default function ProfileAdjust() {
       setOrigem(profile.origem)
       setHasImport(profile.hasImportedMaterial)
       setHasExport(profile.exports)
-    } else {
-      // Bootstrap from all materials ranked in default order
-      setMaterials(ALL_RAW_MATERIALS.map((id, i) => ({ id, rank: i + 1 })))
     }
     // Carrega a regra de temporadas do Supabase
     const cu = JSON.parse(stored)
@@ -63,23 +60,13 @@ export default function ProfileAdjust() {
     )
   }
 
-  const moveMatUp = (idx: number) => {
-    if (idx === 0) return
-    setMaterials((prev) => {
-      const next = [...prev]
-      ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
-      return next.map((m, i) => ({ ...m, rank: i + 1 }))
-    })
+  const toggleMaterial = (id: RawMaterialGroupId) => {
+    setMaterials(prev => prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id])
   }
 
-  const moveMatDown = (idx: number) => {
-    if (idx === materials.length - 1) return
-    setMaterials((prev) => {
-      const next = [...prev]
-      ;[next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]
-      return next.map((m, i) => ({ ...m, rank: i + 1 }))
-    })
-  }
+  const availableMaterialGroups = RAW_MATERIAL_GROUPS.filter(g =>
+    g.segments.some(s => segments.includes(s))
+  )
 
   const handleSave = async () => {
     if (segments.length === 0) return
@@ -187,40 +174,41 @@ export default function ProfileAdjust() {
           <div className="px-6 py-4 border-b border-[#28071C]/8">
             <h2 className="text-[#28071C] font-semibold text-base">Matérias-primas</h2>
             <p className="text-[#28071C]/50 text-sm mt-0.5">
-              Ordene da que tem maior impacto no seu custo para a de menor impacto.
+              Selecione os insumos que sua marca utiliza. Os indicadores macroeconômicos serão ativados automaticamente.
             </p>
           </div>
-          <div className="px-6 py-4 space-y-1">
-            {materials.map((mat, idx) => (
-              <div
-                key={mat.id}
-                className="flex items-center gap-4 px-4 py-2.5 rounded-xl bg-white/60 border border-[#28071C]/6"
-              >
-                <span className="w-6 h-6 rounded-full bg-[#7598CF]/20 text-[#7598CF] text-[11px] font-bold flex items-center justify-center flex-shrink-0">
-                  {idx + 1}
-                </span>
-                <span className="flex-1 text-sm text-[#28071C] font-medium">
-                  {RAW_MATERIAL_LABELS[mat.id]}
-                </span>
-                <div className="flex flex-col gap-0.5">
-                  <button
-                    onClick={() => moveMatUp(idx)}
-                    disabled={idx === 0}
-                    className="w-6 h-5 flex items-center justify-center rounded hover:bg-[#7598CF]/15 disabled:opacity-20 transition-colors"
-                  >
-                    <ChevronUp className="w-3.5 h-3.5 text-[#28071C]/60" />
+          {availableMaterialGroups.length === 0 ? (
+            <p className="px-6 py-4 text-sm text-[#28071C]/40">
+              Selecione segmentos de produto acima para ver as matérias-primas disponíveis.
+            </p>
+          ) : (
+            <div className="divide-y divide-[#28071C]/6">
+              {availableMaterialGroups.map(group => {
+                const selected = materials.includes(group.id)
+                const BADGE: Record<string, string> = {
+                  algodao: 'CEPEA Algodão', petroleo: 'Petróleo Brent',
+                  couro: 'CEPEA Couro', metais: 'LME Metais', metais_nobres: 'Metais Nobres',
+                }
+                return (
+                  <button key={group.id} onClick={() => toggleMaterial(group.id)}
+                    className={`w-full flex items-start gap-3 px-6 py-3 text-left transition-colors ${selected ? 'bg-[#7598CF]/6' : 'hover:bg-[#28071C]/3'}`}>
+                    <div className={`mt-0.5 w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${selected ? 'border-[#7598CF] bg-[#7598CF]' : 'border-[#28071C]/20'}`}>
+                      {selected && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-sm font-semibold ${selected ? 'text-[#28071C]' : 'text-[#28071C]/70'}`}>{group.label}</span>
+                        <span className="text-[10px] bg-[#28071C]/8 text-[#28071C]/50 rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">
+                          {BADGE[group.indicator] ?? group.indicator}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#28071C]/40 mt-0.5 leading-snug">{group.detail}</p>
+                    </div>
                   </button>
-                  <button
-                    onClick={() => moveMatDown(idx)}
-                    disabled={idx === materials.length - 1}
-                    className="w-6 h-5 flex items-center justify-center rounded hover:bg-[#7598CF]/15 disabled:opacity-20 transition-colors"
-                  >
-                    <ChevronDown className="w-3.5 h-3.5 text-[#28071C]/60" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+                )
+              })}
+            </div>
+          )}
         </section>
 
         {/* ─── ORIGEM ──────────────────────────────────────────────────────── */}

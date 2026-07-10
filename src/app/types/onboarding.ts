@@ -28,35 +28,139 @@ export const SEGMENT_LABELS: Record<SegmentId, string> = {
   praia_inf:  'Moda Praia Infantil',
 }
 
-// ─── Matérias-primas ──────────────────────────────────────────────────────────
-// AJUSTE 1: Poliamida adicionada como nova opção
-export type RawMaterialId =
-  | 'algodao' | 'eva' | 'pvc' | 'poliester' | 'poliamida'
-  | 'couro' | 'zamac' | 'cobre' | 'aluminio' | 'ouro' | 'prata'
+// ─── Matérias-primas (grupos por impacto de indicador) ────────────────────────
+// Cada grupo mapeia materiais reais → indicador macro ativado no painel Planning.
+// Fonte: Matriz_Exata_Segmentos.xlsx (planilha de mapeamento segmento × indicador)
 
-export const RAW_MATERIAL_LABELS: Record<RawMaterialId, string> = {
-  algodao:   'Algodão',
-  eva:       'EVA',
-  pvc:       'PVC',
-  poliester: 'Poliéster',
-  poliamida: 'Poliamida',
-  couro:     'Couro',
-  zamac:     'Zamac',
-  cobre:     'Cobre',
-  aluminio:  'Alumínio',
-  ouro:      'Ouro',
-  prata:     'Prata',
+export type RawMaterialGroupId =
+  // Fibras naturais / algodão
+  | 'algodao_fibras'         // vest_*
+  | 'algodao_lonas'          // acc_*, calc_*
+  | 'algodao_meia_malha'     // under_*
+  // Couro natural
+  | 'couro_legitimo'         // vest_*, acc_*, calc_*
+  // Sintéticos à base de petróleo
+  | 'sinteticos_vestuario'   // vest_*, under_*
+  | 'sinteticos_tecnicos'    // fitness_*, praia_*
+  | 'sinteticos_acc'         // acc_*
+  | 'solados_sinteticos'     // calc_*
+  | 'polimeros_otica'        // acc_*
+  // Metais base (LME)
+  | 'metais_aviamentos'      // vest_*
+  | 'metais_ferragens'       // acc_*
+  | 'metais_joias'           // acc_*
+  | 'metais_armacoes'        // acc_*
+  // Metais nobres
+  | 'metais_nobres'          // acc_*
+
+export interface RawMaterialGroup {
+  id: RawMaterialGroupId
+  label: string       // nome curto para UI
+  detail: string      // materiais específicos (col B da planilha)
+  indicator: IndicatorId
+  segments: SegmentId[]
 }
 
-export const ALL_RAW_MATERIALS: RawMaterialId[] = [
-  'algodao', 'eva', 'pvc', 'poliester', 'poliamida',
-  'couro', 'zamac', 'cobre', 'aluminio', 'ouro', 'prata',
+export const RAW_MATERIAL_GROUPS: RawMaterialGroup[] = [
+  {
+    id: 'algodao_fibras',
+    label: 'Fibras de Algodão e Malharia',
+    detail: 'Algodão, Denim/Jeans, Sarja, Tricoline, Moletom, Meia-malha',
+    indicator: 'algodao',
+    segments: ['vest_fem', 'vest_masc', 'vest_inf'],
+  },
+  {
+    id: 'algodao_lonas',
+    label: 'Lonas e Tecidos Naturais de Forro',
+    detail: 'Lonas, Forrações de Algodão, Tecidos Naturais de Forro',
+    indicator: 'algodao',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
+  },
+  {
+    id: 'algodao_meia_malha',
+    label: 'Algodão e Meia-malha',
+    detail: 'Algodão, Meia-malha',
+    indicator: 'algodao',
+    segments: ['under_fem', 'under_masc', 'under_inf'],
+  },
+  {
+    id: 'couro_legitimo',
+    label: 'Couro Legítimo e Peles',
+    detail: 'Couro Legítimo, Camurça, Nobuck',
+    indicator: 'couro',
+    segments: ['vest_fem', 'vest_masc', 'vest_inf', 'acc_fem', 'acc_masc', 'acc_inf', 'calc_fem', 'calc_masc', 'calc_inf'],
+  },
+  {
+    id: 'sinteticos_vestuario',
+    label: 'Sintéticos e Elastano (Vestuário)',
+    detail: 'Poliéster, Poliamida/Nylon, Elastano/Spandex, PU',
+    indicator: 'petroleo',
+    segments: ['vest_fem', 'vest_masc', 'vest_inf', 'under_fem', 'under_masc', 'under_inf'],
+  },
+  {
+    id: 'sinteticos_tecnicos',
+    label: 'Tecidos Técnicos de Performance',
+    detail: 'Poliéster, Poliamida/Nylon, Elastano/Spandex',
+    indicator: 'petroleo',
+    segments: ['fitness_fem', 'fitness_masc', 'fitness_inf', 'praia_fem', 'praia_masc', 'praia_inf'],
+  },
+  {
+    id: 'sinteticos_acc',
+    label: 'Couro Sintético e Laminados',
+    detail: 'PU (Couro Sintético), Nylon, Telas Sintéticas',
+    indicator: 'petroleo',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
+  {
+    id: 'solados_sinteticos',
+    label: 'Solados e Componentes Sintéticos',
+    detail: 'EVA, TR, Borracha Sintética, PU',
+    indicator: 'petroleo',
+    segments: ['calc_fem', 'calc_masc', 'calc_inf'],
+  },
+  {
+    id: 'polimeros_otica',
+    label: 'Polímeros para Ótica',
+    detail: 'Acetato de Celulose, TR90, Policarbonato',
+    indicator: 'petroleo',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
+  {
+    id: 'metais_aviamentos',
+    label: 'Aviamentos Metálicos',
+    detail: 'Zinco, Cobre, Alumínio, Aço Inox (Zíperes, Rebites, Botões)',
+    indicator: 'metais',
+    segments: ['vest_fem', 'vest_masc', 'vest_inf'],
+  },
+  {
+    id: 'metais_ferragens',
+    label: 'Ferragens de Acessórios',
+    detail: 'Zinco, Cobre, Alumínio, Aço Inox (Alças, Fivelas, Fechos)',
+    indicator: 'metais',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
+  {
+    id: 'metais_joias',
+    label: 'Metais para Semijoias e Bijuterias',
+    detail: 'Zinco, Cobre, Alumínio, Aço Inox (Latão, Zamac)',
+    indicator: 'metais',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
+  {
+    id: 'metais_armacoes',
+    label: 'Metais para Armações de Ótica',
+    detail: 'Zinco, Cobre, Aço Inoxidável (Dobradiças, Hastes)',
+    indicator: 'metais',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
+  {
+    id: 'metais_nobres',
+    label: 'Metais Nobres',
+    detail: 'Ouro Puro (XAU), Prata (XAG), Ródio',
+    indicator: 'metais_nobres',
+    segments: ['acc_fem', 'acc_masc', 'acc_inf'],
+  },
 ]
-
-export interface RankedMaterial {
-  id: RawMaterialId
-  rank: number // 1 = maior impacto
-}
 
 // ─── Origem das peças ─────────────────────────────────────────────────────────
 // AJUSTE 2: Private label adicionado como nova opção
@@ -72,7 +176,7 @@ export const ORIGEM_LABELS: Record<OrigemPecas, string> = {
 
 // ─── Indicadores macroeconômicos ──────────────────────────────────────────────
 export type IndicatorId =
-  | 'algodao' | 'petroleo' | 'nafta' | 'couro' | 'metais'
+  | 'algodao' | 'petroleo' | 'nafta' | 'couro' | 'metais' | 'metais_nobres'
   | 'emprego' | 'renda' | 'confianca' | 'natalidade' | 'turismo'
   | 'frete' | 'cambio'
 
@@ -131,7 +235,7 @@ export type DataImportChoice =
 // ─── Perfil salvo após onboarding ────────────────────────────────────────────
 export interface OnboardingProfile {
   segments: SegmentId[]
-  rawMaterials: RankedMaterial[]
+  rawMaterials: RawMaterialGroupId[]
   origem: OrigemPecas
   hasImportedMaterial: boolean
   exports: boolean

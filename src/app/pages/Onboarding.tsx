@@ -12,17 +12,17 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import {
-  ChevronRight, ChevronLeft, Check, ArrowUp, ArrowDown,
-  Plus, X, Upload, Info, CheckCircle2, Package,
+  ChevronRight, ChevronLeft, Check, Plus,
+  X, Upload, Info, CheckCircle2, Package,
 } from 'lucide-react'
 import ImportWizard from '../components/ImportWizard'
 import type { ImportDataType, ImportResult } from '../../services/importService'
 import { IMPORT_CONFIG } from '../../services/importService'
 import {
-  type SegmentId, type RawMaterialId, type OrigemPecas, type SalesChannelId,
+  type SegmentId, type RawMaterialGroupId, type OrigemPecas, type SalesChannelId,
   type TeamInvite, type DataImportChoice,
   type OnboardingProfile,
-  SEGMENT_LABELS, RAW_MATERIAL_LABELS, ALL_RAW_MATERIALS, ORIGEM_LABELS,
+  SEGMENT_LABELS, RAW_MATERIAL_GROUPS, ORIGEM_LABELS,
   SALES_CHANNELS,
   ONBOARDING_DONE_KEY, ONBOARDING_PROFILE_KEY,
 } from '../types/onboarding'
@@ -159,31 +159,28 @@ export default function Onboarding() {
   }
 
   // ── Etapa 2: Negócio ─────────────────────────────────────────────────────────
-  const [origem,          setOrigem]          = useState<OrigemPecas | null>(null)
-  const [rankedMaterials, setRankedMaterials] = useState<RawMaterialId[]>([])
-  const [hasImport,       setHasImport]       = useState<boolean | null>(null)
-  const [hasExport,       setHasExport]       = useState<boolean | null>(null)
+  const [origem,            setOrigem]            = useState<OrigemPecas | null>(null)
+  const [selectedMaterials, setSelectedMaterials] = useState<RawMaterialGroupId[]>([])
+  const [hasImport,         setHasImport]         = useState<boolean | null>(null)
+  const [hasExport,         setHasExport]         = useState<boolean | null>(null)
 
   const showMaterials     = origem !== null && origem !== 'multimarca'
   const materialsRequired = origem === 'propria' || origem === 'hibrido'
 
-  function addMaterial(id: RawMaterialId) {
-    if (!rankedMaterials.includes(id)) setRankedMaterials(prev => [...prev, id])
-  }
-  function removeMaterial(id: RawMaterialId) {
-    setRankedMaterials(prev => prev.filter(m => m !== id))
-  }
-  function moveMaterial(i: number, dir: -1 | 1) {
-    setRankedMaterials(prev => {
-      const next = [...prev]; const j = i + dir
-      if (j < 0 || j >= next.length) return prev
-      ;[next[i], next[j]] = [next[j], next[i]]; return next
-    })
+  // Grupos de matérias-primas disponíveis conforme segmentos selecionados (col A → col B)
+  const availableMaterialGroups = RAW_MATERIAL_GROUPS.filter(g =>
+    g.segments.some(s => segments.includes(s))
+  )
+
+  function toggleMaterial(id: RawMaterialGroupId) {
+    setSelectedMaterials(prev =>
+      prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]
+    )
   }
 
   const bizSlide0Valid = origem !== null
   const bizSlide1Valid =
-    (!materialsRequired || rankedMaterials.length > 0) &&
+    (!materialsRequired || selectedMaterials.length > 0) &&
     hasImport !== null &&
     hasExport !== null
 
@@ -277,7 +274,7 @@ export default function Onboarding() {
     const validInvites = teamInvites.filter(inv => inv.email.trim() && inv.name.trim())
     const profile: OnboardingProfile = {
       segments,
-      rawMaterials: rankedMaterials.map((id, i) => ({ id, rank: i + 1 })),
+      rawMaterials: selectedMaterials,
       origem: origem!,
       hasImportedMaterial: hasImport ?? false,
       exports:             hasExport ?? false,
@@ -474,7 +471,7 @@ export default function Onboarding() {
           {/* ── NEGÓCIO 2B: Insumos (esq) + Comércio Exterior (dir) ─────── */}
           {currentStepId === 'business' && bizSlide === 1 && (
             <div className="flex gap-8 h-full">
-              {/* Coluna esquerda — Matérias-primas */}
+              {/* Coluna esquerda — Matérias-primas (checklist filtrada por segmento) */}
               {showMaterials ? (
                 <div className="flex-1 min-w-0 flex flex-col">
                   <div className="flex items-center gap-2 mb-1">
@@ -488,60 +485,51 @@ export default function Onboarding() {
                     )}
                   </div>
                   <p className="text-[#28071C]/45 text-xs mb-3">
-                    Selecione à esquerda e ordene à direita por impacto no custo.
+                    Selecione os insumos que sua marca utiliza. Os indicadores macroeconômicos relevantes serão ativados automaticamente.
                   </p>
-                  <div className="grid grid-cols-2 gap-3 flex-1">
-                    <div className="flex flex-col">
-                      <p className="text-[10px] text-[#28071C]/35 font-bold uppercase tracking-widest mb-1.5">Disponíveis</p>
-                      <div className="bg-white border border-[#28071C]/10 rounded-xl overflow-hidden flex-1 overflow-y-auto">
-                        {ALL_RAW_MATERIALS.filter(m => !rankedMaterials.includes(m)).map((m, i, arr) => (
-                          <button key={m} onClick={() => addMaterial(m)}
-                            className={`w-full flex items-center justify-between px-3.5 py-2.5 text-left text-sm text-[#28071C] hover:bg-[#7598CF]/8 hover:text-[#7598CF] transition-colors group ${
-                              i < arr.length - 1 ? 'border-b border-[#28071C]/6' : ''
-                            }`}>
-                            <span>{RAW_MATERIAL_LABELS[m]}</span>
-                            <Plus className="w-3.5 h-3.5 text-[#28071C]/20 group-hover:text-[#7598CF] flex-shrink-0" />
-                          </button>
-                        ))}
-                        {ALL_RAW_MATERIALS.filter(m => !rankedMaterials.includes(m)).length === 0 && (
-                          <p className="px-3.5 py-4 text-sm text-[#28071C]/35 text-center">Todas selecionadas</p>
-                        )}
-                      </div>
+                  {availableMaterialGroups.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center border-2 border-dashed border-[#28071C]/10 rounded-xl">
+                      <p className="text-[#28071C]/30 text-sm text-center px-6">
+                        Selecione os segmentos de produto na etapa anterior para ver as matérias-primas disponíveis.
+                      </p>
                     </div>
-                    <div className="flex flex-col">
-                      <p className="text-[10px] text-[#28071C]/35 font-bold uppercase tracking-widest mb-1.5">Ordenadas por impacto</p>
-                      {rankedMaterials.length > 0 ? (
-                        <div className="bg-white border border-[#7598CF]/25 rounded-xl overflow-hidden flex-1 overflow-y-auto">
-                          {rankedMaterials.map((id, i) => (
-                            <div key={id} className={`flex items-center gap-2 px-3 py-2.5 ${
-                              i < rankedMaterials.length - 1 ? 'border-b border-[#7598CF]/12' : ''
+                  ) : (
+                    <div className="flex-1 overflow-y-auto bg-white border border-[#28071C]/10 rounded-xl divide-y divide-[#28071C]/6">
+                      {availableMaterialGroups.map(group => {
+                        const selected = selectedMaterials.includes(group.id)
+                        const INDICATOR_BADGE: Record<string, string> = {
+                          algodao:       'CEPEA Algodão',
+                          petroleo:      'Petróleo Brent',
+                          couro:         'CEPEA Couro',
+                          metais:        'LME Metais',
+                          metais_nobres: 'Metais Nobres',
+                        }
+                        return (
+                          <button key={group.id} onClick={() => toggleMaterial(group.id)}
+                            className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors ${
+                              selected ? 'bg-[#7598CF]/6' : 'hover:bg-[#28071C]/3'
                             }`}>
-                              <span className="text-xs text-[#7598CF] font-bold w-5 text-center flex-shrink-0">{i + 1}</span>
-                              <span className="text-[#28071C] text-sm flex-1 min-w-0 truncate">{RAW_MATERIAL_LABELS[id]}</span>
-                              <div className="flex items-center gap-0.5 flex-shrink-0">
-                                <button onClick={() => moveMaterial(i, -1)} disabled={i === 0}
-                                  className="p-1 text-[#28071C]/25 hover:text-[#28071C] disabled:opacity-0 transition-colors">
-                                  <ArrowUp className="w-3 h-3" />
-                                </button>
-                                <button onClick={() => moveMaterial(i, 1)} disabled={i === rankedMaterials.length - 1}
-                                  className="p-1 text-[#28071C]/25 hover:text-[#28071C] disabled:opacity-0 transition-colors">
-                                  <ArrowDown className="w-3 h-3" />
-                                </button>
-                                <button onClick={() => removeMaterial(id)}
-                                  className="p-1 text-[#28071C]/20 hover:text-red-500 transition-colors ml-0.5">
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
+                            <div className={`mt-0.5 w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border-2 transition-all ${
+                              selected ? 'border-[#7598CF] bg-[#7598CF]' : 'border-[#28071C]/20'
+                            }`}>
+                              {selected && <Check className="w-2.5 h-2.5 text-white" />}
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="border-2 border-dashed border-[#28071C]/10 rounded-xl flex-1 flex items-center justify-center">
-                          <p className="text-[#28071C]/30 text-sm">Nenhuma selecionada</p>
-                        </div>
-                      )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`text-sm font-semibold ${selected ? 'text-[#28071C]' : 'text-[#28071C]/75'}`}>
+                                  {group.label}
+                                </span>
+                                <span className="text-[10px] bg-[#28071C]/8 text-[#28071C]/50 rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">
+                                  {INDICATOR_BADGE[group.indicator] ?? group.indicator}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-[#28071C]/40 mt-0.5 leading-snug">{group.detail}</p>
+                            </div>
+                          </button>
+                        )
+                      })}
                     </div>
-                  </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex-1" />
@@ -1109,7 +1097,7 @@ export default function Onboarding() {
                   desc={`${segments.slice(0, 3).map(s => SEGMENT_LABELS[s]).join(', ')}${segments.length > 3 ? ` e mais ${segments.length - 3}` : ''}`} />
                 <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
                   title={`Modelo: ${ORIGEM_LABELS[origem!]}`}
-                  desc={rankedMaterials.length > 0 ? `Matérias-primas: ${rankedMaterials.slice(0, 3).map(m => RAW_MATERIAL_LABELS[m]).join(', ')}${rankedMaterials.length > 3 ? ` +${rankedMaterials.length - 3}` : ''}` : undefined} />
+                  desc={selectedMaterials.length > 0 ? `${selectedMaterials.length} grupo${selectedMaterials.length > 1 ? 's' : ''} de insumos selecionado${selectedMaterials.length > 1 ? 's' : ''}` : undefined} />
                 <SummaryRow icon={<Check className="w-4 h-4 text-emerald-500" />}
                   title={`${selectedChannels.length} canal${selectedChannels.length > 1 ? 'is' : ''} de venda`}
                   desc={selectedChannels.slice(0, 3).map(id => SALES_CHANNELS.find(c => c.id === id)?.label ?? id).join(', ')} />
