@@ -8,8 +8,15 @@ import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
   Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
-  ToggleLeft, ToggleRight, FileDown, HelpCircle,
+  ToggleLeft, ToggleRight, FileDown, HelpCircle, ArrowRight,
 } from "lucide-react";
+import {
+  getPendingApprovalsForUser,
+  resolveApproval,
+  type PlanApprovalRequest,
+  type ImpactedIndicator,
+} from '../../services/supabase/planApprovalService';
+import { applyChannelScenario as dbApplyChannelScenario } from '../../services/supabase/channelScenarioService';
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 import { exportToPDF } from '../../utils/exportPDF';
@@ -207,6 +214,15 @@ export default function Planning() {
   // Compare modal
   const [compareOpen, setCompareOpen] = useState(false)
 
+  // Post-apply navigation modal
+  const [showPostApplyModal, setShowPostApplyModal] = useState(false)
+
+  // Pedidos de aprovação de M2 direcionados a M1
+  const [incomingApprovals, setIncomingApprovals]      = useState<PlanApprovalRequest[]>([])
+  const [showIncomingApproval, setShowIncomingApproval] = useState(false)
+  const [activeIncoming, setActiveIncoming]            = useState<PlanApprovalRequest | null>(null)
+  const [isResolvingApproval, setIsResolvingApproval]  = useState(false)
+
   // Balloon de simulação — some quando o usuário começa a editar
   const [simBalloonVisible, setSimBalloonVisible] = useState(true)
   const [simBalloonFading,  setSimBalloonFading]  = useState(false)
@@ -290,7 +306,7 @@ export default function Planning() {
 
   const {
     current, isDirty, activeScenario, scenarios,
-    setField, unlock, saveScenario, loadScenario, reset,
+    setField, setFieldAsBase, unlock, saveScenario, loadScenario, reset,
   } = usePlanningEngine(year, baseline, activeKeysList, tenantId || undefined, user?.id)
 
   const v = current.values
@@ -303,12 +319,27 @@ export default function Planning() {
     if (stored) {
       const u = JSON.parse(stored)
       setUser(u)
-      setTenantId(sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "")
+      const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? ""
+      setTenantId(tid)
       const effectiveProfile =
         u.system_role === "support" || u.system_role === "client_admin"
           ? "CEO"
           : u.profile
-      if (effectiveProfile !== "CEO") navigate("/dashboard")
+      if (effectiveProfile !== "CEO") { navigate("/dashboard"); return }
+
+      // Verificar pedidos de aprovação de M2 direcionados a M1
+      if (tid) {
+        const isCeoOrAdmin = effectiveProfile === "CEO"
+        getPendingApprovalsForUser(tid, 1, u.email, isCeoOrAdmin)
+          .then(reqs => {
+            setIncomingApprovals(reqs)
+            if (reqs.length > 0) {
+              setActiveIncoming(reqs[0])
+              setShowIncomingApproval(true)
+            }
+          })
+          .catch(() => {})
+      }
     } else navigate("/")
   }, [navigate, routeState])
 
@@ -373,6 +404,16 @@ export default function Planning() {
       .finally(() => setHistLoading(false))
   }, [tenantId])
 
+  // ── Quando dados reais chegam: descarta sessionStorage baseado em fallback e reinicia engine ─
+  useEffect(() => {
+    if (!histIsReal) return
+    // Remove cache do sessionStorage que foi construído sobre o HIST_FALLBACK
+    try { sessionStorage.removeItem(`fashionmind_planning_${year}`) } catch { /* silencioso */ }
+    // Reinicia current com baseline real (reset usa o baseline atual via useCallback)
+    reset()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histIsReal])
+
   // ── Field split by status ────────────────────────────────────────────────
   const { activeDefs, calcDefs } = useMemo(() => {
     if (!activeKeysList || activeKeysList.length === 0) {
@@ -399,14 +440,18 @@ export default function Planning() {
   // ── Helpers ──────────────────────────────────────────────────────────────
   const calcVar = (plan: number | null, hist: number) =>
     plan && hist ? ((plan - hist) / hist) * 100 : 0
-  const fmtVar  = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`
+  const fmtVar  = (n: number) => {
+    const sign = n >= 0 ? "+" : "-"
+    const abs  = Math.abs(n).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+    return `${sign}${abs}%`
+  }
   const fmtPlan = (label: string, val: number | null): string => {
     if (val === null || val === undefined || isNaN(val)) return "—"
     // Giro (R$ ou peças) e GMROI são índices — checar antes de "R$" e "peças"
     const lc = label.toLowerCase()
     if (lc.includes("giro") || lc === "gmroi") return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}x`
-    if (label.includes("R$"))                  return `R$ ${val.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
-    if (label.includes("%"))                   return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+    if (label.includes("R$"))                  return `R$ ${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    if (label.includes("%"))                   return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
     if (lc.includes("dias"))                   return `${Math.round(val).toLocaleString("pt-BR")} dias`
     if (lc.includes("peças") || lc.includes("produção") || lc.includes("total de"))
                                                return `${Math.round(val).toLocaleString("pt-BR")} pç`
@@ -537,13 +582,30 @@ export default function Planning() {
       alert("Salve um cenário antes de aplicar as metas.")
       return
     }
-    if (window.confirm(`Aplicar as metas do cenário "${target.name}" como plano oficial de ${year}?`)) {
-      // Persiste o cenário aplicado no ciclo do localStorage
-      const vals: Record<string, number | null> = {}
-      FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
-      addVersionToCycle(year, target.name, vals)
-      alert(`Metas do cenário "${target.name}" aplicadas ao plano de ${year}.`)
+    const vals: Record<string, number | null> = {}
+    FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
+    addVersionToCycle(year, target.name, vals)
+    setShowPostApplyModal(true)
+  }
+
+  const handleResolveIncoming = async (req: PlanApprovalRequest, decision: 'approved' | 'denied') => {
+    if (!user) return
+    setIsResolvingApproval(true)
+    try {
+      await resolveApproval(req.id, decision, user.email)
+      // Se aprovado, aplica o cenário do módulo 2 que estava pendente
+      if (decision === 'approved' && req.scenario_id && tenantId) {
+        await dbApplyChannelScenario(tenantId, req.year, req.scenario_id)
+      }
+      const remaining = incomingApprovals.filter(r => r.id !== req.id)
+      setIncomingApprovals(remaining)
+      const next = remaining[0] ?? null
+      setActiveIncoming(next)
+      if (!next) setShowIncomingApproval(false)
+    } catch {
+      // silent — toast não disponível aqui, UI já fechará
     }
+    setIsResolvingApproval(false)
   }
 
   // ── Receita toggle handlers ──────────────────────────────────────────────
@@ -569,7 +631,10 @@ export default function Planning() {
     setReceitaPctStr(str)
     const pct = parseFloat(str)
     if (!isNaN(pct) && histRef.receita > 0) {
-      setField('receitaBruta', Math.round(histRef.receita * (1 + pct / 100)))
+      // setFieldAsBase garante touched={receitaBruta} → soAlterouReceita=true →
+      // scaling proporcional ativado (orcamento, pecasVendidas, estoqueMediao etc. escalam)
+      // sem herdar restrições de campos editados anteriormente
+      setFieldAsBase('receitaBruta', Math.round(histRef.receita * (1 + pct / 100)))
     }
   }
 
@@ -582,11 +647,11 @@ export default function Planning() {
   const focusColors = focus ? STRATEGIC_FOCUS_COLORS[focus] : null
 
   const fmtRef = (val: number, f: string) => {
-    if (f === "currency")   return `R$ ${val.toLocaleString("pt-BR")}`
-    if (f === "percent")    return `${val}%`
-    if (f === "days")       return `${val} dias`
-    if (f === "multiplier") return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    return val.toLocaleString("pt-BR")
+    if (f === "currency")   return `R$ ${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    if (f === "percent")    return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+    if (f === "days")       return `${Math.round(val).toLocaleString("pt-BR")} dias`
+    if (f === "multiplier") return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}x`
+    return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
   return (
@@ -852,7 +917,7 @@ export default function Planning() {
                           /* ── MODO % — input de crescimento convertido automaticamente ── */
                           <div className="px-3 pb-3 pt-1">
                             <p className="text-[10px] text-[#28071C]/40 mb-1.5">
-                              Crescimento sobre {referenceYear} (base R$ {histRef.receita.toLocaleString('pt-BR', { maximumFractionDigits: 0 })})
+                              Crescimento sobre {referenceYear} (base R$ {histRef.receita.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
                             </p>
                             <div className="relative">
                               <input
@@ -867,7 +932,7 @@ export default function Planning() {
                             </div>
                             <p className="text-[11px] text-[#28071C]/45 mt-1.5">
                               {receitaPctStr !== '' && !isNaN(parseFloat(receitaPctStr))
-                                ? <>= <strong className="text-[#28071C]">R$ {v.receitaBruta?.toLocaleString('pt-BR', { maximumFractionDigits: 0 }) ?? '—'}</strong>
+                                ? <>= <strong className="text-[#28071C]">R$ {v.receitaBruta?.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}</strong>
                                     {' '}<span className={`font-semibold ${parseFloat(receitaPctStr) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                                       ({parseFloat(receitaPctStr) >= 0 ? '+' : ''}{parseFloat(receitaPctStr).toFixed(1)}%)
                                     </span>
@@ -885,7 +950,7 @@ export default function Planning() {
                               state={f.getState(s) as import("@/engine/planningEngine").FieldState}
                               format={f.format}
                               helpText={f.getHelp(referenceYear, histRef, baseline)}
-                              onEdit={setField}
+                              onEdit={isReceita ? setFieldAsBase : setField}
                               onUnlock={unlock}
                               highlightCalc={!!f.isCalc}
                             />
@@ -1302,6 +1367,127 @@ export default function Planning() {
           </div>
         )}
       </div>
+
+      {/* ── POST-APPLY MODAL ─────────────────────────────────────────────────── */}
+      {showPostApplyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl px-8 py-7 max-w-md w-full mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                <CheckCircle className="w-6 h-6 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-[#28071C] font-bold text-base">Metas Macro aplicadas!</p>
+                <p className="text-[#28071C]/50 text-xs">Módulo 1 — {year} concluído</p>
+              </div>
+            </div>
+            <p className="text-[#28071C]/60 text-sm mb-6 leading-relaxed">
+              O plano estratégico está registrado. O próximo passo é distribuir a receita pelos canais de venda.
+            </p>
+            <div className="flex flex-col gap-2.5">
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/channel-planning"); }}
+                className="w-full flex items-center justify-center gap-2 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl font-semibold text-sm hover:opacity-90">
+                Ir para Módulo 2 — Planejamento por Canal <ArrowRight className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
+                className="w-full py-2.5 border-2 border-[#28071C]/15 text-[#28071C]/60 rounded-xl font-semibold text-sm hover:bg-gray-50">
+                Voltar ao Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── INCOMING APPROVAL MODAL (de M2 → M1) ────────────────────────────── */}
+      {showIncomingApproval && activeIncoming && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
+              <div>
+                <p className="text-[#F6F3AA] font-bold text-base">Pedido de Revisão — Plano por Canal</p>
+                <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
+                  Solicitado por {activeIncoming.requester_email} · {new Date(activeIncoming.created_at).toLocaleDateString("pt-BR")}
+                </p>
+              </div>
+              {incomingApprovals.length > 1 && (
+                <span className="text-[10px] bg-white/20 text-[#F6F3AA] rounded-full px-2 py-0.5 font-semibold">
+                  {incomingApprovals.length} pendentes
+                </span>
+              )}
+            </div>
+
+            <div className="overflow-y-auto p-6 flex-1">
+              <p className="text-[#28071C]/60 text-sm mb-4 leading-relaxed">
+                A distribuição por canal proposta diverge do plano macro em {(activeIncoming.impacted_indicators as ImpactedIndicator[]).length} indicador{(activeIncoming.impacted_indicators as ImpactedIndicator[]).length > 1 ? 'es' : ''}.
+                Revise o comparativo abaixo e decida se aceita o ajuste.
+              </p>
+
+              {/* Comparativo */}
+              <h4 className="text-[#28071C] font-semibold text-xs uppercase tracking-wide mb-2">Comparativo de Indicadores</h4>
+              <div className="overflow-x-auto mb-5">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="text-left px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest">Indicador</th>
+                      <th className="text-right px-3 py-2 bg-[#28071C]/5 text-[#28071C]/70 font-semibold uppercase tracking-widest">Plano Macro (M1)</th>
+                      <th className="text-right px-3 py-2 bg-[#7598CF]/10 text-[#7598CF] font-semibold uppercase tracking-widest">Proposto (Canal M2)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#28071C]/6">
+                    {(activeIncoming.impacted_indicators as ImpactedIndicator[]).map(item => (
+                      <tr key={item.key} className="hover:bg-[#28071C]/2">
+                        <td className="px-3 py-2 text-[#28071C]/70 font-medium">{item.label}</td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold text-[#28071C]">
+                          {item.isRate
+                            ? `${item.planned.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+                            : `R$ ${Math.round(item.planned).toLocaleString("pt-BR")}`}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold text-[#7598CF]">
+                          {item.isRate
+                            ? `${item.projected.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+                            : `R$ ${Math.round(item.projected).toLocaleString("pt-BR")}`}
+                          <span className={`ml-1.5 text-[9px] font-normal ${item.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                            {item.gap >= 0 ? "+" : ""}
+                            {item.isRate ? `${item.gap.toFixed(1)}pp` : `R$${Math.round(Math.abs(item.gap)).toLocaleString("pt-BR")}`}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Justificativa */}
+              {activeIncoming.justification && (
+                <div>
+                  <h4 className="text-[#28071C] font-semibold text-xs uppercase tracking-wide mb-2">Justificativa do solicitante</h4>
+                  <div className="bg-[#7598CF]/6 border border-[#7598CF]/20 rounded-xl px-4 py-3 text-sm text-[#28071C]/80 leading-relaxed italic">
+                    "{activeIncoming.justification}"
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-[#28071C]/8 flex gap-3 flex-shrink-0">
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, 'denied')}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 border-2 border-red-200 text-red-600 rounded-xl text-sm font-semibold hover:bg-red-50 disabled:opacity-40">
+                Negar revisão
+              </button>
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, 'approved')}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40">
+                {isResolvingApproval ? "Processando…" : "Aceitar e aplicar novas metas"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

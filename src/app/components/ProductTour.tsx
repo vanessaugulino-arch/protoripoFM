@@ -59,19 +59,47 @@ export function ProductTour({ steps, onClose }: Props) {
   let left = vw / 2 - CARD_W / 2
 
   if (rect) {
-    const belowSpace = vh - rect.bottom
-    const aboveSpace = rect.top
+    const belowSpace  = vh - rect.bottom
+    const aboveSpace  = rect.top
+    const rightSpace  = vw - rect.right
+    const leftSpace   = rect.left
+    // Centro horizontal alinhado com o alvo (com clamping)
+    const hCenter = Math.max(MARGIN, Math.min(rect.left + rect.width / 2 - CARD_W / 2, vw - CARD_W - MARGIN))
+    // Centro vertical alinhado com o alvo (para posicionamento lateral)
+    const vCenter = Math.max(MARGIN, Math.min(rect.top + rect.height / 2 - cardH / 2, vh - cardH - MARGIN))
 
     if (belowSpace >= cardH + MARGIN) {
-      top = rect.bottom + MARGIN
+      // 1ª opção: abaixo do elemento
+      top  = rect.bottom + MARGIN
+      left = hCenter
     } else if (aboveSpace >= cardH + MARGIN) {
-      top = rect.top - cardH - MARGIN
+      // 2ª opção: acima do elemento
+      top  = rect.top - cardH - MARGIN
+      left = hCenter
+    } else if (rightSpace >= CARD_W + MARGIN) {
+      // 3ª opção: à direita do elemento
+      left = rect.right + MARGIN
+      top  = vCenter
+    } else if (leftSpace >= CARD_W + MARGIN) {
+      // 4ª opção: à esquerda do elemento
+      left = rect.left - CARD_W - MARGIN
+      top  = vCenter
     } else {
-      top = vh / 2 - cardH / 2
+      // Último recurso: centro da tela, mas deslocado para não sobrepor o alvo
+      left = hCenter
+      const centeredTop = vh / 2 - cardH / 2
+      const overlaps =
+        centeredTop < rect.bottom + MARGIN &&
+        centeredTop + cardH > rect.top - MARGIN
+      if (overlaps) {
+        // Prefere empurrar para baixo; se não couber, vai para cima
+        top = rect.bottom + MARGIN + cardH <= vh - MARGIN
+          ? rect.bottom + MARGIN
+          : rect.top - cardH - MARGIN
+      } else {
+        top = centeredTop
+      }
     }
-
-    left = rect.left + rect.width / 2 - CARD_W / 2
-    left = Math.max(MARGIN, Math.min(left, vw - CARD_W - MARGIN))
   }
 
   // Garante que o balão nunca sai do viewport verticalmente

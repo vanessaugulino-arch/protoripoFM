@@ -1,4 +1,5 @@
 import type { IndicatorId } from './onboarding'
+import { supabase } from '../../lib/supabase'
 
 export type PlanMode = 'new' | 'review'
 
@@ -58,34 +59,23 @@ export const PLAN_INDICATORS: PlanIndicator[] = [
 ]
 
 // Número de indicadores sugeridos por foco (inclui Receita Bruta)
-// CAIXA:       receita + giro, mkdPct, orcamento, ticketMedio            = 5
-// MARGEM:      receita + margemBruta, mkdPct, gmroi, pmv                 = 5
-// CRESCIMENTO: receita + producaoPecas, orcamento, ticketMedio, giro     = 5
-// DEFENSIVO:   receita + cobertura, margemBruta, orcamento, pmv          = 5
 export const SUGGESTED_COUNTS: Record<StrategicFocus, number> = {
   caixa:       5,
   margem:      5,
   crescimento: 5,
   defensivo:   5,
-  custom:      0,   // custom: nenhum indicador pré-sugerido
+  custom:      0,
 }
 
-// Ordem de prioridade por foco — os primeiros N (SUGGESTED_COUNTS[foco]) são os sugeridos.
-// O restante fica disponível para liberação manual pelo usuário (máx. 2 adicionais).
 export const DEFAULT_PRIORITIES: Record<StrategicFocus, string[]> = {
-  // Foco em Caixa: acelerar conversão de estoque → liquidez
   caixa:       ['receitaBruta', 'giro', 'mkdPct', 'orcamento', 'ticketMedio',
                  'cobertura', 'margemBruta', 'producaoPecas', 'pmv', 'gmroi', 'custoMedio'],
-  // Foco em Margem: maximizar rentabilidade preservando markup
   margem:      ['receitaBruta', 'margemBruta', 'mkdPct', 'gmroi', 'pmv',
                  'orcamento', 'giro', 'cobertura', 'producaoPecas', 'ticketMedio', 'custoMedio'],
-  // Foco em Crescimento: expandir volume e participação de mercado
   crescimento: ['receitaBruta', 'producaoPecas', 'orcamento', 'ticketMedio', 'giro',
                  'margemBruta', 'pmv', 'cobertura', 'mkdPct', 'gmroi', 'custoMedio'],
-  // Ano Defensivo: preservar caixa e reduzir risco
   defensivo:   ['receitaBruta', 'cobertura', 'margemBruta', 'orcamento', 'pmv',
                  'giro', 'mkdPct', 'producaoPecas', 'gmroi', 'ticketMedio', 'custoMedio'],
-  // Personalizado: apenas receita obrigatória; usuário seleciona livremente o resto
   custom:      ['receitaBruta', 'margemBruta', 'orcamento', 'giro', 'cobertura',
                  'producaoPecas', 'pmv', 'mkdPct', 'ticketMedio', 'gmroi', 'custoMedio'],
 }
@@ -96,17 +86,16 @@ export interface IndicatorPriority {
   isPriority: boolean
 }
 
-export const MAX_UNLOCK = 2   // user can unlock this many additional indicators
+export const MAX_UNLOCK = 2
 
-// 'dismissed' = sugerido pelo sistema mas conscientemente removido pelo usuário
 export type FieldStatus = 'suggested' | 'unlocked' | 'inactive' | 'dismissed'
 
 export interface PlanFieldPriority {
   key: string
   rank: number
-  status: FieldStatus       // 'suggested' | 'unlocked' | 'inactive'
-  isReference: boolean      // highlighted as reference indicator
-  isPriority: boolean       // backward-compat: status !== 'inactive'
+  status: FieldStatus
+  isReference: boolean
+  isPriority: boolean
 }
 
 export interface AnnualPlanVersion {
@@ -120,7 +109,7 @@ export interface AnnualPlanCycle {
   year: number
   mode: PlanMode
   focus: StrategicFocus
-  customFocusName?: string          // usado somente quando focus === 'custom'
+  customFocusName?: string
   fieldPriorities: PlanFieldPriority[]
   indicatorPriorities: IndicatorPriority[]
   versions: AnnualPlanVersion[]
@@ -128,36 +117,80 @@ export interface AnnualPlanCycle {
   lastModifiedAt: string
 }
 
+// ─── Cache em memória — substitui localStorage ────────────────────────────────
+// Populado via initPlanCycles(tenantId) na inicialização do app/módulo.
+// Ciclos subsequentes são escritos via savePlanCycle (write-through → Supabase).
+
+const _cycleCache = new Map<number, AnnualPlanCycle>()
+let _currentTenantId: string | null = null
+
+// Chave legada (mantida para compatibilidade com código que ainda usa PLAN_CYCLE_KEY)
 export const PLAN_CYCLE_KEY = (year: number) => `fashionmind_cycle_${year}`
 export const PLAN_CYCLE_INDEX_KEY = 'fashionmind_cycle_index'
 
-export function getPlannedYears(): number[] {
-  try {
-    const raw = localStorage.getItem(PLAN_CYCLE_INDEX_KEY)
-    return raw ? (JSON.parse(raw) as number[]) : []
-  } catch {
-    return []
+// ─── Inicialização — carrega ciclos do Supabase para o cache em memória ───────
+// Deve ser chamado uma vez após o login, passando o tenant_id do usuário.
+
+export async function initPlanCycles(tenantId: string): Promise<void> {
+  if (_currentTenantId === tenantId && _cycleCache.size > 0) return // já carregado
+  _currentTenantId = tenantId
+  _cycleCache.clear()
+
+  const { data, error } = await supabase
+    .from('annual_plan_cycles')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('year', { ascending: true })
+
+  if (error) {
+    console.warn('[planCycle] initPlanCycles erro:', error.message)
+    return
   }
+
+  for (const row of data ?? []) {
+    const cycle = _rowToCycle(row)
+    _cycleCache.set(cycle.year, cycle)
+  }
+}
+
+// ─── Leitura síncrona (do cache) ─────────────────────────────────────────────
+
+export function getPlannedYears(): number[] {
+  return Array.from(_cycleCache.keys()).sort((a, b) => a - b)
 }
 
 export function getPlanCycle(year: number): AnnualPlanCycle | null {
-  try {
-    const raw = localStorage.getItem(PLAN_CYCLE_KEY(year))
-    return raw ? (JSON.parse(raw) as AnnualPlanCycle) : null
-  } catch {
-    return null
-  }
+  return _cycleCache.get(year) ?? null
 }
+
+// ─── Escrita: cache + Supabase write-through (fire-and-forget) ────────────────
 
 export function savePlanCycle(cycle: AnnualPlanCycle): void {
   cycle.lastModifiedAt = new Date().toISOString()
-  localStorage.setItem(PLAN_CYCLE_KEY(cycle.year), JSON.stringify(cycle))
-  const years = getPlannedYears()
-  if (!years.includes(cycle.year)) {
-    years.push(cycle.year)
-    years.sort((a, b) => a - b)
-    localStorage.setItem(PLAN_CYCLE_INDEX_KEY, JSON.stringify(years))
-  }
+  _cycleCache.set(cycle.year, cycle)
+
+  if (!_currentTenantId) return
+  const tenantId = _currentTenantId
+
+  supabase
+    .from('annual_plan_cycles')
+    .upsert(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {
+        tenant_id:         tenantId,
+        year:              cycle.year,
+        mode:              cycle.mode,
+        focus:             cycle.focus,
+        custom_focus_name: cycle.customFocusName ?? null,
+        field_priorities:  cycle.fieldPriorities,
+        versions:          cycle.versions,
+        updated_at:        cycle.lastModifiedAt,
+      } as any,
+      { onConflict: 'tenant_id,year' }
+    )
+    .then(({ error }) => {
+      if (error) console.warn('[planCycle] savePlanCycle erro:', error.message)
+    })
 }
 
 export function addVersionToCycle(
@@ -175,4 +208,23 @@ export function addVersionToCycle(
   }
   cycle.versions = [version, ...cycle.versions].slice(0, 20)
   savePlanCycle(cycle)
+}
+
+// ─── Mapeamento DB row → AnnualPlanCycle ─────────────────────────────────────
+
+function _rowToCycle(row: Record<string, unknown>): AnnualPlanCycle {
+  const fp = row.field_priorities
+  const vs = row.versions
+
+  return {
+    year:               row.year             as number,
+    mode:               (row.mode            as PlanMode)         ?? 'new',
+    focus:              (row.focus           as StrategicFocus)   ?? 'crescimento',
+    customFocusName:    row.custom_focus_name as string | undefined,
+    fieldPriorities:    (Array.isArray(fp) ? fp : [])            as PlanFieldPriority[],
+    indicatorPriorities: [],
+    versions:           (Array.isArray(vs) ? vs : [])            as AnnualPlanVersion[],
+    createdAt:          (row.created_at      as string)           ?? new Date().toISOString(),
+    lastModifiedAt:     (row.updated_at      as string)           ?? new Date().toISOString(),
+  }
 }

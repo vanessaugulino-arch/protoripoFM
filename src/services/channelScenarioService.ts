@@ -1,62 +1,30 @@
 // src/services/channelScenarioService.ts
-// Persists and manages channel planning scenarios for Module 2.
-// Storage: localStorage (same pattern as planning engine in Module 1).
+// Re-exporta tudo do serviço Supabase canônico.
+// Mantido por compatibilidade de import em ChannelPlanning.tsx (exportChannelScenarios).
+//
+// NÃO usa localStorage.
 
-export interface ChannelScenarioData {
-  percents: Record<string, number>
-  channelData: Record<string, Record<string, number>>
-}
+export type { ChannelScenarioData, ChannelScenario } from './supabase/channelScenarioService'
+export {
+  listChannelScenarios,
+  saveChannelScenario,
+  deleteChannelScenario,
+  applyChannelScenario,
+  getReviewedYears,
+} from './supabase/channelScenarioService'
 
-export interface ChannelScenario {
+// ─── Export de cenários para download (não precisa de DB) ─────────────────────
+
+export interface ChannelScenarioExport {
   id: string
   name: string
   year: number
-  savedAt: string
-  data: ChannelScenarioData
+  saved_at: string
+  percents: Record<string, number>
+  channel_data: Record<string, Record<string, number>>
 }
 
-const scenariosKey  = (year: number) => `fashionmind_channel_scenarios_${year}`
-const REVIEWED_KEY  = 'fashionmind_channel_reviewed_years'
-
-// ─── Save ─────────────────────────────────────────────────────────────────────
-
-export function saveChannelScenario(
-  year: number,
-  name: string,
-  data: ChannelScenarioData,
-): ChannelScenario {
-  const scenario: ChannelScenario = {
-    id:      `ch_${Date.now()}`,
-    name:    name.trim() || `Cenário ${new Date().toLocaleDateString('pt-BR')}`,
-    year,
-    savedAt: new Date().toISOString(),
-    data,
-  }
-  const existing = listChannelScenarios(year)
-  // Cap at 20 scenarios, newest last
-  const updated = [...existing, scenario].slice(-20)
-  try {
-    localStorage.setItem(scenariosKey(year), JSON.stringify(updated))
-  } catch {
-    console.warn('localStorage unavailable — scenario saved in memory only')
-  }
-  return scenario
-}
-
-// ─── List ─────────────────────────────────────────────────────────────────────
-
-export function listChannelScenarios(year: number): ChannelScenario[] {
-  try {
-    const raw = localStorage.getItem(scenariosKey(year))
-    return raw ? (JSON.parse(raw) as ChannelScenario[]) : []
-  } catch {
-    return []
-  }
-}
-
-// ─── Export ───────────────────────────────────────────────────────────────────
-
-export function exportChannelScenarios(year: number, scenarios: ChannelScenario[]): void {
+export function exportChannelScenarios(year: number, scenarios: ChannelScenarioExport[]): void {
   const payload = {
     exportedAt: new Date().toISOString(),
     year,
@@ -71,24 +39,12 @@ export function exportChannelScenarios(year: number, scenarios: ChannelScenario[
   URL.revokeObjectURL(url)
 }
 
-// ─── Channel review tracking ──────────────────────────────────────────────────
+// ─── Compatibilidade: anos revisados ─────────────────────────────────────────
+// Antes lia do localStorage. Agora é alias de getReviewedYears do serviço Supabase.
+// Dashboard deve chamar getReviewedYears(tenantId) diretamente — mantido só para
+// evitar quebrar imports existentes.
 
 export function getChannelReviewedYears(): number[] {
-  try {
-    const raw = localStorage.getItem(REVIEWED_KEY)
-    return raw ? (JSON.parse(raw) as number[]) : []
-  } catch {
-    return []
-  }
-}
-
-export function markYearAsChannelReviewed(year: number): void {
-  const reviewed = getChannelReviewedYears()
-  if (!reviewed.includes(year)) {
-    reviewed.push(year)
-    reviewed.sort((a, b) => a - b)
-    try {
-      localStorage.setItem(REVIEWED_KEY, JSON.stringify(reviewed))
-    } catch { /* silent */ }
-  }
+  // Retorna vazio — chamadores devem migrar para getReviewedYears(tenantId) async
+  return []
 }

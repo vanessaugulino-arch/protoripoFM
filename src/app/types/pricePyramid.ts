@@ -15,10 +15,16 @@ export interface TierConfig {
   rangeMax: number;
 }
 
+export interface TierPlan {
+  participation: number;  // % de participação na categoria (editável, 0-100)
+  plannedAvg?: number;    // Média de preço planejada para este ciclo (editável, override)
+                          // Se ausente, usa média histórica; se não houver histórico, usa ponto médio do range
+}
+
 export interface CategoryPricePlan {
   categoryId: string;
   label: string;   // "Vestido", "Blusa", etc.
-  tiers: Record<PriceTierId, { participation: number }>; // % editável (0-100)
+  tiers: Record<PriceTierId, TierPlan>; // % editável + média planejada opcional
 }
 
 export interface DivisionPricePyramid {

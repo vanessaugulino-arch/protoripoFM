@@ -141,6 +141,11 @@ export interface SeasonConsolidated {
   avgMargin: number;
   avgSellThrough: number;
   avgGmroi: number;
+  // Indicadores deriváveis dos absolutos acumulados — alimentam o banner de metas foco
+  avgPmv?: number;       // PMV ponderado por receita
+  avgMkd?: number;       // MKD% ponderado por receita
+  avgGiro?: number;      // totalRevenue / totalEstMedio
+  avgCobertura?: number; // (totalEstMedio / totalRevenue) × 365
   
   // Validação contra macro
   macroTarget: MacroTarget;

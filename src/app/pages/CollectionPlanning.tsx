@@ -208,31 +208,33 @@ export default function CollectionPlanning() {
     ));
   };
 
-  // Cálculos consolidados
+  // Cálculos consolidados — bottom-up: taxas derivadas dos absolutos acumulados
   const calculateConsolidated = () => {
-    let totalVolume = 0;
-    let totalRevenue = 0;
+    let totalVolume     = 0;
+    let totalRevenue    = 0;
+    let totalLucroBruto = 0;   // Σ (receita_sub × margin_sub%) — numerador de avgMargin
 
     categories.forEach(cat => {
       cat.subcategories.forEach(sub => {
-        totalVolume += sub.volume;
-        totalRevenue += sub.volume * sub.avgPrice;
+        const revSub = sub.volume * sub.avgPrice;
+        totalVolume     += sub.volume;
+        totalRevenue    += revSub;
+        totalLucroBruto += revSub * (sub.margin / 100);
       });
     });
 
-    const avgPrice = totalVolume > 0 ? totalRevenue / totalVolume : 0;
-    const totalMargin = categories.reduce((sum, cat) => {
-      const catMargin = cat.subcategories.reduce((s, sub) => s + sub.margin, 0) / cat.subcategories.length;
-      return sum + catMargin;
-    }, 0) / categories.length;
+    // PMV = totalReceita / totalPeças (dos absolutos — não média de taxas)
+    const avgPrice  = totalVolume > 0 ? totalRevenue / totalVolume : 0;
+    // Margem = totalLucroBruto / totalReceita (dos absolutos — nunca média de margens)
+    const avgMargin = totalRevenue > 0 ? (totalLucroBruto / totalRevenue) * 100 : 0;
 
     return {
-      currentPMV: avgPrice,
+      currentPMV:    avgPrice,
       currentVolume: totalVolume,
-      currentMargin: totalMargin,
-      gapPMV: avgPrice - creativeMetas.avgPrice,
-      gapVolume: totalVolume - creativeMetas.volume,
-      gapMargin: totalMargin - creativeMetas.expectedMargin,
+      currentMargin: avgMargin,
+      gapPMV:        avgPrice    - creativeMetas.avgPrice,
+      gapVolume:     totalVolume - creativeMetas.volume,
+      gapMargin:     avgMargin   - creativeMetas.expectedMargin,
     };
   };
 

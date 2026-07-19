@@ -1,19 +1,28 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
+import {
+  listSupplyFornecedores, calcBudgetProjection, aggregateReceita,
+  type SupplyFornecedor, type TipoFornecedorV2,
+} from "../../services/supabase/supplyService";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
   AlertTriangle, TrendingUp, TrendingDown, X, Info,
-  ChevronRight, BarChart3, HelpCircle
+  ChevronRight, BarChart3, HelpCircle, ArrowRight, SendHorizonal, CheckCircle,
 } from "lucide-react";
+import {
+  createApprovalRequest,
+  hasPendingRequest,
+  type ImpactedIndicator,
+} from "../../services/supabase/planApprovalService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 
 const CYCLE_VALIDATION_TOUR: TourStep[] = [
   {
     targetId: "tour-cv-header",
-    title: "Validação de Ciclo — Módulo 4",
+    title: "Sazonalidade — Módulo 4",
     content: "Aqui você valida o ritmo mensal da coleção: distribua a receita mês a mês por canal e calibre a curva de entrada de mercadoria para evitar ruptura ou excesso de estoque.",
   },
   {
@@ -152,9 +161,16 @@ export default function CycleValidation() {
   // Cycle selector
   const [selectedCycle, setSelectedCycle] = useState("");
 
+  // Module view: curva de receita | orçamento de abastecimento
+  const [activeModuleView, setActiveModuleView] = useState<"curva" | "orcamento">("curva");
+
   // Channel view
   const [channelView, setChannelView] = useState<ChannelView>("Todos");
   const [showConsolidated, setShowConsolidated] = useState(false);
+
+  // Supply — para tela de orçamento de abastecimento
+  const [supplyFornecedores, setSupplyFornecedores] = useState<SupplyFornecedor[]>([]);
+  const [margemOrc, setMargemOrc] = useState(BASE.margemMeta);
 
   // Entry curve
   const [clientProduces, setClientProduces] = useState(true);
@@ -176,6 +192,13 @@ export default function CycleValidation() {
   const [savingName, setSavingName] = useState("");
   const [showSaveForm, setShowSaveForm] = useState(false);
 
+  // Approval flow M4→M2
+  const [showPostApplyModal, setShowPostApplyModal]             = useState(false);
+  const [showSubmitApprovalDialog, setShowSubmitApprovalDialog] = useState(false);
+  const [approvalJustification, setApprovalJustification]      = useState("");
+  const [isSubmittingApproval, setIsSubmittingApproval]        = useState(false);
+  const [alreadyPending, setAlreadyPending]                    = useState(false);
+
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
     if (!stored) { navigate("/"); return; }
@@ -186,8 +209,16 @@ export default function CycleValidation() {
 
     if (!tid) return;
 
-    // Carrega cenários de validação do Supabase (planning_scenarios para o ano atual)
+    // Verifica se já existe pedido de aprovação pendente do M4→M2
     const year = new Date().getFullYear();
+    hasPendingRequest(tid, 4, year).then(has => setAlreadyPending(has)).catch(() => {});
+
+    // Carrega fornecedores da matriz de abastecimento
+    listSupplyFornecedores(tid)
+      .then(list => setSupplyFornecedores(list))
+      .catch(() => {/* sem dados de abastecimento */});
+
+    // Carrega cenários de validação do Supabase (planning_scenarios para o ano atual)
     getCycle(tid, year)
       .then((cycle) => {
         if (!cycle) return;
@@ -403,7 +434,7 @@ export default function CycleValidation() {
     await exportToPDF({
       elementId: "cycle-scenarios-pdf",
       fileName:  "cenarios_validacao_ciclo",
-      title:     "Comparação de Cenários — Validação de Ciclo",
+      title:     "Comparação de Cenários — Sazonalidade",
     });
     setIsExportingPDF(false);
   };
@@ -412,6 +443,7 @@ export default function CycleValidation() {
     if (appliedScenarioId) return; // já aplicado
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
+    setShowPostApplyModal(true);
   };
 
   const activeChannelKey: ChannelKey | null =
@@ -425,6 +457,45 @@ export default function CycleValidation() {
     : null;
 
   if (!user) return null;
+
+  // Bandas bilaterais M4 — receita do ciclo vs meta do canal (±2%)
+  // Abaixo -2%: distribuição mensal não entrega a meta → aprovação
+  // Acima +2%: distribuição excessivamente otimista → aprovação
+  const impactedMacroCV: ImpactedIndicator[] = (() => {
+    const result: ImpactedIndicator[] = [];
+    if (BASE.metaReceita > 0 && (divergencePct < -2 || divergencePct > 2)) {
+      result.push({
+        key: "receitaTotal", label: "Receita Total (ciclo)",
+        planned: BASE.metaReceita, projected: totalPlanned,
+        gap: totalPlanned - BASE.metaReceita, isRate: false,
+      });
+    }
+    return result;
+  })();
+
+  const handleSubmitApprovalCV = async () => {
+    if (!tenantId || !user) return;
+    setIsSubmittingApproval(true);
+    try {
+      const appliedSc = scenarios.find(s => s.id === appliedScenarioId) ?? scenarios[scenarios.length - 1] ?? null;
+      await createApprovalRequest({
+        tenantId,
+        year:               new Date().getFullYear(),
+        fromModule:         4,
+        toModule:           2,
+        requesterEmail:     user.email,
+        justification:      approvalJustification,
+        proposedData:       { totalPlanned, divergence, divergencePct, coverageDays },
+        originalData:       { metaReceita: BASE.metaReceita, margemMeta: BASE.margemMeta },
+        impactedIndicators: impactedMacroCV,
+        scenarioId:         appliedSc?.id,
+      });
+      setAlreadyPending(true);
+      setShowSubmitApprovalDialog(false);
+      setApprovalJustification("");
+    } catch { /* silent */ }
+    setIsSubmittingApproval(false);
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -563,6 +634,29 @@ export default function CycleValidation() {
                 </div>
               </div>
             </div>
+
+            {/* ── MODULE TAB BAR ── */}
+            <div className="flex items-center gap-1 bg-white/60 backdrop-blur-sm rounded-2xl p-1.5 shadow-sm border border-[#28071C]/8">
+              {([
+                { key: "curva",     label: "1 · Curva de Receita" },
+                { key: "orcamento", label: "2 · Orçamento de Abastecimento" },
+              ] as { key: "curva" | "orcamento"; label: string }[]).map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveModuleView(tab.key)}
+                  className={`flex-1 py-2 px-5 rounded-xl text-sm font-semibold transition-all ${
+                    activeModuleView === tab.key
+                      ? "bg-[#28071C] text-white shadow"
+                      : "text-[#28071C]/50 hover:text-[#28071C] hover:bg-[#28071C]/5"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ── VIEW: CURVA DE RECEITA ── */}
+            {activeModuleView === "curva" && (<>
 
             {/* ── SECTION: CURVA DE VENDAS POR CANAL ── */}
             <div id="tour-cv-revenue" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
@@ -1119,6 +1213,19 @@ export default function CycleValidation() {
                 )}
               </div>
             </div>
+
+            </>)} {/* end activeModuleView === "curva" */}
+
+            {/* ── VIEW: ORÇAMENTO DE ABASTECIMENTO ── */}
+            {activeModuleView === "orcamento" && (
+              <OrcamentoAbastecimentoView
+                plannedRevenue={plannedRevenue}
+                supplyFornecedores={supplyFornecedores}
+                margemPct={margemOrc}
+                onMargemChange={setMargemOrc}
+              />
+            )}
+
           </>
         )}
       </main>
@@ -1157,19 +1264,43 @@ export default function CycleValidation() {
               {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
             </button>
           </div>
-          <button
-            onClick={handleApplyMetas}
-            disabled={scenarios.length === 0 || !!appliedScenarioId}
-            title={
-              appliedScenarioId ? "Cenário já aplicado ao ciclo" :
-              scenarios.length === 0 ? "Salve um cenário antes de aplicar" :
-              "Aplicar o cenário mais recente ao ciclo"
-            }
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
-          >
-            <CheckCheck className="w-4 h-4" />
-            {appliedScenarioId ? "Metas aplicadas ✓" : "Aplicar metas"}
-          </button>
+          {impactedMacroCV.length === 0 ? (
+            <button
+              onClick={handleApplyMetas}
+              disabled={scenarios.length === 0 || !!appliedScenarioId}
+              title={
+                appliedScenarioId ? "Cenário já aplicado ao ciclo" :
+                scenarios.length === 0 ? "Salve um cenário antes de aplicar" :
+                "Aplicar o cenário mais recente ao ciclo"
+              }
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+            >
+              <CheckCheck className="w-4 h-4" />
+              {appliedScenarioId ? "Metas aplicadas ✓" : "Aplicar metas"}
+            </button>
+          ) : impactedMacroCV.length <= 2 ? (
+            <button
+              onClick={() => { if (!alreadyPending) setShowSubmitApprovalDialog(true); }}
+              disabled={scenarios.length === 0}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm ${
+                alreadyPending
+                  ? "bg-amber-100 text-amber-700 border border-amber-300 cursor-default"
+                  : "bg-[#7598CF] text-white hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+              }`}
+            >
+              <SendHorizonal className="w-4 h-4" />
+              {alreadyPending ? "Aguardando aprovação…" : "Submeter para Aprovação"}
+            </button>
+          ) : (
+            <button
+              disabled
+              title="Corrija os indicadores macro antes de aplicar (3 ou mais desvios)"
+              className="flex items-center gap-2 px-5 py-2.5 bg-red-100 text-red-400 border border-red-200 rounded-xl text-sm font-semibold cursor-not-allowed shadow-sm"
+            >
+              <AlertTriangle className="w-4 h-4" />
+              Aplicar metas
+            </button>
+          )}
         </div>
         <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
           Cenários não alteram dados oficiais até "Aplicar metas" ser acionado.
@@ -1328,7 +1459,7 @@ export default function CycleValidation() {
         id="cycle-scenarios-pdf"
         style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
       >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>Validação de Ciclo</p>
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>Sazonalidade</p>
         <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>Comparação de Cenários</p>
         {scenarios.length === 0 ? (
           <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
@@ -1363,6 +1494,374 @@ export default function CycleValidation() {
           </div>
         )}
       </div>
+
+      {/* ─── MODAL: Pós-Aplicação ─────────────────────────────────────────── */}
+      {showPostApplyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 flex flex-col items-center gap-5">
+            <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center">
+              <CheckCircle className="w-8 h-8 text-green-600" />
+            </div>
+            <div className="text-center">
+              <h2 className="text-[#28071C] font-bold text-lg mb-1">Ciclo validado!</h2>
+              <p className="text-[#28071C]/60 text-sm">A distribuição mensal foi aplicada. O fluxo de planejamento está completo.</p>
+            </div>
+            <div className="flex flex-col gap-2 w-full">
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/channel-planning"); }}
+                className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
+              >
+                Voltar ao Plano por Canal (Módulo 2)
+                <ArrowRight className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
+                className="w-full px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
+              >
+                Voltar ao Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: Submeter para Aprovação (M4→M2) ──────────────────────── */}
+      {showSubmitApprovalDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-7 flex flex-col gap-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-[#28071C] font-bold text-base">Submeter para Aprovação</h2>
+                <p className="text-[#28071C]/50 text-xs mt-0.5">
+                  {impactedMacroCV.length} indicador{impactedMacroCV.length > 1 ? "es" : ""} abaixo da meta do Plano por Canal (Módulo 2).
+                </p>
+              </div>
+              <button onClick={() => setShowSubmitApprovalDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Indicadores impactados */}
+            <div className="rounded-xl overflow-hidden border border-[#28071C]/8">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[#F2F2F2]">
+                    <th className="text-left text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Indicador</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Meta M2</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Projetado M4</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Gap</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {impactedMacroCV.map((ind) => (
+                    <tr key={ind.key} className="border-t border-[#28071C]/5">
+                      <td className="px-4 py-2.5 text-[#28071C]/70">{ind.label}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-[#28071C]">
+                        {ind.isRate ? `${ind.planned.toFixed(1)}%` : `R$ ${Math.round(ind.planned).toLocaleString("pt-BR")}`}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-amber-600">
+                        {ind.isRate ? `${ind.projected.toFixed(1)}%` : `R$ ${Math.round(ind.projected).toLocaleString("pt-BR")}`}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-red-500 font-semibold">
+                        {ind.isRate ? `${ind.gap.toFixed(1)} p.p.` : `R$ ${Math.round(ind.gap).toLocaleString("pt-BR")}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Justificativa */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Justificativa</label>
+              <textarea
+                value={approvalJustification}
+                onChange={e => setApprovalJustification(e.target.value)}
+                placeholder="Explique por que a distribuição mensal do ciclo diverge da meta de receita do canal e quais ações compensarão esse gap…"
+                rows={3}
+                className="w-full border border-[#28071C]/15 rounded-xl px-4 py-3 text-sm text-[#28071C] placeholder-[#28071C]/30 resize-none focus:outline-none focus:border-[#7598CF]"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSubmitApprovalDialog(false)}
+                className="flex-1 px-4 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSubmitApprovalCV}
+                disabled={isSubmittingApproval || !approvalJustification.trim()}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                <SendHorizonal className="w-4 h-4" />
+                {isSubmittingApproval ? "Enviando…" : "Enviar para Aprovação"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tela 2 — Orçamento de Abastecimento
+// Cruza a curva de receita planejada com a matriz de fornecedores para projetar
+// quando o caixa precisará de verba para matéria prima, produção e compras.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const TIPO_LABEL: Record<TipoFornecedorV2, string> = {
+  materia_prima:   "Matéria Prima",
+  servico:         "Serviço / Facção",
+  produto_acabado: "Produto Acabado",
+};
+
+const TIPO_COLOR: Record<TipoFornecedorV2, string> = {
+  materia_prima:   "#7598CF",
+  servico:         "#9B8CD8",
+  produto_acabado: "#F0C040",
+};
+
+const fmtM = (v: number) =>
+  v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(2)}M`
+  : v >= 1_000   ? `R$ ${(v / 1_000).toFixed(0)}k`
+  : v > 0        ? `R$ ${v.toFixed(0)}`
+  : "—";
+
+function OrcamentoAbastecimentoView({
+  plannedRevenue,
+  supplyFornecedores,
+  margemPct,
+  onMargemChange,
+}: {
+  plannedRevenue: MonthRevenue[];
+  supplyFornecedores: SupplyFornecedor[];
+  margemPct: number;
+  onMargemChange: (v: number) => void;
+}) {
+  const { months, receita } = aggregateReceita(plannedRevenue);
+
+  const projection = useMemo(
+    () => calcBudgetProjection(months, receita, margemPct, supplyFornecedores),
+    [months, receita, margemPct, supplyFornecedores]
+  );
+
+  const totalOrc = projection.reduce((s, p) => s + p.valor, 0);
+  const totalReceita = receita.reduce((s, v) => s + v, 0);
+  const custoPrevisto = totalReceita * (1 - margemPct / 100);
+
+  // Agrupa por tipo_fornecedor para os totais de resumo
+  const byTipo = useMemo(() => {
+    const map: Record<TipoFornecedorV2, number> = {
+      materia_prima: 0, servico: 0, produto_acabado: 0,
+    };
+    for (const p of projection) {
+      for (const f of p.fornecedores) {
+        map[f.tipo] = (map[f.tipo] ?? 0) + f.valor;
+      }
+    }
+    return map;
+  }, [projection]);
+
+  const hasFornecedores = supplyFornecedores.length > 0;
+  const hasScope = supplyFornecedores.some(f => (f.categorias ?? []).length > 0);
+
+  return (
+    <div className="space-y-5">
+
+      {/* ── Configuração de margem ── */}
+      <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <h3 className="text-[#28071C] font-semibold text-base mb-0.5">Orçamento de Abastecimento</h3>
+            <p className="text-xs text-[#28071C]/50">
+              Projeção de quando o caixa precisará de verba, com base na curva de receita e na matriz de fornecedores.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-[#28071C]/50 font-medium">Margem bruta do ciclo:</label>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.1"
+                value={margemPct}
+                onChange={e => onMargemChange(parseFloat(e.target.value) || 0)}
+                className="w-20 border border-[#28071C]/20 rounded-lg px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+              />
+              <span className="text-xs text-[#28071C]/50">%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Empty state ── */}
+      {!hasFornecedores && (
+        <div className="bg-white/70 rounded-2xl shadow-sm p-16 text-center">
+          <div className="text-4xl mb-3">📦</div>
+          <p className="text-sm text-[#28071C]/50 mb-2">Nenhum fornecedor cadastrado na Matriz de Abastecimento.</p>
+          <p className="text-xs text-[#28071C]/30">Acesse a tela de Matriz de Abastecimento para cadastrar fornecedores com escopo de categorias e condições de pagamento.</p>
+        </div>
+      )}
+
+      {hasFornecedores && !hasScope && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+          <span className="text-amber-500 mt-0.5">⚠</span>
+          <div>
+            <p className="text-sm font-medium text-amber-800">Nenhum fornecedor com escopo de categorias definido.</p>
+            <p className="text-xs text-amber-600 mt-1">Para calcular o orçamento, cadastre o % de custo médio na seção "Escopo de Categorias" de cada fornecedor.</p>
+          </div>
+        </div>
+      )}
+
+      {hasFornecedores && hasScope && (<>
+
+        {/* ── KPI summary ── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-[#28071C] rounded-2xl p-4 text-center">
+            <p className="text-[10px] text-white/50 font-medium uppercase tracking-wider mb-1">Receita Total Planejada</p>
+            <p className="text-xl font-bold text-[#F6F3AA]">{fmtM(totalReceita)}</p>
+          </div>
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
+            <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Custo Previsto ({(100 - margemPct).toFixed(0)}%)</p>
+            <p className="text-xl font-bold text-[#28071C]">{fmtM(custoPrevisto)}</p>
+          </div>
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
+            <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Orçamento Mapeado</p>
+            <p className="text-xl font-bold text-[#28071C]">{fmtM(totalOrc)}</p>
+            <p className="text-[10px] text-[#28071C]/40 mt-0.5">
+              {custoPrevisto > 0 ? `${((totalOrc / custoPrevisto) * 100).toFixed(0)}% do custo` : "—"}
+            </p>
+          </div>
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
+            <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Fornecedores Ativos</p>
+            <p className="text-xl font-bold text-[#28071C]">{supplyFornecedores.filter(f => (f.categorias ?? []).length > 0).length}</p>
+            <p className="text-[10px] text-[#28071C]/40 mt-0.5">de {supplyFornecedores.length} cadastrados</p>
+          </div>
+        </div>
+
+        {/* ── Resumo por tipo ── */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
+          <h4 className="text-sm font-semibold text-[#28071C] mb-4">Total por Tipo de Insumo</h4>
+          <div className="grid grid-cols-3 gap-4">
+            {(["materia_prima","servico","produto_acabado"] as TipoFornecedorV2[]).map(tipo => (
+              <div key={tipo} className="rounded-xl p-4 text-center" style={{ background: TIPO_COLOR[tipo] + "18", border: `1px solid ${TIPO_COLOR[tipo]}33` }}>
+                <p className="text-xs font-medium mb-1" style={{ color: TIPO_COLOR[tipo] }}>{TIPO_LABEL[tipo]}</p>
+                <p className="text-lg font-bold text-[#28071C]">{fmtM(byTipo[tipo])}</p>
+                {totalOrc > 0 && (
+                  <p className="text-[10px] text-[#28071C]/40 mt-0.5">
+                    {((byTipo[tipo] / totalOrc) * 100).toFixed(0)}% do total
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Tabela mensal ── */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+          <div className="border-t-4 px-6 pt-5 pb-3" style={{ borderColor: "#7598CF" }}>
+            <h4 className="text-sm font-semibold text-[#28071C] mb-1">Calendário de Pagamentos</h4>
+            <p className="text-xs text-[#28071C]/50 mb-4">
+              Mês a mês de quando o orçamento precisará ser desembolsado, considerando lead time e condições de pagamento de cada fornecedor.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#28071C]/10">
+                    <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-40">
+                      Fornecedor
+                    </th>
+                    <th className="text-left py-2 pr-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-28">
+                      Tipo
+                    </th>
+                    {months.map(m => (
+                      <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">
+                        {m}
+                      </th>
+                    ))}
+                    <th className="text-right py-2 pl-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">
+                      Total
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Linhas por fornecedor */}
+                  {supplyFornecedores
+                    .filter(f => (f.categorias ?? []).length > 0)
+                    .map(forn => {
+                      const rowVals = projection.map(p =>
+                        p.fornecedores.find(pf => pf.nome === forn.nome)?.valor ?? 0
+                      );
+                      const rowTotal = rowVals.reduce((s, v) => s + v, 0);
+                      if (rowTotal === 0) return null;
+                      return (
+                        <tr key={forn.id} className="border-b border-[#28071C]/5 hover:bg-[#28071C]/3 transition-colors">
+                          <td className="py-2.5 pr-4 font-medium text-[#28071C] text-xs">{forn.nome}</td>
+                          <td className="py-2.5 pr-3">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                              style={{ background: TIPO_COLOR[forn.tipo_fornecedor] + "20", color: TIPO_COLOR[forn.tipo_fornecedor] }}>
+                              {TIPO_LABEL[forn.tipo_fornecedor]}
+                            </span>
+                          </td>
+                          {rowVals.map((v, i) => (
+                            <td key={i} className={`py-2.5 px-2 text-right text-xs ${v > 0 ? "font-medium text-[#28071C]" : "text-[#28071C]/20"}`}>
+                              {v > 0 ? fmtM(v) : "—"}
+                            </td>
+                          ))}
+                          <td className="py-2.5 pl-3 text-right font-bold text-sm text-[#28071C]">{fmtM(rowTotal)}</td>
+                        </tr>
+                      );
+                    })
+                  }
+                  {/* Linha de total */}
+                  <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/3">
+                    <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider">Total Mensal</td>
+                    <td className="py-3 pr-3" />
+                    {projection.map((p, i) => (
+                      <td key={i} className={`py-3 px-2 text-right text-sm font-bold ${p.valor > 0 ? "text-[#28071C]" : "text-[#28071C]/20"}`}>
+                        {p.valor > 0 ? fmtM(p.valor) : "—"}
+                      </td>
+                    ))}
+                    <td className="py-3 pl-3 text-right font-bold text-sm text-[#28071C]">{fmtM(totalOrc)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Gráfico de barras ── */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
+          <h4 className="text-sm font-semibold text-[#28071C] mb-4">Distribuição Mensal do Orçamento</h4>
+          <div className="flex items-end gap-3 h-40">
+            {projection.map((p, i) => {
+              const maxVal = Math.max(...projection.map(x => x.valor), 1);
+              const heightPct = (p.valor / maxVal) * 100;
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                  <span className="text-[10px] text-[#28071C]/50 font-medium">{p.valor > 0 ? fmtM(p.valor) : ""}</span>
+                  <div className="w-full rounded-t-lg transition-all" style={{
+                    height: `${Math.max(heightPct, 2)}%`,
+                    background: p.valor > 0 ? "#7598CF" : "#28071C10",
+                    minHeight: "4px",
+                  }} />
+                  <span className="text-[10px] font-semibold text-[#28071C]/60">{p.mes}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-[#28071C]/30 mt-3 text-center">
+            Valores calculados com base no lead time + condições de pagamento de cada fornecedor.
+            Meses fora do ciclo são descartados.
+          </p>
+        </div>
+
+      </>)}
     </div>
   );
 }

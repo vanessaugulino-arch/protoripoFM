@@ -1,216 +1,155 @@
-// ─── MatrizAbastecimento.tsx — Phase B + C ────────────────────────────────────
-// Fase B: Modelo Fornecedor — multi-categoria, peso/participação, média ponderada
-// Fase C: Modelo Produção/Facção — etapas com DnD de grupos paralelos
+// ─── MatrizAbastecimento.tsx — v2 ─────────────────────────────────────────────
+// Novo modelo: entrada começa pelo tipo de fornecedor
+// (Matéria Prima / Serviço / Produto Acabado) — não pela hierarquia de produto.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
-  ArrowLeft, Plus, Edit, Trash2, X, Save, Truck, Package,
-  CreditCard, ChevronDown, AlertCircle, Info, GripVertical,
-  Factory, Scissors, RefreshCw, Check,
+  ArrowLeft, Plus, Edit2, Trash2, X, Save, Truck, Package,
+  Factory, Globe, MapPin, Info, AlertCircle,
+  BarChart3, Calendar, CreditCard, ChevronRight,
+  Upload, FileSpreadsheet, Download, CheckCircle2, Clock, Loader2, ChevronLeft,
 } from "lucide-react";
 import {
-  type Fornecedor, type CondicaoPagamento, type Parcela,
-  type MatrizEntry, type TipoFornecimento, type TipoGatilho,
-  type ProducaoModelo, type ProducaoEtapa,
-  listFornecedoresDb, insertFornecedorDb, updateFornecedorDb, deleteFornecedorDb,
-  listCondicoesDb, insertCondicaoDb, updateCondicaoDb, deleteCondicaoDb,
-  listMatrizDb, insertMatrizEntryDb, updateMatrizEntryDb, deleteMatrizEntryDb,
-  listModelosProducaoDb, upsertModeloProducaoDb, deleteModeloProducaoDb,
-  listEtapasByModeloDb, replaceEtapasDb,
-  calcPrazoTotal,
-} from "../../services/supabase/matrizAbastecimentoService";
-import { fetchHierarchyPaths } from "../../services/supabase/productHierarchyService";
+  type SupplyFornecedor, type SupplyCategoria, type SupplyEtapa,
+  type TipoFornecedorV2, type OrigemFornecedor,
+  type PagamentoGatilho, type PagamentoModalidade, type PagamentoParcela, type TipoEntregaEtapa,
+  listSupplyFornecedores, insertSupplyFornecedor, updateSupplyFornecedor,
+  deleteSupplyFornecedor, replaceSupplyCategorias, replaceSupplyEtapas,
+  calcBudgetProjection, aggregateReceita, checkCompleteness,
+} from "../../services/supabase/supplyService";
+import { parseFile } from "../../services/importService";
+import { fetchHierDistinct } from "../../services/supabase/productHierarchyService";
+import { getCycle, listScenarios } from "../../services/supabase/planningScenarioService";
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Constantes
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Tipos locais ───────────────────────────────────────────────────────────────
 
-const MONTHS = [
-  "Janeiro","Fevereiro","Março","Abril","Maio","Junho",
-  "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro",
-];
-
-const TIPO_FORNECIMENTO_LABELS: Record<TipoFornecimento, string> = {
-  white_label:      "White Label",
-  private_label:    "Private Label",
-  producao_propria: "Produção Própria",
-  importado:        "Importado",
-};
-
-const TIPO_GATILHO_LABELS: Record<TipoGatilho, string> = {
-  PEDIDO:      "Pedido",
-  FATURAMENTO: "Faturamento",
-  ENTREGA:     "Entrega",
-};
-
-const GATILHO_COLORS: Record<TipoGatilho, string> = {
-  PEDIDO:      "bg-[#7598CF]/15 text-[#7598CF]",
-  FATURAMENTO: "bg-[#9B8CD8]/15 text-[#9B8CD8]",
-  ENTREGA:     "bg-emerald-100 text-emerald-700",
-};
-
-const MOEDAS = ["BRL", "USD", "EUR", "GBP", "CNY", "ARS"];
-
-const ETAPAS_SUGERIDAS = [
-  "Modelagem", "Plotagem", "Corte", "Costura", "Montagem",
-  "Bordado", "Estamparia", "Lavanderia", "Tingimento",
-  "Acabamento", "Revisão de qualidade", "Embalagem",
-];
-
-// Cores por grupo de etapa (para DnD visual)
-const GRUPO_BORDER_COLORS = [
-  "border-l-blue-400",   "border-l-violet-400", "border-l-emerald-400",
-  "border-l-orange-400", "border-l-pink-400",   "border-l-teal-400",
-  "border-l-yellow-500", "border-l-red-400",
-];
-const GRUPO_BG_COLORS = [
-  "bg-blue-50",   "bg-violet-50", "bg-emerald-50",
-  "bg-orange-50", "bg-pink-50",   "bg-teal-50",
-  "bg-yellow-50", "bg-red-50",
-];
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Helpers: leitura de hierarquia do localStorage
-// ══════════════════════════════════════════════════════════════════════════════
-
-const HIER_STRUCT_KEY = "fashionmind_hierarchy_struct";
-interface HierNode { id: string; label: string; children: HierNode[] }
-
-interface HierItem {
-  divisao: string;
-  categoria: string;
-  subcategoria: string | null;
-}
-
-function flattenHier(nodes: HierNode[]): HierItem[] {
-  const result: HierItem[] = [];
-  for (const div of nodes) {
-    for (const cat of div.children) {
-      if (cat.children.length === 0) {
-        result.push({ divisao: div.label, categoria: cat.label, subcategoria: null });
-      } else {
-        for (const sub of cat.children) {
-          result.push({ divisao: div.label, categoria: cat.label, subcategoria: sub.label });
-        }
-      }
-    }
-  }
-  return result;
-}
-
-function loadHierarquia(): HierItem[] {
-  try {
-    const raw = localStorage.getItem(HIER_STRUCT_KEY);
-    if (!raw) return [];
-    return flattenHier(JSON.parse(raw) as HierNode[]);
-  } catch { return []; }
-}
-
-// ── Lê usuário do sessionStorage ─────────────────────────────────────────────
-interface UserData { tenant_id: string; email?: string; system_role?: string; }
+interface UserData { tenant_id: string; email?: string }
 function getUser(): UserData | null {
   try { return JSON.parse(sessionStorage.getItem("currentUser") ?? "null"); } catch { return null; }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Tipos locais
-// ══════════════════════════════════════════════════════════════════════════════
+interface HierDistinct {
+  divisions: string[]; categories: string[]; subcategories: string[]
+  linhas: string[]; materials: string[]
+}
 
-type Tab = "modelo_fornecedor" | "modelo_producao" | "fornecedores" | "condicoes";
-
-interface StageForm {
+interface CatRow {
   _key: string;
-  id?: string;
-  ordem_grupo: number;
+  divisao: string;
+  categoria: string;
+  subcategoria: string;
+  pct_custo_medio: string;
+}
+
+interface EtapaRow {
+  _key: string;
+  sequencia: string;
   nome_etapa: string;
-  faccao_nome: string;
-  dias_prazo: number;
-  condicao_pagamento_id: string;
-  observacoes: string;
+  prazo_etapa_dias: string;
+  tipo_entrega: TipoEntregaEtapa;
+  divisao: string;
+  categoria: string;
 }
 
-interface PrestRow {
-  _key: string;
-  etapa: string;
-  prestador: string;
-  leadTime: string;
-  condicaoId: string;
-}
+// ── Constantes ────────────────────────────────────────────────────────────────
+
+const TIPO_LABELS: Record<TipoFornecedorV2, string> = {
+  materia_prima:    "Matéria Prima",
+  servico:          "Serviço / Facção",
+  produto_acabado:  "Produto Acabado",
+};
+
+const TIPO_ICONS: Record<TipoFornecedorV2, React.ReactNode> = {
+  materia_prima:   <Package className="w-4 h-4" />,
+  servico:         <Factory className="w-4 h-4" />,
+  produto_acabado: <Truck className="w-4 h-4" />,
+};
+
+const TIPO_COLORS: Record<TipoFornecedorV2, string> = {
+  materia_prima:   "bg-blue-100 text-blue-700",
+  servico:         "bg-violet-100 text-violet-700",
+  produto_acabado: "bg-emerald-100 text-emerald-700",
+};
+
+const GATILHO_LABELS: Record<PagamentoGatilho, string> = {
+  pedido:      "Pedido confirmado",
+  faturamento: "Faturamento",
+  entrega:     "Entrega",
+};
+
+const MODALIDADE_LABELS: Record<string, string> = {
+  avista: "À vista",
+  aprazo: "A prazo",
+};
+
+const ENTREGA_LABELS: Record<TipoEntregaEtapa, string> = {
+  semi_acabado:  "Semi-acabado",
+  acabado:       "Acabado",
+  white_label:   "White Label",
+  private_label: "Private Label",
+};
+
+const ETAPAS_SUGERIDAS = [
+  "Modelagem","Plotagem","Corte","Costura","Montagem","Bordado",
+  "Estamparia","Lavanderia","Tingimento","Acabamento","Revisão de qualidade","Embalagem",
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const fmtCurrency = (v: number) =>
+  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Componente principal
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function MatrizAbastecimento() {
-  const navigate   = useNavigate();
-  const user       = getUser();
-  const [hierarquia, setHierarquia] = useState<HierItem[]>(() => loadHierarquia());
+  const navigate = useNavigate();
+  const user     = getUser();
 
-  // ── Tabs ───────────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<Tab>("modelo_fornecedor");
-
-  // ── Data ───────────────────────────────────────────────────────────────────
-  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
-  const [condicoes,    setCondicoes]    = useState<CondicaoPagamento[]>([]);
-  const [matriz,       setMatriz]       = useState<MatrizEntry[]>([]);
-  const [modelos,      setModelos]      = useState<ProducaoModelo[]>([]);
+  const [fornecedores, setFornecedores] = useState<SupplyFornecedor[]>([]);
+  const [hier,         setHier]         = useState<HierDistinct>({ divisions:[], categories:[], subcategories:[], linhas:[], materials:[] });
   const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState<string | null>(null);
+  const [modal,        setModal]        = useState<SupplyFornecedor | null | "new">(null);
+  const [importOpen,   setImportOpen]   = useState(false);
 
-  // ── Filters ────────────────────────────────────────────────────────────────
-  const [filterDivisao,   setFilterDivisao]   = useState("");
-  const [filterCategoria, setFilterCategoria] = useState("");
-
-  // ── Modals ─────────────────────────────────────────────────────────────────
-  const [matrizModal,   setMatrizModal]   = useState<{ entry?: MatrizEntry } | null>(null);
-  const [fornModal,     setFornModal]     = useState<{ item?: Fornecedor } | null>(null);
-  const [condModal,     setCondModal]     = useState<{ item?: CondicaoPagamento } | null>(null);
-  const [producaoModal, setProducaoModal] = useState<{ modelo?: ProducaoModelo } | null>(null);
-
-  // ── Etapas expandidas ──────────────────────────────────────────────────────
-  const [expandedModelo, setExpandedModelo] = useState<string | null>(null);
-  const [etapasCache, setEtapasCache] = useState<Record<string, ProducaoEtapa[]>>({});
+  // Budget projection
+  const [budgetData, setBudgetData] = useState<Array<{ mes: string; valor: number }>>([]);
 
   // ── Load ───────────────────────────────────────────────────────────────────
+
   const load = useCallback(async () => {
     if (!user?.tenant_id) return;
     setLoading(true);
-    setError(null);
     try {
-      const [f, c, m, mod, paths] = await Promise.all([
-        listFornecedoresDb(user.tenant_id),
-        listCondicoesDb(user.tenant_id),
-        listMatrizDb(user.tenant_id),
-        listModelosProducaoDb(user.tenant_id),
-        fetchHierarchyPaths(user.tenant_id).catch(() => []),
+      const [fList, hierData] = await Promise.all([
+        listSupplyFornecedores(user.tenant_id),
+        fetchHierDistinct(user.tenant_id),
       ]);
-      setFornecedores(f);
-      setCondicoes(c);
-      setMatriz(m);
-      setModelos(mod);
+      setFornecedores(fList);
+      setHier(hierData);
 
-      // Hierarquia via DB (products table) — fallback para localStorage se vazio
-      if (paths.length > 0) {
-        const seen = new Set<string>();
-        const hierItems: HierItem[] = paths
-          .filter(p => p.division && p.category)
-          .map(p => ({
-            divisao:     p.division!,
-            categoria:   p.category!,
-            subcategoria: p.subcategory ?? null,
-          }))
-          .filter(h => {
-            const key = `${h.divisao}|${h.categoria}|${h.subcategoria ?? ""}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
-        if (hierItems.length > 0) setHierarquia(hierItems);
+      // Tenta carregar curva de receita do cenário aplicado
+      const year = new Date().getFullYear();
+      const cycle = await getCycle(user.tenant_id, year).catch(() => null);
+      if (cycle) {
+        const scenarios = await listScenarios(user.tenant_id, year).catch(() => []);
+        const applied = scenarios.find(s => s.is_applied);
+        if (applied) {
+          const vals = applied.values as Record<string, unknown>;
+          const plannedRevenue = vals?.plannedRevenue as Array<{ month: string; atacado: number; varejo: number; ecommerce: number }>;
+          const margemPct = (vals?.margemBruta as number) ?? 65;
+          if (plannedRevenue?.length) {
+            const { months, receita } = aggregateReceita(plannedRevenue);
+            const proj = calcBudgetProjection(months, receita, margemPct, fList);
+            setBudgetData(proj.map(p => ({ mes: p.mes, valor: p.valor })));
+          }
+        }
       }
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -218,522 +157,159 @@ export default function MatrizAbastecimento() {
 
   useEffect(() => { load(); }, [load]);
 
-  const loadEtapas = useCallback(async (modeloId: string) => {
-    if (etapasCache[modeloId]) return;
-    try {
-      const etapas = await listEtapasByModeloDb(modeloId);
-      setEtapasCache(prev => ({ ...prev, [modeloId]: etapas }));
-    } catch { /* ignore */ }
-  }, [etapasCache]);
+  // ── Delete ─────────────────────────────────────────────────────────────────
 
-  const toggleExpandModelo = (modeloId: string) => {
-    if (expandedModelo === modeloId) {
-      setExpandedModelo(null);
-    } else {
-      setExpandedModelo(modeloId);
-      loadEtapas(modeloId);
-    }
+  const handleDelete = async (id: string) => {
+    if (!confirm("Remover este fornecedor da matriz?")) return;
+    await deleteSupplyFornecedor(id);
+    setFornecedores(prev => prev.filter(f => f.id !== id));
   };
 
-  // ── Derived ────────────────────────────────────────────────────────────────
-  const divisoes = [...new Set(hierarquia.map(h => h.divisao))];
+  // ── Save from modal ────────────────────────────────────────────────────────
 
-  const filteredMatriz = matriz.filter(m => {
-    if (filterDivisao && m.divisao !== filterDivisao) return false;
-    if (filterCategoria && m.categoria !== filterCategoria) return false;
-    return true;
-  });
-
-  const filteredModelos = modelos.filter(m => {
-    if (filterDivisao && m.divisao !== filterDivisao) return false;
-    if (filterCategoria && m.categoria !== filterCategoria) return false;
-    return true;
-  });
-
-  const categoriasFiltro = [...new Set(
-    hierarquia
-      .filter(h => !filterDivisao || h.divisao === filterDivisao)
-      .map(h => h.categoria)
-  )];
-
-  // ── Handlers: Fornecedores ─────────────────────────────────────────────────
-  async function handleSaveFornecedor(
-    values: Omit<Fornecedor, "id" | "tenant_id" | "created_at" | "updated_at">
-  ) {
-    if (!user?.tenant_id) return;
-    if (fornModal?.item) {
-      const updated = await updateFornecedorDb(fornModal.item.id, values);
-      setFornecedores(prev => prev.map(f => f.id === updated.id ? updated : f));
-    } else {
-      const created = await insertFornecedorDb(user.tenant_id, values);
-      setFornecedores(prev => [...prev, created]);
-    }
-    setFornModal(null);
-  }
-
-  async function handleDeleteFornecedor(id: string) {
-    if (!confirm("Excluir este fornecedor?")) return;
-    await deleteFornecedorDb(id);
-    setFornecedores(prev => prev.filter(f => f.id !== id));
-  }
-
-  async function handleQuickAddFornecedor(nome: string): Promise<string> {
-    if (!user?.tenant_id) return "";
-    const created = await insertFornecedorDb(user.tenant_id, {
-      nome: nome.trim(),
-      codigo_erp: "FM-" + Math.random().toString(36).slice(2, 8).toUpperCase(),
-      tipo: "white_label" as TipoFornecimento,
-      pais_origem: null,
-      moeda_padrao: "BRL",
-      contato_nome: null,
-      contato_email: null,
-      observacoes: null,
-      ativo: true,
+  const handleSave = async (forn: SupplyFornecedor) => {
+    setFornecedores(prev => {
+      const exists = prev.find(f => f.id === forn.id);
+      return exists ? prev.map(f => f.id === forn.id ? forn : f) : [...prev, forn];
     });
-    setFornecedores(prev => [...prev, created]);
-    return created.id;
-  }
+    setModal(null);
+    // Recarrega para ter categorias + etapas joined
+    load();
+  };
 
-  // ── Handlers: Condições ────────────────────────────────────────────────────
-  async function handleSaveCondicao(
-    desc: string,
-    parcelas: Omit<Parcela, "id" | "condicao_pagamento_id">[]
-  ) {
-    if (!user?.tenant_id) return;
-    if (condModal?.item) {
-      const updated = await updateCondicaoDb(condModal.item.id, desc, parcelas);
-      setCondicoes(prev => prev.map(c => c.id === updated.id ? updated : c));
-    } else {
-      const created = await insertCondicaoDb(user.tenant_id, desc, parcelas);
-      setCondicoes(prev => [...prev, created]);
-    }
-    setCondModal(null);
-  }
+  // ── Agrupamento ────────────────────────────────────────────────────────────
 
-  async function handleDeleteCondicao(id: string) {
-    if (!confirm("Excluir esta condição de pagamento?")) return;
-    await deleteCondicaoDb(id);
-    setCondicoes(prev => prev.filter(c => c.id !== id));
-  }
+  const byTipo = (tipo: TipoFornecedorV2) => fornecedores.filter(f => f.tipo_fornecedor === tipo);
 
-  // ── Handlers: Matriz (Modelo Fornecedor) ──────────────────────────────────
-  async function handleSaveMatriz(
-    values: Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "updated_at" | "fornecedor" | "condicao">,
-    extraCategorias?: HierItem[]
-  ) {
-    if (!user?.tenant_id) return;
-    if (matrizModal?.entry) {
-      const updated = await updateMatrizEntryDb(matrizModal.entry.id, values);
-      setMatriz(prev => prev.map(m => m.id === updated.id ? { ...updated } : m));
-    } else {
-      const targets = extraCategorias && extraCategorias.length > 0 ? extraCategorias : [{
-        divisao: values.divisao,
-        categoria: values.categoria,
-        subcategoria: values.subcategoria,
-      }];
-      const created: MatrizEntry[] = [];
-      for (const t of targets) {
-        const entry = await insertMatrizEntryDb(user.tenant_id, { ...values, ...t });
-        created.push(entry);
-      }
-      setMatriz(prev => [...prev, ...created]);
-    }
-    setMatrizModal(null);
-  }
+  // ── Logout ─────────────────────────────────────────────────────────────────
 
-  async function handleDeleteMatriz(id: string) {
-    if (!confirm("Remover esta entrada?")) return;
-    await deleteMatrizEntryDb(id);
-    setMatriz(prev => prev.filter(m => m.id !== id));
+  if (!user) {
+    navigate("/");
+    return null;
   }
-
-  // ── Handlers: Modelos de Produção ─────────────────────────────────────────
-  async function handleSaveModelo(
-    values: Omit<ProducaoModelo, "id" | "tenant_id" | "created_at" | "updated_at">,
-    etapas: Omit<ProducaoEtapa, "id" | "modelo_id" | "tenant_id" | "created_at">[],
-    existingId?: string
-  ) {
-    if (!user?.tenant_id) return;
-    const savedModelo = await upsertModeloProducaoDb(user.tenant_id, { ...values, id: existingId });
-    const savedEtapas = await replaceEtapasDb(savedModelo.id, user.tenant_id, etapas);
-    if (existingId) {
-      setModelos(prev => prev.map(m => m.id === existingId ? savedModelo : m));
-    } else {
-      setModelos(prev => [...prev, savedModelo]);
-    }
-    setEtapasCache(prev => ({ ...prev, [savedModelo.id]: savedEtapas }));
-    setExpandedModelo(savedModelo.id);
-    setProducaoModal(null);
-  }
-
-  async function handleDeleteModelo(id: string) {
-    if (!confirm("Excluir este modelo de produção?")) return;
-    await deleteModeloProducaoDb(id);
-    setModelos(prev => prev.filter(m => m.id !== id));
-    setEtapasCache(prev => { const n = { ...prev }; delete n[id]; return n; });
-    if (expandedModelo === id) setExpandedModelo(null);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════════════════════════
 
   return (
-    <div className="min-h-screen bg-[#F7F5F0]">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="bg-[#28071C] px-6 py-4 flex items-center gap-4 shadow-lg">
-        <button onClick={() => navigate("/operation-settings")}
-          className="p-2 text-white/60 hover:text-white rounded-xl transition-colors">
-          <ArrowLeft className="w-5 h-5" />
+    <div className="min-h-screen bg-[#F2F2F2]">
+      {/* Header */}
+      <header className="bg-[#28071C] text-white px-6 py-4 flex items-center gap-4">
+        <button
+          onClick={() => navigate("/dashboard")}
+          className="flex items-center gap-2 text-white/60 hover:text-white text-sm transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Voltar
         </button>
-        <div>
-          <h1 className="text-white font-bold text-lg leading-none">Matriz de Abastecimento</h1>
-          <p className="text-white/50 text-xs mt-0.5">Fornecedores, lead times, modelos de produção e condições de pagamento</p>
+        <div className="w-px h-4 bg-white/20" />
+        <h1 className="font-semibold text-sm tracking-wide">Matriz de Abastecimento</h1>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-white/15 text-white border border-white/30 rounded-lg text-xs font-semibold hover:bg-white/25 transition-colors"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Importar planilha
+          </button>
+          <button
+            onClick={() => setModal("new")}
+            className="flex items-center gap-2 px-4 py-2 bg-[#F6F3AA] text-[#28071C] rounded-lg text-xs font-semibold hover:bg-[#F6F3AA]/80 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Adicionar Fornecedor
+          </button>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {/* ── Tabs ─────────────────────────────────────────────────────────── */}
-        <div className="flex gap-1 p-1 bg-white/60 rounded-2xl border border-[#28071C]/8 mb-6 overflow-x-auto">
-          {([
-            { id: "modelo_fornecedor", label: "Modelo Fornecedor",       icon: Truck   },
-            { id: "modelo_producao",   label: "Modelo Produção / Facção", icon: Factory },
-            { id: "fornecedores",      label: "Fornecedores",            icon: Package },
-            { id: "condicoes",         label: "Condições de Pagamento",  icon: CreditCard },
-          ] as { id: Tab; label: string; icon: React.FC<{ className?: string }> }[]).map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold whitespace-nowrap transition-all ${
-                activeTab === tab.id
-                  ? "bg-[#28071C] text-white shadow-sm"
-                  : "text-[#28071C]/60 hover:bg-[#28071C]/5 hover:text-[#28071C]"
-              }`}>
-              <tab.icon className="w-4 h-4" />
-              {tab.label}
+      <div className="max-w-6xl mx-auto p-6 space-y-8">
+
+        {/* Budget strip — só mostra se tiver dados */}
+        {budgetData.length > 0 && (
+          <div className="bg-white rounded-2xl border border-[#28071C]/10 p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <BarChart3 className="w-4 h-4 text-[#7598CF]" />
+              <h2 className="text-sm font-semibold text-[#28071C]">Previsão de Orçamento por Período</h2>
+              <div className="group relative ml-1">
+                <Info className="w-3.5 h-3.5 text-[#28071C]/30 cursor-help" />
+                <div className="absolute left-5 top-0 w-72 bg-[#28071C] text-white text-[11px] rounded-lg p-3 hidden group-hover:block z-10 leading-relaxed">
+                  Estimativa baseada na curva de vendas do cenário aplicado × margem bruta do plano × % de custo médio de cada fornecedor. Representa quando os pagamentos devem sair do caixa.
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 overflow-x-auto pb-1">
+              {budgetData.map(d => (
+                <div key={d.mes} className="flex-shrink-0 bg-[#F2F2F2] rounded-xl p-3 min-w-[100px] text-center">
+                  <p className="text-[10px] text-[#28071C]/50 font-medium mb-1">{d.mes}</p>
+                  <p className="text-sm font-bold text-[#28071C]">{fmtCurrency(d.valor)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && fornecedores.length === 0 && (
+          <div className="bg-white rounded-2xl border border-dashed border-[#28071C]/20 p-16 text-center">
+            <Truck className="w-10 h-10 text-[#28071C]/20 mx-auto mb-3" />
+            <p className="text-sm text-[#28071C]/50 mb-4">Nenhum fornecedor cadastrado ainda.</p>
+            <button
+              onClick={() => setModal("new")}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-white rounded-lg text-xs font-semibold"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Adicionar primeiro fornecedor
             </button>
-          ))}
-        </div>
-
-        {/* ── Filters (shared for tabs 1-2) ────────────────────────────────── */}
-        {(activeTab === "modelo_fornecedor" || activeTab === "modelo_producao") && (
-          <div className="flex gap-3 mb-5">
-            <div className="flex-1">
-              <select value={filterDivisao}
-                onChange={e => { setFilterDivisao(e.target.value); setFilterCategoria(""); }}
-                className="w-full px-3 py-2 border-2 border-[#28071C]/10 rounded-xl text-sm text-[#28071C] bg-white focus:outline-none focus:border-[#7598CF]/50 cursor-pointer">
-                <option value="">Todas as divisões</option>
-                {divisoes.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
-            </div>
-            <div className="flex-1">
-              <select value={filterCategoria} onChange={e => setFilterCategoria(e.target.value)}
-                className="w-full px-3 py-2 border-2 border-[#28071C]/10 rounded-xl text-sm text-[#28071C] bg-white focus:outline-none focus:border-[#7598CF]/50 cursor-pointer">
-                <option value="">Todas as categorias</option>
-                {categoriasFiltro.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
           </div>
         )}
 
-        {/* ── Loading / Error ───────────────────────────────────────────────── */}
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-20 text-[#28071C]/40">
-            <RefreshCw className="w-5 h-5 animate-spin" />
-            <span className="text-sm">Carregando…</span>
-          </div>
-        ) : error ? (
-          <div className="flex items-center gap-3 p-5 bg-red-50 border border-red-200 rounded-2xl">
-            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
-            <p className="text-red-700 text-sm">{error}</p>
-          </div>
-        ) : (
-          <>
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {/* TAB 1: MODELO FORNECEDOR                                       */}
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {activeTab === "modelo_fornecedor" && (
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Info className="w-4 h-4 text-[#7598CF]" />
-                    <p className="text-sm text-[#28071C]/60">
-                      O fornecedor entrega o produto <strong>pronto</strong> (inclui matéria-prima).
-                      Um fornecedor pode atender múltiplas categorias.
-                    </p>
-                  </div>
-                  <button onClick={() => setMatrizModal({})}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm shrink-0 ml-4">
-                    <Plus className="w-4 h-4" /> Adicionar fornecedor
-                  </button>
-                </div>
-
-                {filteredMatriz.length === 0 ? (
-                  <EmptyState icon={Truck} title="Nenhuma entrada cadastrada"
-                    desc="Adicione fornecedores e suas condições por categoria." />
-                ) : (
-                  <div className="bg-white rounded-2xl border border-[#28071C]/8 overflow-hidden shadow-sm">
-                    <table className="w-full text-sm">
-                      <thead className="bg-[#28071C]/4 border-b border-[#28071C]/8">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Divisão / Categoria</th>
-                          <th className="px-4 py-3 text-left text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Fornecedor</th>
-                          <th className="px-4 py-3 text-center text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Peso %</th>
-                          <th className="px-4 py-3 text-center text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Produção</th>
-                          <th className="px-4 py-3 text-center text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Entrega</th>
-                          <th className="px-4 py-3 text-center text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Total</th>
-                          <th className="px-4 py-3 text-left text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Condição</th>
-                          <th className="px-4 py-3 text-center text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Ações</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#28071C]/5">
-                        {filteredMatriz.map((entry, idx) => {
-                          const nextEntry = filteredMatriz[idx + 1];
-                          const isLastOfCat = !nextEntry ||
-                            nextEntry.categoria !== entry.categoria ||
-                            nextEntry.divisao   !== entry.divisao;
-                          const catEntries = filteredMatriz.filter(
-                            e => e.divisao === entry.divisao && e.categoria === entry.categoria
-                          );
-                          const totalPeso = catEntries.reduce((s, e) => s + (e.peso_participacao ?? 0), 0);
-                          const pesoOk    = Math.abs(totalPeso - 100) < 0.1;
-
-                          return (
-                            <MatrizRowFragment
-                              key={entry.id}
-                              entry={entry}
-                              isLastOfCat={isLastOfCat}
-                              catEntries={catEntries}
-                              totalPeso={totalPeso}
-                              pesoOk={pesoOk}
-                              onEdit={() => setMatrizModal({ entry })}
-                              onDelete={() => handleDeleteMatriz(entry.id)}
-                            />
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {/* TAB 2: MODELO PRODUÇÃO / FACÇÃO                               */}
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {activeTab === "modelo_producao" && (
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Info className="w-4 h-4 text-[#7598CF]" />
-                    <p className="text-sm text-[#28071C]/60">
-                      A facção fornece apenas <strong>serviço de produção</strong>; matéria-prima comprada separadamente.
-                    </p>
-                  </div>
-                  <button onClick={() => setProducaoModal({})}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm shrink-0 ml-4">
-                    <Plus className="w-4 h-4" /> Novo modelo
-                  </button>
-                </div>
-
-                {filteredModelos.length === 0 ? (
-                  <EmptyState icon={Factory} title="Nenhum modelo de produção"
-                    desc="Cadastre modelos com etapas, facções e prazos de produção." />
-                ) : (
-                  <div className="space-y-3">
-                    {filteredModelos.map(modelo => {
-                      const etapas     = etapasCache[modelo.id] ?? [];
-                      const expanded   = expandedModelo === modelo.id;
-                      const prazoTotal = calcPrazoTotal(etapas);
-                      return (
-                        <div key={modelo.id} className="bg-white rounded-2xl border border-[#28071C]/8 shadow-sm overflow-hidden">
-                          <div className="flex items-center gap-4 px-5 py-4">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold text-[#28071C]">{modelo.nome_modelo}</span>
-                                <span className="text-[10px] bg-[#28071C]/8 text-[#28071C]/60 px-2 py-0.5 rounded-full font-medium">
-                                  {modelo.categoria}{modelo.subcategoria ? ` › ${modelo.subcategoria}` : ""}
-                                </span>
-                                <span className="text-[10px] text-[#28071C]/40">{modelo.divisao}</span>
-                              </div>
-                              <div className="flex items-center gap-4 mt-1.5 text-xs text-[#28071C]/50">
-                                <span>MP: <strong className="text-[#28071C]">{modelo.pct_materia_prima}%</strong></span>
-                                {modelo.mes_corte && (
-                                  <span className="flex items-center gap-1">
-                                    <Scissors className="w-3 h-3" />
-                                    Corte: <strong className="text-[#28071C]">{modelo.mes_corte}</strong>
-                                  </span>
-                                )}
-                                {expanded && etapas.length > 0 && (
-                                  <span className="text-[#7598CF] font-semibold">
-                                    Prazo total: {prazoTotal}d
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <button onClick={() => toggleExpandModelo(modelo.id)}
-                                className="px-3 py-1.5 text-xs text-[#28071C]/60 hover:text-[#28071C] hover:bg-[#28071C]/5 rounded-lg transition-colors font-medium">
-                                {expanded ? "Fechar" : (etapas.length > 0 ? `${etapas.length} etapas` : "Ver etapas")}
-                              </button>
-                              <button onClick={() => setProducaoModal({ modelo })}
-                                className="p-2 text-[#7598CF] hover:bg-[#7598CF]/10 rounded-xl transition-colors">
-                                <Edit className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => handleDeleteModelo(modelo.id)}
-                                className="p-2 text-red-400 hover:bg-red-50 rounded-xl transition-colors">
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-
-                          {expanded && (
-                            <div className="border-t border-[#28071C]/6 px-5 py-4 bg-[#28071C]/2">
-                              {etapas.length === 0 ? (
-                                <p className="text-[#28071C]/40 text-sm text-center py-4">
-                                  Nenhuma etapa cadastrada. Edite o modelo para adicionar.
-                                </p>
-                              ) : (
-                                <EtapasReadOnly etapas={etapas} />
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {/* TAB 3: FORNECEDORES (catálogo)                                */}
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {activeTab === "fornecedores" && (
-              <div>
-                <div className="flex items-center justify-between mb-6">
-                  <p className="text-[#28071C]/60 text-sm">Catálogo de fornecedores — reutilizável na Matriz de Abastecimento e no planejamento de compras e produção</p>
-                  <button onClick={() => setFornModal({})}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm">
-                    <Plus className="w-4 h-4" /> Novo fornecedor
-                  </button>
-                </div>
-                {fornecedores.length === 0 ? (
-                  <EmptyState icon={Package} title="Nenhum fornecedor cadastrado"
-                    desc="Cadastre fornecedores para usar na Matriz de Abastecimento e no planejamento de compras e produção." />
-                ) : (
-                  <div className="grid gap-3">
-                    {fornecedores.map(f => (
-                      <div key={f.id} className="bg-white/70 rounded-2xl border border-[#28071C]/8 px-5 py-4 flex items-center gap-4 hover:shadow-sm transition-shadow">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-[#28071C]">{f.nome}</span>
-                            {f.codigo_erp && (
-                              <span className="text-[10px] font-mono bg-[#7598CF]/10 text-[#7598CF] px-1.5 py-0.5 rounded-md">{f.codigo_erp}</span>
-                            )}
-                            {f.pais_origem && <span className="text-[#28071C]/40 text-xs">{f.pais_origem}</span>}
-                          </div>
-                          <div className="flex items-center gap-3 mt-1 text-xs text-[#28071C]/50">
-                            <span>{f.moeda_padrao}</span>
-                            {f.contato_email && <span>{f.contato_email}</span>}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button onClick={() => setFornModal({ item: f })}
-                            className="p-2 text-[#7598CF] hover:bg-[#7598CF]/10 rounded-xl transition-colors">
-                            <Edit className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteFornecedor(f.id)}
-                            className="p-2 text-red-400 hover:bg-red-50 rounded-xl transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {/* TAB 4: CONDIÇÕES DE PAGAMENTO                                 */}
-            {/* ══════════════════════════════════════════════════════════════ */}
-            {activeTab === "condicoes" && (
-              <div>
-                <div className="flex items-center justify-between mb-6">
-                  <p className="text-[#28071C]/60 text-sm">Templates reutilizáveis com gatilhos por evento (Pedido, Faturamento, Entrega)</p>
-                  <button onClick={() => setCondModal({})}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all shadow-sm">
-                    <Plus className="w-4 h-4" /> Nova condição
-                  </button>
-                </div>
-                {condicoes.length === 0 ? (
-                  <EmptyState icon={CreditCard} title="Nenhuma condição cadastrada"
-                    desc="Crie templates de pagamento para reutilizar na Matriz." />
-                ) : (
-                  <div className="grid gap-3">
-                    {condicoes.map(c => (
-                      <div key={c.id} className="bg-white/70 rounded-2xl border border-[#28071C]/8 px-5 py-4 hover:shadow-sm transition-shadow">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-[#28071C] mb-2">{c.descricao}</div>
-                            <div className="flex flex-wrap gap-2">
-                              {c.parcelas.map((p, i) => (
-                                <div key={i} className="flex items-center gap-1">
-                                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${GATILHO_COLORS[p.tipo_gatilho]}`}>
-                                    {p.percentual}% {TIPO_GATILHO_LABELS[p.tipo_gatilho]}
-                                    {p.dias_apos_gatilho > 0 && ` +${p.dias_apos_gatilho}d`}
-                                  </span>
-                                  {i < c.parcelas.length - 1 && <span className="text-[#28071C]/20 text-xs">→</span>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button onClick={() => setCondModal({ item: c })}
-                              className="p-2 text-[#7598CF] hover:bg-[#7598CF]/10 rounded-xl transition-colors">
-                              <Edit className="w-4 h-4" />
-                            </button>
-                            <button onClick={() => handleDeleteCondicao(c.id)}
-                              className="p-2 text-red-400 hover:bg-red-50 rounded-xl transition-colors">
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </>
+        {/* Loading */}
+        {loading && (
+          <div className="text-center py-20 text-sm text-[#28071C]/40">Carregando…</div>
         )}
-      </main>
 
-      {/* ── Modals ─────────────────────────────────────────────────────────── */}
-      {fornModal && (
-        <FornecedorModal initial={fornModal.item} onSave={handleSaveFornecedor} onClose={() => setFornModal(null)} />
-      )}
-      {condModal && (
-        <CondicaoModal initial={condModal.item} onSave={handleSaveCondicao} onClose={() => setCondModal(null)} />
-      )}
-      {matrizModal && (
-        <MatrizEntradaModal
-          initial={matrizModal.entry}
-          hierarquia={hierarquia}
-          fornecedores={fornecedores}
-          condicoes={condicoes}
-          onSave={handleSaveMatriz}
-          onClose={() => setMatrizModal(null)}
-          onQuickAdd={handleQuickAddFornecedor}
+        {/* Groups */}
+        {!loading && (["materia_prima", "servico", "produto_acabado"] as TipoFornecedorV2[]).map(tipo => {
+          const list = byTipo(tipo);
+          if (list.length === 0) return null;
+          return (
+            <section key={tipo}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${TIPO_COLORS[tipo]}`}>
+                  {TIPO_ICONS[tipo]}
+                  {TIPO_LABELS[tipo]}
+                </span>
+                <span className="text-xs text-[#28071C]/40">{list.length} fornecedor{list.length !== 1 ? "es" : ""}</span>
+              </div>
+              <div className="space-y-3">
+                {list.map(forn => (
+                  <FornecedorCard
+                    key={forn.id}
+                    forn={forn}
+                    onEdit={() => setModal(forn)}
+                    onDelete={() => handleDelete(forn.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+
+      {/* Modal edição/criação */}
+      {modal !== null && (
+        <FornecedorModal
+          initial={modal === "new" ? null : modal}
+          hier={hier}
+          tenantId={user.tenant_id}
+          onSave={handleSave}
+          onClose={() => setModal(null)}
         />
       )}
-      {producaoModal && (
-        <ProducaoModal
-          initial={producaoModal.modelo}
-          hierarquia={hierarquia}
-          condicoes={condicoes}
-          etapasIniciais={producaoModal.modelo ? (etapasCache[producaoModal.modelo.id] ?? []) : []}
-          onSave={handleSaveModelo}
-          onClose={() => setProducaoModal(null)}
+
+      {/* Modal importação */}
+      {importOpen && (
+        <SupplyImportModal
+          tenantId={user.tenant_id}
+          onDone={() => { setImportOpen(false); load(); }}
+          onClose={() => setImportOpen(false)}
         />
       )}
     </div>
@@ -741,1321 +317,1218 @@ export default function MatrizAbastecimento() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Linha da tabela de Matriz (extraída para evitar o Fragment aninhado)
+// Card de fornecedor
 // ══════════════════════════════════════════════════════════════════════════════
 
-function MatrizRowFragment({
-  entry, isLastOfCat, catEntries, totalPeso, pesoOk, onEdit, onDelete,
-}: {
-  entry: MatrizEntry;
-  isLastOfCat: boolean;
-  catEntries: MatrizEntry[];
-  totalPeso: number;
-  pesoOk: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <>
-      <tr className="hover:bg-[#28071C]/2 transition-colors">
-        <td className="px-4 py-3">
-          <div className="font-semibold text-[#28071C] text-sm">{entry.categoria}</div>
-          <div className="text-[#28071C]/40 text-xs">
-            {entry.divisao}{entry.subcategoria ? ` › ${entry.subcategoria}` : ""}
-          </div>
-        </td>
-        <td className="px-4 py-3 text-[#28071C]">
-          {entry.fornecedor?.nome ?? <span className="text-[#28071C]/30 italic">—</span>}
-        </td>
-        <td className="px-4 py-3 text-center">
-          <span className={`text-sm font-semibold ${(entry.peso_participacao ?? 100) < 100 ? "text-[#7598CF]" : "text-[#28071C]/50"}`}>
-            {entry.peso_participacao ?? 100}%
-          </span>
-        </td>
-        <td className="px-4 py-3 text-center text-[#28071C]">{entry.dias_producao}d</td>
-        <td className="px-4 py-3 text-center text-[#28071C]">{entry.dias_transito}d</td>
-        <td className="px-4 py-3 text-center">
-          <span className="font-semibold text-[#7598CF]">
-            {entry.lead_time_total ?? (entry.dias_producao + entry.dias_transito)}d
-          </span>
-        </td>
-        <td className="px-4 py-3">
-          {entry.condicao ? (
-            <div className="flex flex-wrap gap-1">
-              {entry.condicao.parcelas.slice(0, 2).map((p, i) => (
-                <span key={i} className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${GATILHO_COLORS[p.tipo_gatilho]}`}>
-                  {p.percentual}%{p.dias_apos_gatilho > 0 ? ` +${p.dias_apos_gatilho}d` : ""}
-                </span>
-              ))}
-              {entry.condicao.parcelas.length > 2 && (
-                <span className="text-[10px] text-[#28071C]/40">+{entry.condicao.parcelas.length - 2}</span>
-              )}
-            </div>
-          ) : (
-            <span className="text-[#28071C]/25 text-xs">—</span>
-          )}
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center justify-center gap-1">
-            <button onClick={onEdit}
-              className="p-1.5 text-[#7598CF] hover:bg-[#7598CF]/10 rounded-lg transition-colors">
-              <Edit className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={onDelete}
-              className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </td>
-      </tr>
-      {isLastOfCat && catEntries.length > 1 && (
-        <tr className="bg-[#7598CF]/5 border-t border-[#7598CF]/15">
-          <td className="px-4 py-2" colSpan={2}>
-            <span className="text-[10px] font-bold text-[#7598CF] uppercase tracking-wide">Média ponderada</span>
-          </td>
-          <td className="px-4 py-2 text-center">
-            <span className={`text-xs font-bold ${pesoOk ? "text-emerald-600" : "text-orange-500"}`}>
-              {pesoOk ? "✓ 100%" : `${totalPeso.toFixed(0)}% ≠ 100`}
-            </span>
-          </td>
-          <td className="px-4 py-2 text-center text-xs text-[#7598CF] font-semibold">
-            {(catEntries.reduce((s, e) => s + e.dias_producao * (e.peso_participacao ?? 100), 0) / 100).toFixed(0)}d
-          </td>
-          <td className="px-4 py-2 text-center text-xs text-[#7598CF] font-semibold">
-            {(catEntries.reduce((s, e) => s + e.dias_transito * (e.peso_participacao ?? 100), 0) / 100).toFixed(0)}d
-          </td>
-          <td className="px-4 py-2 text-center text-xs text-[#7598CF] font-semibold">
-            {(catEntries.reduce((s, e) => s + (e.lead_time_total ?? e.dias_producao + e.dias_transito) * (e.peso_participacao ?? 100), 0) / 100).toFixed(0)}d
-          </td>
-          <td colSpan={2} />
-        </tr>
-      )}
-    </>
-  );
-}
+function FornecedorCard({
+  forn, onEdit, onDelete,
+}: { forn: SupplyFornecedor; onEdit: () => void; onDelete: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const cats  = forn.categorias ?? [];
+  const etapas = forn.etapas ?? [];
+  const { complete, missing } = checkCompleteness(forn);
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SUBCOMPONENTE: Leitura de etapas (view-only)
-// ══════════════════════════════════════════════════════════════════════════════
-
-function EtapasReadOnly({ etapas }: { etapas: ProducaoEtapa[] }) {
-  const grupos = [...new Set(etapas.map(e => e.ordem_grupo))].sort((a, b) => a - b);
+  const parcelas = forn.pagamento_parcelas ?? [];
+  const pagLabel = parcelas.length === 0
+    ? "—"
+    : parcelas.length === 1
+      ? `${parcelas[0].pct}% ${MODALIDADE_LABELS[parcelas[0].modalidade ?? "aprazo"]} — ${GATILHO_LABELS[parcelas[0].gatilho]}${parcelas[0].dias > 0 ? ` +${parcelas[0].dias}d` : ""}`
+      : `${parcelas.length} parcelas`;
 
   return (
-    <div className="space-y-3">
-      {grupos.map((grupo, gi) => {
-        const etapasDoGrupo = etapas.filter(e => e.ordem_grupo === grupo);
-        const isParalelo    = etapasDoGrupo.length > 1;
-        const maxPrazo      = Math.max(...etapasDoGrupo.map(e => e.dias_prazo));
-        const ci            = gi % GRUPO_BORDER_COLORS.length;
-        return (
-          <div key={grupo}>
-            {gi > 0 && (
-              <div className="flex items-center gap-2 mb-2">
-                <div className="flex-1 h-px bg-[#28071C]/10" />
-                <span className="text-[10px] text-[#28071C]/30 font-medium">depois</span>
-                <div className="flex-1 h-px bg-[#28071C]/10" />
-              </div>
+    <div className="bg-white rounded-2xl border border-[#28071C]/8 overflow-hidden">
+      {/* Header row */}
+      <div className="flex items-center gap-4 px-5 py-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sm text-[#28071C] truncate">{forn.nome}</span>
+            {!complete && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-semibold cursor-help"
+                title={`Pendente: ${missing.join(", ")}`}
+              >
+                <Clock className="w-2.5 h-2.5" />
+                Pendente
+              </span>
             )}
-            {isParalelo && (
-              <div className="text-[10px] font-bold text-[#28071C]/40 uppercase tracking-wide mb-1.5 flex items-center gap-1">
-                <span className="text-blue-400">∥</span> Paralelas — prazo: {maxPrazo}d
-              </div>
+            {forn.codigo_erp && (
+              <span className="text-[10px] font-mono bg-[#F2F2F2] text-[#28071C]/50 px-1.5 py-0.5 rounded">
+                {forn.codigo_erp}
+              </span>
             )}
-            <div className={`flex gap-2 ${isParalelo ? "flex-row" : "flex-col"}`}>
-              {etapasDoGrupo.map(etapa => (
-                <div key={etapa.id}
-                  className={`flex-1 px-4 py-3 rounded-xl border-l-4 ${GRUPO_BG_COLORS[ci]} ${GRUPO_BORDER_COLORS[ci]} border border-[#28071C]/8`}>
-                  <div className="font-semibold text-[#28071C] text-sm">{etapa.faccao_nome}</div>
-                  {etapa.nome_etapa && <div className="text-xs text-[#28071C]/50">{etapa.nome_etapa}</div>}
-                  <div className="text-xs font-bold text-[#28071C]/60 mt-1">{etapa.dias_prazo}d</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-      <div className="flex items-center justify-end pt-1">
-        <span className="text-xs font-bold text-[#7598CF] bg-[#7598CF]/10 px-3 py-1 rounded-full">
-          Prazo total: {calcPrazoTotal(etapas)}d
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MODAL: ENTRADA DA MATRIZ — multi-categoria + peso_participacao
-// ══════════════════════════════════════════════════════════════════════════════
-
-function MatrizEntradaModal({
-  initial, hierarquia, fornecedores, condicoes, onSave, onClose, onQuickAdd,
-}: {
-  initial?: MatrizEntry;
-  hierarquia: HierItem[];
-  fornecedores: Fornecedor[];
-  condicoes: CondicaoPagamento[];
-  onSave: (
-    values: Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "updated_at" | "fornecedor" | "condicao">,
-    extraCategorias?: HierItem[]
-  ) => Promise<void>;
-  onClose: () => void;
-  onQuickAdd: (nome: string) => Promise<string>;
-}) {
-  const isEdit = !!initial;
-
-  // Parse observacoes JSON (backwards-compat: may be plain text)
-  const _parsed: Record<string, unknown> = (() => {
-    const raw = initial?.observacoes;
-    if (!raw) return {};
-    try { const p = JSON.parse(raw); return (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>; }
-    catch { return { obs: raw }; }
-  })();
-
-  // ── Picker de nova categoria ──────────────────────────────────────────────
-  const [pickDiv,  setPickDiv]  = useState("");
-  const [pickCat,  setPickCat]  = useState("");
-  const [pickSub,  setPickSub]  = useState("");
-  const [selectedCats, setSelectedCats] = useState<HierItem[]>(
-    isEdit ? [{ divisao: initial.divisao, categoria: initial.categoria, subcategoria: initial.subcategoria }] : []
-  );
-
-  // ── Campos principais ─────────────────────────────────────────────────────
-  const [fornId,    setFornId]    = useState(initial?.fornecedor_id ?? "");
-  const [tipo,      setTipo]      = useState<TipoFornecimento>(initial?.tipo_fornecimento ?? "white_label");
-  const [diasProd,  setDiasProd]  = useState(String(initial?.dias_producao  ?? "30"));
-  const [diasTrans, setDiasTrans] = useState(String(initial?.dias_transito  ?? "0"));
-  const [condId,    setCondId]    = useState(initial?.condicao_pagamento_id ?? "");
-  const [peso,      setPeso]      = useState(String(initial?.peso_participacao ?? "100"));
-  const [moeda,     setMoeda]     = useState(initial?.moeda ?? "BRL");
-  const [obs,       setObs]       = useState((_parsed.obs as string) ?? "");
-  const [saving,    setSaving]    = useState(false);
-
-  // ── Matéria Prima (produção própria) ──────────────────────────────────────
-  const [mpOrigem, setMpOrigem] = useState<"nacional" | "internacional">(
-    (_parsed.mp_origem as "nacional" | "internacional") ?? "nacional"
-  );
-  const [mpPct,  setMpPct]  = useState(String(_parsed.mp_pct  ?? "60"));
-  const [mpLead, setMpLead] = useState(String(_parsed.mp_lead ?? "45"));
-  const _mpPagRaw = (_parsed.mp_pag as { g: string; pct: number; d: number }[] | undefined) ?? [];
-  const [mpPag, setMpPag] = useState([
-    { g: "PEDIDO"      as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "PEDIDO")?.pct      ?? "30"),  d: String(_mpPagRaw.find(p => p.g === "PEDIDO")?.d      ?? "0")  },
-    { g: "FATURAMENTO" as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "FATURAMENTO")?.pct ?? "70"),  d: String(_mpPagRaw.find(p => p.g === "FATURAMENTO")?.d ?? "30") },
-    { g: "ENTREGA"     as TipoGatilho, pct: String(_mpPagRaw.find(p => p.g === "ENTREGA")?.pct     ?? "0"),   d: String(_mpPagRaw.find(p => p.g === "ENTREGA")?.d     ?? "0")  },
-  ]);
-
-  // ── Prestadores de Serviços (produção própria) ────────────────────────────
-  let _pk = 0;
-  const newPK = () => `p${++_pk}`;
-  const [prestadores, setPrestadores] = useState<PrestRow[]>(() => {
-    const raw = _parsed.prest as { e: string; p: string; lt: number; c: string }[] | undefined;
-    if (!raw || raw.length === 0) return [];
-    return raw.map(r => ({ _key: newPK(), etapa: r.e ?? "", prestador: r.p ?? "", leadTime: String(r.lt ?? 0), condicaoId: r.c ?? "" }));
-  });
-
-  const leadTotal = (Number(diasProd) || 0) + (Number(diasTrans) || 0);
-  const isProducaoPropria = tipo === "producao_propria";
-
-  // Derived pickers
-  const divisoes   = [...new Set(hierarquia.map(h => h.divisao))];
-  const categorias = [...new Set(hierarquia.filter(h => !pickDiv || h.divisao === pickDiv).map(h => h.categoria))];
-  const subcats    = [...new Set(hierarquia.filter(h => h.categoria === pickCat).map(h => h.subcategoria).filter(Boolean) as string[])];
-
-  function addCategoria() {
-    if (!pickDiv || !pickCat) return;
-    const item: HierItem = { divisao: pickDiv, categoria: pickCat, subcategoria: pickSub || null };
-    if (!selectedCats.some(c => c.divisao === item.divisao && c.categoria === item.categoria && c.subcategoria === item.subcategoria)) {
-      setSelectedCats(prev => [...prev, item]);
-    }
-    setPickDiv(""); setPickCat(""); setPickSub("");
-  }
-
-  function updateMpPag(idx: number, field: "pct" | "d", val: string) {
-    setMpPag(prev => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r));
-  }
-
-  function addPrestador() {
-    setPrestadores(prev => [...prev, { _key: newPK(), etapa: "", prestador: "", leadTime: "", condicaoId: "" }]);
-  }
-
-  function updatePrest(key: string, field: keyof PrestRow, val: string) {
-    setPrestadores(prev => prev.map(p => p._key === key ? { ...p, [field]: val } : p));
-  }
-
-  function removePrest(key: string) {
-    setPrestadores(prev => prev.filter(p => p._key !== key));
-  }
-
-  async function submit() {
-    if (selectedCats.length === 0 && !isEdit) { alert("Selecione ao menos uma categoria."); return; }
-    setSaving(true);
-
-    // Build observacoes JSON
-    const obsData: Record<string, unknown> = {};
-    if (obs.trim()) obsData.obs = obs.trim();
-    if (isProducaoPropria) {
-      obsData.mp_origem = mpOrigem;
-      obsData.mp_pct    = Number(mpPct)  || 0;
-      obsData.mp_lead   = Number(mpLead) || 0;
-      const pagAtivas = mpPag.filter(p => Number(p.pct) > 0);
-      if (pagAtivas.length > 0) obsData.mp_pag = pagAtivas.map(p => ({ g: p.g, pct: Number(p.pct), d: Number(p.d) }));
-      const prestAtivos = prestadores.filter(p => p.etapa || p.prestador);
-      if (prestAtivos.length > 0) obsData.prest = prestAtivos.map(p => ({ e: p.etapa, p: p.prestador, lt: Number(p.leadTime) || 0, c: p.condicaoId }));
-    }
-
-    const baseValues: Omit<MatrizEntry, "id" | "tenant_id" | "lead_time_total" | "created_at" | "updated_at" | "fornecedor" | "condicao"> = {
-      hierarquia_id:         null,
-      divisao:               selectedCats[0]?.divisao       ?? initial?.divisao       ?? "",
-      categoria:             selectedCats[0]?.categoria     ?? initial?.categoria     ?? "",
-      subcategoria:          selectedCats[0]?.subcategoria  ?? initial?.subcategoria  ?? null,
-      fornecedor_id:         fornId || null,
-      tipo_fornecimento:     tipo,
-      dias_producao:         Number(diasProd)  || 0,
-      dias_transito:         Number(diasTrans) || 0,
-      condicao_pagamento_id: condId || null,
-      peso_participacao:     Number(peso) || 100,
-      moeda,
-      observacoes:           Object.keys(obsData).length > 0 ? JSON.stringify(obsData) : null,
-      ativo:                 true,
-    };
-    await onSave(baseValues, isEdit ? undefined : selectedCats);
-    setSaving(false);
-  }
-
-  const prestadoresNomes = [...new Set(fornecedores.map(f => f.nome))];
-
-  return (
-    <Modal title={isEdit ? "Editar Fornecedor na Matriz" : "Adicionar Fornecedor"} onClose={onClose} wide>
-      <div className="space-y-5">
-
-        {/* ── Categorias ──────────────────────────────────────────────────── */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">
-            {isEdit ? "Categoria" : "Categorias atendidas"}
-          </p>
-          {!isEdit && (
-            <div className="flex gap-2 mb-3">
-              <div className="flex-1">
-                <SelectField value={pickDiv}
-                  onChange={v => { setPickDiv(v); setPickCat(""); setPickSub(""); }}
-                  options={divisoes.map(d => ({ value: d, label: d }))}
-                  placeholder="Divisão" />
-              </div>
-              <div className="flex-1">
-                <SelectField value={pickCat}
-                  onChange={v => { setPickCat(v); setPickSub(""); }}
-                  options={categorias.map(c => ({ value: c, label: c }))}
-                  placeholder="Categoria" />
-              </div>
-              {subcats.length > 0 && (
-                <div className="flex-1">
-                  <SelectField value={pickSub} onChange={setPickSub}
-                    options={subcats.map(s => ({ value: s, label: s }))}
-                    placeholder="Subcategoria" allowEmpty="Todas" />
-                </div>
-              )}
-              <button type="button" onClick={addCategoria}
-                disabled={!pickDiv || !pickCat}
-                className="flex items-center gap-1 px-3 py-2 bg-[#7598CF] text-white rounded-xl text-xs font-semibold disabled:opacity-40 hover:opacity-90 transition-opacity shrink-0">
-                <Plus className="w-3.5 h-3.5" /> Add
-              </button>
-            </div>
-          )}
-          {selectedCats.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {selectedCats.map((c, i) => (
-                <span key={i} className="flex items-center gap-1.5 bg-[#7598CF]/10 text-[#7598CF] text-xs font-semibold px-3 py-1.5 rounded-full">
-                  {c.categoria}{c.subcategoria ? ` › ${c.subcategoria}` : ""}
-                  <span className="text-[#28071C]/30 text-[10px] ml-0.5">{c.divisao}</span>
-                  {!isEdit && (
-                    <button type="button" onClick={() => setSelectedCats(prev => prev.filter((_, j) => j !== i))}
-                      className="ml-0.5 text-[#7598CF]/60 hover:text-[#7598CF]">
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-[#28071C]/35 italic">Nenhuma categoria selecionada</p>
-          )}
-        </div>
-
-        {/* ── Fornecedor e peso ────────────────────────────────────────────── */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Fornecedor</p>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2">
-              <FornecedorCombobox
-                value={fornId}
-                onChange={setFornId}
-                fornecedores={fornecedores}
-                onQuickAdd={onQuickAdd}
-              />
-            </div>
-            <Field label="Peso/participação (%)">
-              <input type="number" min={0} max={100} step={1} value={peso}
-                onChange={e => setPeso(e.target.value)}
-                className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
-                placeholder="100" />
-            </Field>
-          </div>
-        </div>
-
-        {/* ── Tipo de fornecimento ─────────────────────────────────────────── */}
-        <Field label="Tipo de fornecimento">
-          <SelectField value={tipo} onChange={v => setTipo(v as TipoFornecimento)}
-            options={Object.entries(TIPO_FORNECIMENTO_LABELS).map(([k, l]) => ({ value: k, label: l }))} />
-        </Field>
-
-        {/* ── PRODUÇÃO PRÓPRIA: Matéria Prima ──────────────────────────────── */}
-        {isProducaoPropria && (
-          <>
-            <div className="bg-[#F6F3AA]/30 border border-[#F6F3AA] rounded-2xl p-4 space-y-4">
-              <p className="text-xs font-bold text-[#28071C]/70 uppercase tracking-wide">Matéria Prima</p>
-
-              {/* Origem */}
-              <div>
-                <label className="block text-xs font-semibold text-[#28071C]/60 mb-2 uppercase tracking-wide">Origem</label>
-                <div className="flex gap-2">
-                  {(["nacional", "internacional"] as const).map(opt => (
-                    <button key={opt} type="button" onClick={() => setMpOrigem(opt)}
-                      className={`flex-1 py-2 rounded-xl text-sm font-semibold border-2 transition-all ${
-                        mpOrigem === opt
-                          ? "bg-[#28071C] text-white border-[#28071C]"
-                          : "bg-white text-[#28071C]/60 border-[#28071C]/15 hover:border-[#28071C]/30"
-                      }`}>
-                      {opt === "nacional" ? "Nacional" : "Internacional"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* % custo + Lead time */}
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="% médio do custo destinado à MP">
-                  <div className="relative">
-                    <input type="number" min={0} max={100} step={1} value={mpPct}
-                      onChange={e => setMpPct(e.target.value)}
-                      className="w-full px-3 py-2 pr-8 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
-                      placeholder="60" />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40 font-medium">%</span>
-                  </div>
-                </Field>
-                <div>
-                  <label className="block text-xs font-semibold text-[#28071C]/60 mb-1.5 uppercase tracking-wide">
-                    Lead time de entrega da MP (dias)
-                  </label>
-                  <input type="number" min={0} value={mpLead}
-                    onChange={e => setMpLead(e.target.value)}
-                    className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
-                    placeholder="45" />
-                  <p className="text-[10px] text-[#28071C]/40 mt-1 leading-tight">
-                    Prazo de chegada no estoque desde o envio do pedido ao fornecedor
-                  </p>
-                </div>
-              </div>
-
-              {/* Forma de pagamento MP */}
-              <div>
-                <label className="block text-xs font-semibold text-[#28071C]/60 mb-2 uppercase tracking-wide">Forma de pagamento</label>
-                <div className="space-y-2">
-                  {mpPag.map((row, i) => (
-                    <div key={row.g} className="flex items-center gap-2">
-                      <span className={`text-xs font-bold px-2 py-1 rounded-lg w-[100px] text-center shrink-0 ${GATILHO_COLORS[row.g]}`}>
-                        {TIPO_GATILHO_LABELS[row.g]}
-                      </span>
-                      <div className="relative flex-1">
-                        <input type="number" min={0} max={100} step={1} value={row.pct}
-                          onChange={e => updateMpPag(i, "pct", e.target.value)}
-                          className="w-full px-3 py-1.5 pr-6 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
-                          placeholder="0" />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40">%</span>
-                      </div>
-                      <span className="text-xs text-[#28071C]/30">+</span>
-                      <div className="relative flex-1">
-                        <input type="number" min={0} step={1} value={row.d}
-                          onChange={e => updateMpPag(i, "d", e.target.value)}
-                          className="w-full px-3 py-1.5 pr-7 border border-[#28071C]/15 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
-                          placeholder="0" />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[#28071C]/40">d</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Alert agrupamento */}
-              <div className={`flex items-start gap-2 p-3 rounded-xl text-xs leading-relaxed ${
-                mpOrigem === "internacional"
-                  ? "bg-[#7598CF]/10 text-[#7598CF]"
-                  : "bg-emerald-50 text-emerald-700"
-              }`}>
-                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <span>
-                  {mpOrigem === "internacional"
-                    ? "MP importada de todos os modelos e categorias será agrupada para compra antecipada com chegada na mesma data, garantindo mínimo de compra internacional que viabilize custo, frete e riscos de atraso."
-                    : "MP nacional de todos os modelos e categorias seguirá o mesmo modelo de compra agrupada, otimizando frete e condições comerciais."}
-                </span>
-              </div>
-            </div>
-
-            {/* ── Prestadores de Serviços ──────────────────────────────────── */}
-            <div className="bg-white border border-[#28071C]/10 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-bold text-[#28071C]/70 uppercase tracking-wide flex items-center gap-2">
-                  <Scissors className="w-3.5 h-3.5" />
-                  Prestadores de Serviços
-                </p>
-                <button type="button" onClick={addPrestador}
-                  className="flex items-center gap-1 text-xs text-[#7598CF] font-semibold hover:underline">
-                  <Plus className="w-3.5 h-3.5" /> Adicionar etapa
-                </button>
-              </div>
-
-              {prestadores.length === 0 ? (
-                <p className="text-xs text-[#28071C]/35 italic py-2 text-center">
-                  Nenhuma etapa cadastrada. Clique em "Adicionar etapa" para incluir.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-[1fr_1fr_72px_1fr_28px] gap-2 text-[10px] font-bold text-[#28071C]/40 uppercase tracking-wide px-1">
-                    <span>Etapa</span><span>Prestador</span><span>Lead (d)</span><span>Pagamento</span><span />
-                  </div>
-                  {prestadores.map(p => (
-                    <div key={p._key} className="grid grid-cols-[1fr_1fr_72px_1fr_28px] gap-2 items-center">
-                      <ComboboxFreetext
-                        value={p.etapa}
-                        onChange={v => updatePrest(p._key, "etapa", v)}
-                        suggestions={ETAPAS_SUGERIDAS}
-                        placeholder="Ex: Corte"
-                      />
-                      <ComboboxFreetext
-                        value={p.prestador}
-                        onChange={v => updatePrest(p._key, "prestador", v)}
-                        suggestions={prestadoresNomes}
-                        placeholder="Nome / empresa"
-                      />
-                      <div className="relative">
-                        <input type="number" min={0} value={p.leadTime}
-                          onChange={e => updatePrest(p._key, "leadTime", e.target.value)}
-                          className="w-full px-2 py-1.5 pr-5 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
-                          placeholder="0" />
-                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-[#28071C]/40">d</span>
-                      </div>
-                      <div className="relative">
-                        <select value={p.condicaoId}
-                          onChange={e => updatePrest(p._key, "condicaoId", e.target.value)}
-                          className="w-full pl-2 pr-6 py-1.5 border border-[#28071C]/10 rounded-lg text-xs text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40 appearance-none cursor-pointer">
-                          <option value="">—</option>
-                          {condicoes.map(c => <option key={c.id} value={c.id}>{c.descricao}</option>)}
-                        </select>
-                        <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#28071C]/30 pointer-events-none" />
-                      </div>
-                      <button type="button" onClick={() => removePrest(p._key)}
-                        className="p-1 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                  <p className="text-[10px] text-[#28071C]/35 italic px-1">
-                    Lead time: tempo de entrega da etapa concluída até envio para início da próxima etapa.
-                  </p>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* ── Lead time ─────────────────────────────────────────────────────── */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Lead Time</p>
-          <div className="grid grid-cols-3 gap-3 items-end">
-            <Field label="Produção (dias)">
-              <input type="number" min={0} value={diasProd} onChange={e => setDiasProd(e.target.value)}
-                className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-            </Field>
-            <Field label="Entrega / trânsito (dias)">
-              <input type="number" min={0} value={diasTrans} onChange={e => setDiasTrans(e.target.value)}
-                className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-            </Field>
-            <div>
-              <div className="bg-[#7598CF]/10 rounded-xl px-4 py-2.5 text-center">
-                <div className="text-[10px] text-[#7598CF]/70 uppercase tracking-wide font-bold">Total</div>
-                <div className="text-[#7598CF] font-bold text-lg">{leadTotal}d</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Condição e moeda ──────────────────────────────────────────────── */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Condição de Pagamento</p>
-          <div className="grid grid-cols-2 gap-3">
-            <SelectField value={condId} onChange={setCondId}
-              options={condicoes.map(c => ({ value: c.id, label: c.descricao }))}
-              allowEmpty="Não definida" />
-            <SelectField value={moeda} onChange={setMoeda}
-              options={MOEDAS.map(m => ({ value: m, label: m }))} />
-          </div>
-        </div>
-
-        <Field label="Observações">
-          <textarea value={obs} onChange={e => setObs(e.target.value)} rows={2}
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] resize-none" />
-        </Field>
-      </div>
-      <ModalFooter onClose={onClose} onSave={submit} saving={saving} />
-    </Modal>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MODAL: MODELO PRODUÇÃO / FACÇÃO (com DnD de etapas)
-// ══════════════════════════════════════════════════════════════════════════════
-
-let _stageKey = 0;
-const newKey = () => `s${++_stageKey}`;
-
-function ProducaoModal({
-  initial, hierarquia, condicoes, etapasIniciais, onSave, onClose,
-}: {
-  initial?: ProducaoModelo;
-  hierarquia: HierItem[];
-  condicoes: CondicaoPagamento[];
-  etapasIniciais: ProducaoEtapa[];
-  onSave: (
-    values: Omit<ProducaoModelo, "id" | "tenant_id" | "created_at" | "updated_at">,
-    etapas: Omit<ProducaoEtapa, "id" | "modelo_id" | "tenant_id" | "created_at">[],
-    existingId?: string
-  ) => Promise<void>;
-  onClose: () => void;
-}) {
-  // ── Cabeçalho ─────────────────────────────────────────────────────────────
-  const [divisao,      setDivisao]      = useState(initial?.divisao       ?? "");
-  const [categoria,    setCategoria]    = useState(initial?.categoria     ?? "");
-  const [subcategoria, setSubcategoria] = useState(initial?.subcategoria  ?? "");
-  const [nomeModelo,   setNomeModelo]   = useState(initial?.nome_modelo   ?? "Modelo Produção 1");
-  const [pctMP,        setPctMP]        = useState(String(initial?.pct_materia_prima ?? "0"));
-  const [condMpId,     setCondMpId]     = useState(initial?.condicao_mp_id ?? "");
-  const [mesCorteBool, setMesCorteBool] = useState(!!initial?.mes_corte);
-  const [mesCorte,     setMesCorte]     = useState(initial?.mes_corte     ?? "Janeiro");
-  const [obsModelo,    setObsModelo]    = useState(initial?.observacoes   ?? "");
-
-  // ── Etapas ────────────────────────────────────────────────────────────────
-  const [stages, setStages] = useState<StageForm[]>(() =>
-    etapasIniciais.length > 0
-      ? etapasIniciais.map(e => ({
-          _key: newKey(),
-          id:   e.id,
-          ordem_grupo:         e.ordem_grupo,
-          nome_etapa:          e.nome_etapa ?? "",
-          faccao_nome:         e.faccao_nome,
-          dias_prazo:          e.dias_prazo,
-          condicao_pagamento_id: e.condicao_pagamento_id ?? "",
-          observacoes:         e.observacoes ?? "",
-        }))
-      : [{ _key: newKey(), ordem_grupo: 1, nome_etapa: "", faccao_nome: "", dias_prazo: 30, condicao_pagamento_id: "", observacoes: "" }]
-  );
-
-  const [dragIdx,    setDragIdx]    = useState<number | null>(null);
-  const [dropTarget, setDropTarget] = useState<number | null>(null);
-  const [saving,     setSaving]     = useState(false);
-
-  const prazoTotal = calcPrazoTotal(stages.map(s => ({ ordem_grupo: s.ordem_grupo, dias_prazo: s.dias_prazo })));
-
-  // Derived
-  const divisoes   = [...new Set(hierarquia.map(h => h.divisao))];
-  const categorias = [...new Set(hierarquia.filter(h => !divisao || h.divisao === divisao).map(h => h.categoria))];
-  const subcats    = [...new Set(
-    hierarquia.filter(h => h.categoria === categoria).map(h => h.subcategoria).filter(Boolean) as string[]
-  )];
-
-  // ── DnD Handlers ──────────────────────────────────────────────────────────
-  function handleDragStart(e: React.DragEvent, idx: number) {
-    setDragIdx(idx);
-    e.dataTransfer.effectAllowed = "move";
-  }
-
-  function handleDragOver(e: React.DragEvent, idx: number) {
-    e.preventDefault();
-    setDropTarget(idx);
-  }
-
-  function handleDrop(e: React.DragEvent, dropIdx: number) {
-    e.preventDefault();
-    if (dragIdx === null || dragIdx === dropIdx) {
-      setDragIdx(null); setDropTarget(null); return;
-    }
-    const next    = [...stages];
-    const dragged = { ...next[dragIdx] };
-    const target  = next[dropIdx];
-
-    // Dropa sobre etapa de outro grupo → une (paralelo)
-    if (dragged.ordem_grupo !== target.ordem_grupo) {
-      dragged.ordem_grupo = target.ordem_grupo;
-    }
-    next.splice(dragIdx, 1);
-    const at = dragIdx < dropIdx ? dropIdx - 1 : dropIdx;
-    next.splice(at, 0, dragged);
-    setStages(next);
-    setDragIdx(null); setDropTarget(null);
-  }
-
-  function handleDragEnd() { setDragIdx(null); setDropTarget(null); }
-
-  // ── Mutations ─────────────────────────────────────────────────────────────
-  function addStage() {
-    const maxG = stages.length > 0 ? Math.max(...stages.map(s => s.ordem_grupo)) : 0;
-    setStages(prev => [...prev, {
-      _key: newKey(), ordem_grupo: maxG + 1,
-      nome_etapa: "", faccao_nome: "", dias_prazo: 30, condicao_pagamento_id: "", observacoes: "",
-    }]);
-  }
-
-  function removeStage(idx: number) {
-    setStages(prev => renormGrupos(prev.filter((_, i) => i !== idx)));
-  }
-
-  function splitStage(idx: number) {
-    setStages(prev => {
-      const next = [...prev];
-      const maxG = Math.max(...next.map(s => s.ordem_grupo));
-      next[idx]  = { ...next[idx], ordem_grupo: maxG + 1 };
-      return renormGrupos(next);
-    });
-  }
-
-  function mergeWithPrev(idx: number) {
-    if (idx === 0) return;
-    setStages(prev => {
-      const next = [...prev];
-      next[idx]  = { ...next[idx], ordem_grupo: next[idx - 1].ordem_grupo };
-      return next;
-    });
-  }
-
-  function renormGrupos(arr: StageForm[]): StageForm[] {
-    const groups = [...new Set(arr.map(s => s.ordem_grupo))].sort((a, b) => a - b);
-    const map    = new Map(groups.map((g, i) => [g, i + 1]));
-    return arr.map(s => ({ ...s, ordem_grupo: map.get(s.ordem_grupo) ?? s.ordem_grupo }));
-  }
-
-  function updateStage(idx: number, patch: Partial<StageForm>) {
-    setStages(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s));
-  }
-
-  // ── Submit ────────────────────────────────────────────────────────────────
-  async function submit() {
-    if (!divisao || !categoria) { alert("Selecione divisão e categoria."); return; }
-    if (!nomeModelo.trim())     { alert("Informe o nome do modelo.");       return; }
-    if (stages.some(s => !s.faccao_nome.trim())) {
-      alert("Todas as etapas precisam ter o nome da facção."); return;
-    }
-    setSaving(true);
-    const modeloValues: Omit<ProducaoModelo, "id" | "tenant_id" | "created_at" | "updated_at"> = {
-      divisao,
-      categoria,
-      subcategoria:     subcategoria || null,
-      nome_modelo:      nomeModelo.trim(),
-      pct_materia_prima: Number(pctMP) || 0,
-      condicao_mp_id:   (mesCorteBool && condMpId) ? condMpId : null,
-      mes_corte:        mesCorteBool ? mesCorte : null,
-      observacoes:      obsModelo || null,
-      ativo:            true,
-    };
-    const etapasValues = stages.map(s => ({
-      ordem_grupo:          s.ordem_grupo,
-      nome_etapa:           s.nome_etapa || null,
-      faccao_nome:          s.faccao_nome.trim(),
-      dias_prazo:           s.dias_prazo,
-      condicao_pagamento_id: s.condicao_pagamento_id || null,
-      observacoes:          s.observacoes || null,
-    }));
-    await onSave(modeloValues, etapasValues, initial?.id);
-    setSaving(false);
-  }
-
-  // ── Render ────────────────────────────────────────────────────────────────
-  return (
-    <Modal title={initial ? "Editar Modelo de Produção" : "Novo Modelo de Produção"} onClose={onClose} wide>
-      <div className="space-y-6">
-
-        {/* Identificação */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Identificação</p>
-          <div className="grid grid-cols-3 gap-3 mb-3">
-            <SelectField value={divisao}
-              onChange={v => { setDivisao(v); setCategoria(""); setSubcategoria(""); }}
-              options={divisoes.map(d => ({ value: d, label: d }))} placeholder="Divisão *" />
-            <SelectField value={categoria}
-              onChange={v => { setCategoria(v); setSubcategoria(""); }}
-              options={categorias.map(c => ({ value: c, label: c }))} placeholder="Categoria *" />
-            <SelectField value={subcategoria} onChange={setSubcategoria}
-              options={subcats.map(s => ({ value: s, label: s }))}
-              placeholder="Subcategoria" allowEmpty="Todas" />
-          </div>
-          <Field label="Nome do modelo">
-            <input value={nomeModelo} onChange={e => setNomeModelo(e.target.value)}
-              placeholder="Ex: Modelo Produção 1"
-              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-          </Field>
-        </div>
-
-        {/* Matéria-prima */}
-        <div>
-          <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide mb-2">Matéria-Prima</p>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="% do custo que é matéria-prima">
-              <div className="flex items-center gap-2">
-                <input type="number" min={0} max={100} step={1} value={pctMP}
-                  onChange={e => setPctMP(e.target.value)}
-                  className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-                <span className="text-[#28071C]/40 text-sm font-medium">%</span>
-              </div>
-            </Field>
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer mb-2">
-                <input type="checkbox" checked={mesCorteBool} onChange={e => setMesCorteBool(e.target.checked)}
-                  className="accent-[#7598CF] w-4 h-4 cursor-pointer" />
-                <span className="text-xs font-semibold text-[#28071C]/70">Mês de corte fixo</span>
-              </label>
-              {mesCorteBool && (
-                <div className="space-y-2">
-                  <SelectField value={mesCorte} onChange={setMesCorte}
-                    options={MONTHS.map(m => ({ value: m, label: m }))} />
-                  <SelectField value={condMpId} onChange={setCondMpId}
-                    options={condicoes.map(c => ({ value: c.id, label: c.descricao }))}
-                    allowEmpty="Sem condição de MP" />
-                </div>
-              )}
-            </div>
-          </div>
-          {mesCorteBool && (
-            <div className="mt-2 flex items-start gap-2 bg-[#F6F3AA]/40 border border-[#F6F3AA] rounded-xl px-3 py-2">
-              <Info className="w-3.5 h-3.5 text-[#28071C]/50 flex-shrink-0 mt-0.5" />
-              <p className="text-xs text-[#28071C]/60">
-                MP importada paga à vista em mês fixo. A facção (mão de obra) segue prazos normais das etapas.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Etapas com DnD */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide">Etapas de Produção</p>
-            {stages.length > 0 && (
-              <span className="text-xs font-semibold text-[#7598CF] bg-[#7598CF]/10 px-3 py-1 rounded-full">
-                Prazo total: {prazoTotal}d
+            {forn.origem && (
+              <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium ${forn.origem === "nacional" ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"}`}>
+                {forn.origem === "nacional" ? <MapPin className="w-2.5 h-2.5" /> : <Globe className="w-2.5 h-2.5" />}
+                {forn.origem === "nacional" ? "Nacional" : "Internacional"}
               </span>
             )}
           </div>
-
-          <div className="flex items-start gap-2 bg-[#7598CF]/6 border border-[#7598CF]/20 rounded-xl px-3 py-2 mb-3">
-            <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-[#28071C]/60">
-              <strong>Arraste</strong> uma etapa sobre outra para torná-las paralelas (mesmo grupo).
-              Use <strong>✂ Separar</strong> para criar novo grupo sequencial.
-              Use <strong>↑ Juntar</strong> para agrupar com a etapa acima.
-            </p>
+          <div className="flex items-center gap-4 mt-1">
+            <span className="text-xs text-[#28071C]/50 flex items-center gap-1">
+              <Calendar className="w-3 h-3" />
+              {forn.prazo_entrega_dias}d de prazo
+            </span>
+            <span className="text-xs text-[#28071C]/50 flex items-center gap-1">
+              <CreditCard className="w-3 h-3" />
+              {pagLabel}
+            </span>
+            {cats.length > 0 && (
+              <span className="text-xs text-[#28071C]/50">
+                {cats.length} escopo{cats.length !== 1 ? "s" : ""}
+                {cats.reduce((s, c) => s + c.pct_custo_medio, 0) > 0 && (
+                  <> · ø {(cats.reduce((s, c) => s + c.pct_custo_medio, 0) / cats.length).toFixed(1)}% custo</>
+                )}
+              </span>
+            )}
+            {etapas.length > 0 && (
+              <span className="text-xs text-[#28071C]/50">
+                {etapas.length} etapa{etapas.length !== 1 ? "s" : ""}
+              </span>
+            )}
           </div>
-
-          <div className="space-y-1.5">
-            {stages.map((stage, idx) => {
-              const prevStage  = idx > 0 ? stages[idx - 1] : null;
-              const isNewGroup = !prevStage || prevStage.ordem_grupo !== stage.ordem_grupo;
-              const isParalelo = stages.filter(s => s.ordem_grupo === stage.ordem_grupo).length > 1;
-              const ci         = (stage.ordem_grupo - 1) % GRUPO_BORDER_COLORS.length;
-              const isDragging  = dragIdx === idx;
-              const isDropTgt   = dropTarget === idx && dragIdx !== null && dragIdx !== idx;
-
-              return (
-                <div key={stage._key}>
-                  {isNewGroup && idx > 0 && (
-                    <div className="flex items-center gap-2 my-2">
-                      <div className="flex-1 h-px bg-[#28071C]/10" />
-                      <span className="text-[10px] text-[#28071C]/30 font-medium">depois</span>
-                      <div className="flex-1 h-px bg-[#28071C]/10" />
-                    </div>
-                  )}
-                  {isParalelo && isNewGroup && (
-                    <div className="text-[10px] font-bold text-[#28071C]/40 mb-1 flex items-center gap-1">
-                      <span className="text-blue-400">∥</span> Paralelas
-                    </div>
-                  )}
-                  <div
-                    draggable
-                    onDragStart={e => handleDragStart(e, idx)}
-                    onDragOver={e  => handleDragOver(e, idx)}
-                    onDrop={e      => handleDrop(e, idx)}
-                    onDragEnd={handleDragEnd}
-                    className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border-l-4 border transition-all cursor-grab active:cursor-grabbing
-                      ${isDragging ? "opacity-40 scale-95" : ""}
-                      ${isDropTgt  ? "ring-2 ring-[#7598CF]/40 scale-[1.01]" : ""}
-                      ${GRUPO_BG_COLORS[ci]} ${GRUPO_BORDER_COLORS[ci]} border-[#28071C]/8`}
-                  >
-                    <GripVertical className="w-4 h-4 text-[#28071C]/25 flex-shrink-0" />
-                    <input value={stage.faccao_nome} onChange={e => updateStage(idx, { faccao_nome: e.target.value })}
-                      placeholder="Facção *"
-                      className="flex-1 min-w-0 px-2 py-1.5 bg-white/70 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40" />
-                    <input value={stage.nome_etapa} onChange={e => updateStage(idx, { nome_etapa: e.target.value })}
-                      placeholder="Nome etapa (opcional)"
-                      className="flex-1 min-w-0 px-2 py-1.5 bg-white/70 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40" />
-                    <div className="flex items-center gap-1 shrink-0">
-                      <input type="number" min={0} value={stage.dias_prazo}
-                        onChange={e => updateStage(idx, { dias_prazo: Number(e.target.value) })}
-                        className="w-16 px-2 py-1.5 bg-white/70 border border-[#28071C]/10 rounded-lg text-sm text-center text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40" />
-                      <span className="text-[#28071C]/40 text-xs">d</span>
-                    </div>
-                    <div className="shrink-0 w-36">
-                      <select value={stage.condicao_pagamento_id}
-                        onChange={e => updateStage(idx, { condicao_pagamento_id: e.target.value })}
-                        className="w-full px-2 py-1.5 bg-white/70 border border-[#28071C]/10 rounded-lg text-xs text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40 cursor-pointer">
-                        <option value="">Sem condição</option>
-                        {condicoes.map(c => <option key={c.id} value={c.id}>{c.descricao}</option>)}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-0.5 shrink-0">
-                      {idx > 0 && (
-                        <button type="button" onClick={() => mergeWithPrev(idx)}
-                          title="Juntar com etapa acima (paralela)"
-                          className="p-1.5 text-blue-400 hover:bg-blue-50 rounded-lg text-xs transition-colors font-bold">↑</button>
-                      )}
-                      <button type="button" onClick={() => splitStage(idx)}
-                        title="Separar em grupo sequencial"
-                        className="p-1.5 text-[#28071C]/30 hover:text-orange-500 hover:bg-orange-50 rounded-lg transition-colors">
-                        <Scissors className="w-3.5 h-3.5" />
-                      </button>
-                      <button type="button" onClick={() => removeStage(idx)}
-                        className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <button type="button" onClick={addStage}
-            className="mt-3 flex items-center gap-2 px-4 py-2 border-2 border-dashed border-[#28071C]/15 text-[#28071C]/50 rounded-xl text-sm hover:border-[#7598CF]/40 hover:text-[#7598CF] transition-all w-full justify-center font-medium">
-            <Plus className="w-4 h-4" /> Adicionar etapa
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {(cats.length > 0 || etapas.length > 0) && (
+            <button
+              onClick={() => setExpanded(e => !e)}
+              className="p-1.5 rounded-lg text-[#28071C]/30 hover:text-[#28071C] hover:bg-[#F2F2F2] transition-colors"
+            >
+              <ChevronRight className={`w-4 h-4 transition-transform ${expanded ? "rotate-90" : ""}`} />
+            </button>
+          )}
+          <button onClick={onEdit}   className="p-1.5 rounded-lg text-[#28071C]/30 hover:text-[#7598CF] hover:bg-[#7598CF]/10 transition-colors">
+            <Edit2 className="w-4 h-4" />
+          </button>
+          <button onClick={onDelete} className="p-1.5 rounded-lg text-[#28071C]/30 hover:text-red-500 hover:bg-red-50 transition-colors">
+            <Trash2 className="w-4 h-4" />
           </button>
         </div>
-
-        <Field label="Observações do modelo">
-          <textarea value={obsModelo} onChange={e => setObsModelo(e.target.value)} rows={2}
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] resize-none" />
-        </Field>
       </div>
-      <ModalFooter onClose={onClose} onSave={submit} saving={saving} />
-    </Modal>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t border-[#28071C]/6 px-5 py-4 space-y-4">
+          {cats.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider mb-2">Escopo de Categorias</p>
+              <div className="space-y-1">
+                {cats.map((c, i) => (
+                  <div key={i} className="flex items-center gap-3 text-xs text-[#28071C]/70">
+                    <span className="font-medium">{[c.divisao, c.categoria, c.subcategoria].filter(Boolean).join(" › ") || "Todas as categorias"}</span>
+                    {c.pct_custo_medio > 0 && (
+                      <span className="text-[#7598CF] font-semibold">{c.pct_custo_medio}%</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {etapas.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider mb-2">Etapas de Serviço</p>
+              <div className="space-y-1">
+                {etapas.sort((a, b) => a.sequencia - b.sequencia).map((e, i) => (
+                  <div key={i} className="flex items-center gap-3 text-xs text-[#28071C]/70">
+                    <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold text-[10px] flex-shrink-0">
+                      {e.sequencia}
+                    </span>
+                    <span className="font-medium">{e.nome_etapa}</span>
+                    <span className="text-[#28071C]/40">{e.prazo_etapa_dias}d</span>
+                    <span className="text-[10px] bg-[#F2F2F2] px-1.5 py-0.5 rounded text-[#28071C]/50">
+                      {ENTREGA_LABELS[e.tipo_entrega]}
+                    </span>
+                    {(e.divisao || e.categoria) && (
+                      <span className="text-[#28071C]/40">{[e.divisao, e.categoria].filter(Boolean).join(" / ")}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// MODAL: FORNECEDOR (catálogo)
+// Modal de criação / edição
 // ══════════════════════════════════════════════════════════════════════════════
 
 function FornecedorModal({
-  initial, onSave, onClose,
+  initial, hier, tenantId, onSave, onClose,
 }: {
-  initial?: Fornecedor;
-  onSave: (v: Omit<Fornecedor, "id" | "tenant_id" | "created_at" | "updated_at">) => Promise<void>;
+  initial: SupplyFornecedor | null;
+  hier: HierDistinct;
+  tenantId: string;
+  onSave: (f: SupplyFornecedor) => void;
   onClose: () => void;
 }) {
-  const [codigoErp, setCodigoErp] = useState(initial?.codigo_erp ?? "");
-  const [nome,   setNome]   = useState(initial?.nome          ?? "");
-  const [tipo,   setTipo]   = useState<TipoFornecimento>(initial?.tipo ?? "white_label");
-  const [pais,   setPais]   = useState(initial?.pais_origem   ?? "");
-  const [moeda,  setMoeda]  = useState(initial?.moeda_padrao  ?? "BRL");
-  const [cNome,  setCNome]  = useState(initial?.contato_nome  ?? "");
-  const [cEmail, setCEmail] = useState(initial?.contato_email ?? "");
-  const [obs,    setObs]    = useState(initial?.observacoes   ?? "");
-  const [ativo,  setAtivo]  = useState(initial?.ativo         ?? true);
+  // ── Campos principais ──────────────────────────────────────────────────────
+  const [tipo,    setTipo]    = useState<TipoFornecedorV2>(initial?.tipo_fornecedor ?? "materia_prima");
+  const [nome,    setNome]    = useState(initial?.nome ?? "");
+  const [erpCode, setErpCode] = useState(initial?.codigo_erp ?? "");
+  const [origem,  setOrigem]  = useState<OrigemFornecedor>(initial?.origem ?? "nacional");
+  const [prazo,   setPrazo]   = useState(String(initial?.prazo_entrega_dias ?? "30"));
+  const [obs,     setObs]     = useState(initial?.observacoes ?? "");
+
+  // ── Parcelas de pagamento ──────────────────────────────────────────────────
+  interface ParcRow { _key: string; modalidade: PagamentoModalidade; pct: string; gatilho: PagamentoGatilho; dias: string }
+  const [parcRows, setParcRows] = useState<ParcRow[]>(() => {
+    const existing = initial?.pagamento_parcelas ?? [];
+    if (existing.length === 0) return [{ _key: uid(), modalidade: "avista", pct: "100", gatilho: "pedido", dias: "0" }];
+    return existing.map(p => ({ _key: uid(), modalidade: p.modalidade ?? "aprazo", pct: String(p.pct), gatilho: p.gatilho, dias: String(p.dias) }));
+  });
+
+  // ── Escopo de categorias ───────────────────────────────────────────────────
+  const [catRows, setCatRows] = useState<CatRow[]>(() => {
+    const cats = initial?.categorias ?? [];
+    if (cats.length === 0) return [{ _key: uid(), divisao: "", categoria: "", subcategoria: "", pct_custo_medio: "0" }];
+    return cats.map(c => ({
+      _key: uid(),
+      divisao: c.divisao ?? "",
+      categoria: c.categoria ?? "",
+      subcategoria: c.subcategoria ?? "",
+      pct_custo_medio: String(c.pct_custo_medio),
+    }));
+  });
+
+  // ── Etapas de serviço ──────────────────────────────────────────────────────
+  const [etapaRows, setEtapaRows] = useState<EtapaRow[]>(() => {
+    const etapas = initial?.etapas ?? [];
+    if (tipo !== "servico" && etapas.length === 0) return [newEtapa(1)];
+    return etapas.map(e => ({
+      _key: uid(),
+      sequencia: String(e.sequencia),
+      nome_etapa: e.nome_etapa,
+      prazo_etapa_dias: String(e.prazo_etapa_dias),
+      tipo_entrega: e.tipo_entrega,
+      divisao: e.divisao ?? "",
+      categoria: e.categoria ?? "",
+    }));
+  });
+
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  function gerarCodigoErp(): string {
-    return "FM-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+  function newEtapa(seq: number): EtapaRow {
+    return { _key: uid(), sequencia: String(seq), nome_etapa: "", prazo_etapa_dias: "15", tipo_entrega: "semi_acabado", divisao: "", categoria: "" };
   }
 
-  async function submit() {
-    if (!nome.trim()) return alert("Informe o nome do fornecedor.");
-    const codigo = codigoErp.trim() || gerarCodigoErp();
+  // ── Save ───────────────────────────────────────────────────────────────────
+
+  const handleSave = async () => {
+    if (!nome.trim()) { setError("Nome do fornecedor é obrigatório."); return; }
     setSaving(true);
-    await onSave({
-      codigo_erp:    codigo,
-      nome: nome.trim(), tipo,
-      pais_origem:   pais  || null,
-      moeda_padrao:  moeda,
-      contato_nome:  cNome  || null,
-      contato_email: cEmail || null,
-      observacoes:   obs    || null,
-      ativo,
-    });
-    setSaving(false);
-  }
-
-  return (
-    <Modal title={initial ? "Editar Fornecedor" : "Novo Fornecedor"} onClose={onClose}>
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Nome *">
-            <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Ex: Têxtil Sul S.A."
-              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-          </Field>
-          <Field label="Código ERP">
-            <input value={codigoErp} onChange={e => setCodigoErp(e.target.value)}
-              placeholder="Ex: FOR-001 (gerado automaticamente)"
-              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Tipo">
-            <SelectField value={tipo} onChange={v => setTipo(v as TipoFornecimento)}
-              options={Object.entries(TIPO_FORNECIMENTO_LABELS).map(([k, l]) => ({ value: k, label: l }))} />
-          </Field>
-          <Field label="Moeda padrão">
-            <SelectField value={moeda} onChange={setMoeda}
-              options={MOEDAS.map(m => ({ value: m, label: m }))} />
-          </Field>
-        </div>
-        <Field label="País de origem">
-          <input value={pais} onChange={e => setPais(e.target.value)} placeholder="Ex: Brasil, China, Itália"
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-        </Field>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Contato — nome">
-            <input value={cNome} onChange={e => setCNome(e.target.value)} placeholder="João Silva"
-              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-          </Field>
-          <Field label="Contato — e-mail">
-            <input value={cEmail} onChange={e => setCEmail(e.target.value)} placeholder="joao@fornecedor.com"
-              className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-          </Field>
-        </div>
-        <Field label="Observações">
-          <textarea value={obs} onChange={e => setObs(e.target.value)} rows={2}
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] resize-none" />
-        </Field>
-        {initial && (
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={ativo} onChange={e => setAtivo(e.target.checked)}
-              className="accent-[#28071C] w-4 h-4" />
-            <span className="text-sm text-[#28071C]">Fornecedor ativo</span>
-          </label>
-        )}
-      </div>
-      <ModalFooter onClose={onClose} onSave={submit} saving={saving} />
-    </Modal>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MODAL: CONDIÇÃO DE PAGAMENTO
-// ══════════════════════════════════════════════════════════════════════════════
-
-interface ParcelaForm { tipo_gatilho: TipoGatilho; percentual: string; dias_apos_gatilho: string; }
-
-function CondicaoModal({
-  initial, onSave, onClose,
-}: {
-  initial?: CondicaoPagamento;
-  onSave: (desc: string, parcelas: Omit<Parcela, "id" | "condicao_pagamento_id">[]) => Promise<void>;
-  onClose: () => void;
-}) {
-  const initParcelas: ParcelaForm[] = (initial?.parcelas ?? []).map(p => ({
-    tipo_gatilho:      p.tipo_gatilho,
-    percentual:        String(p.percentual),
-    dias_apos_gatilho: String(p.dias_apos_gatilho),
-  }));
-  const [desc,     setDesc]     = useState(initial?.descricao ?? "");
-  const [parcelas, setParcelas] = useState<ParcelaForm[]>(
-    initParcelas.length
-      ? initParcelas
-      : [{ tipo_gatilho: "PEDIDO", percentual: "100", dias_apos_gatilho: "0" }]
-  );
-  const [saving, setSaving] = useState(false);
-
-  const totalPct = parcelas.reduce((s, p) => s + (Number(p.percentual) || 0), 0);
-
-  function updateParcela(i: number, patch: Partial<ParcelaForm>) {
-    setParcelas(prev => prev.map((p, idx) => idx === i ? { ...p, ...patch } : p));
-  }
-
-  function addParcela() {
-    setParcelas(prev => [...prev, { tipo_gatilho: "FATURAMENTO", percentual: "0", dias_apos_gatilho: "30" }]);
-  }
-
-  async function submit() {
-    if (!desc.trim()) return alert("Informe a descrição da condição.");
-    if (Math.abs(totalPct - 100) > 0.01) {
-      return alert(`Soma dos percentuais deve ser 100%. Atual: ${totalPct.toFixed(2)}%`);
-    }
-    setSaving(true);
-    await onSave(
-      desc.trim(),
-      parcelas.map((p, i) => ({
-        parcela_numero:    i + 1,
-        tipo_gatilho:      p.tipo_gatilho,
-        percentual:        Number(p.percentual),
-        dias_apos_gatilho: Number(p.dias_apos_gatilho),
-      }))
-    );
-    setSaving(false);
-  }
-
-  return (
-    <Modal title={initial ? "Editar Condição" : "Nova Condição de Pagamento"} onClose={onClose}>
-      <div className="space-y-4">
-        <Field label="Descrição *">
-          <input value={desc} onChange={e => setDesc(e.target.value)}
-            placeholder="Ex: 30% pedido + 70% faturamento 30d"
-            className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]" />
-        </Field>
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-xs font-bold text-[#28071C]/60 uppercase tracking-wide">Parcelas</p>
-            <span className={`text-xs font-bold flex items-center gap-1 ${Math.abs(totalPct - 100) < 0.01 ? "text-emerald-600" : "text-orange-500"}`}>
-              {totalPct.toFixed(0)}% {Math.abs(totalPct - 100) < 0.01 && <Check className="w-3 h-3" />}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {parcelas.map((p, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <select value={p.tipo_gatilho}
-                  onChange={e => updateParcela(i, { tipo_gatilho: e.target.value as TipoGatilho })}
-                  className="px-2 py-1.5 border-2 border-[#7598CF]/30 rounded-lg text-xs text-[#28071C] focus:outline-none bg-white cursor-pointer">
-                  {(["PEDIDO","FATURAMENTO","ENTREGA"] as TipoGatilho[]).map(g => (
-                    <option key={g} value={g}>{TIPO_GATILHO_LABELS[g]}</option>
-                  ))}
-                </select>
-                <input type="number" min={0} max={100} value={p.percentual}
-                  onChange={e => updateParcela(i, { percentual: e.target.value })}
-                  className="w-16 px-2 py-1.5 border-2 border-[#7598CF]/30 rounded-lg text-xs text-center text-[#28071C] focus:outline-none" />
-                <span className="text-[#28071C]/40 text-xs">% +</span>
-                <input type="number" min={0} value={p.dias_apos_gatilho}
-                  onChange={e => updateParcela(i, { dias_apos_gatilho: e.target.value })}
-                  className="w-16 px-2 py-1.5 border-2 border-[#7598CF]/30 rounded-lg text-xs text-center text-[#28071C] focus:outline-none" />
-                <span className="text-[#28071C]/40 text-xs">d</span>
-                {parcelas.length > 1 && (
-                  <button type="button" onClick={() => setParcelas(prev => prev.filter((_, j) => j !== i))}
-                    className="p-1 text-red-400 hover:bg-red-50 rounded">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          <button type="button" onClick={addParcela}
-            className="mt-2 flex items-center gap-1 text-xs text-[#7598CF] hover:underline font-medium">
-            <Plus className="w-3.5 h-3.5" /> Adicionar parcela
-          </button>
-        </div>
-      </div>
-      <ModalFooter onClose={onClose} onSave={submit} saving={saving} />
-    </Modal>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Micro-componentes reutilizáveis
-// ══════════════════════════════════════════════════════════════════════════════
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="block text-xs font-semibold text-[#28071C]/60 mb-1.5 uppercase tracking-wide">{label}</label>
-      {children}
-    </div>
-  );
-}
-
-// ── FornecedorCombobox — busca + adicionar inline ─────────────────────────
-
-function FornecedorCombobox({
-  value, onChange, fornecedores, onQuickAdd,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-  fornecedores: Fornecedor[];
-  onQuickAdd: (nome: string) => Promise<string>;
-}) {
-  const [text,   setText]   = useState(() => fornecedores.find(f => f.id === value)?.nome ?? "");
-  const [open,   setOpen]   = useState(false);
-  const [adding, setAdding] = useState(false);
-
-  useEffect(() => {
-    const nome = fornecedores.find(f => f.id === value)?.nome;
-    if (nome) setText(nome);
-    else if (!value) setText("");
-  }, [value, fornecedores]);
-
-  const filtered   = text.trim() ? fornecedores.filter(f => f.nome.toLowerCase().includes(text.toLowerCase())) : fornecedores;
-  const exactMatch = fornecedores.some(f => f.nome.toLowerCase() === text.trim().toLowerCase());
-  const showAdd    = text.trim().length > 0 && !exactMatch;
-
-  async function handleAdd() {
-    if (!text.trim()) return;
-    setAdding(true);
+    setError("");
     try {
-      const newId = await onQuickAdd(text.trim());
-      onChange(newId);
-      setOpen(false);
-    } finally { setAdding(false); }
-  }
+      // Valida parcelas: soma deve ser 100%
+      const somaParc = parcRows.reduce((s, r) => s + (parseFloat(r.pct) || 0), 0);
+      if (Math.abs(somaParc - 100) > 0.5) {
+        setError(`A soma dos percentuais deve ser 100%. Atual: ${somaParc.toFixed(1)}%`);
+        setSaving(false);
+        return;
+      }
+
+      const pagamentoParcelas: PagamentoParcela[] = parcRows.map(r => ({
+        modalidade: r.modalidade,
+        pct: parseFloat(r.pct) || 0,
+        gatilho: r.gatilho,
+        dias: parseInt(r.dias) || 0,
+      }));
+
+      const payload = {
+        nome: nome.trim(),
+        codigo_erp: erpCode.trim() || null,
+        tipo_fornecedor: tipo,
+        origem: tipo === "materia_prima" ? origem : null,
+        prazo_entrega_dias: parseInt(prazo) || 30,
+        pagamento_parcelas: pagamentoParcelas,
+        observacoes: obs.trim() || null,
+        ativo: true,
+      };
+
+      let saved: SupplyFornecedor;
+      if (initial?.id) {
+        saved = await updateSupplyFornecedor(initial.id, payload);
+      } else {
+        saved = await insertSupplyFornecedor(tenantId, payload);
+      }
+
+      // Salva categorias (filtra linhas vazias)
+      const validCats = catRows.filter(r => r.divisao || r.categoria || Number(r.pct_custo_medio) > 0);
+      const catData = await replaceSupplyCategorias(
+        tenantId, saved.id,
+        validCats.map(r => ({
+          divisao: r.divisao || null,
+          categoria: r.categoria || null,
+          subcategoria: r.subcategoria || null,
+          pct_custo_medio: parseFloat(r.pct_custo_medio) || 0,
+        }))
+      );
+
+      // Salva etapas (somente para tipo=serviço)
+      let etapasData: SupplyEtapa[] = [];
+      if (tipo === "servico") {
+        const validEtapas = etapaRows.filter(r => r.nome_etapa.trim());
+        etapasData = await replaceSupplyEtapas(
+          tenantId, saved.id,
+          validEtapas.map(r => ({
+            sequencia: parseInt(r.sequencia) || 1,
+            nome_etapa: r.nome_etapa.trim(),
+            prazo_etapa_dias: parseInt(r.prazo_etapa_dias) || 15,
+            tipo_entrega: r.tipo_entrega,
+            divisao: r.divisao || null,
+            categoria: r.categoria || null,
+          }))
+        );
+      }
+
+      onSave({ ...saved, categorias: catData, etapas: etapasData });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Erro ao salvar.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="relative">
-      <input
-        value={text}
-        onChange={e => { setText(e.target.value); if (value) onChange(""); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 160)}
-        placeholder="Buscar ou adicionar fornecedor…"
-        className="w-full px-3 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
-      />
-      {open && (filtered.length > 0 || showAdd) && (
-        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-white border border-[#28071C]/10 rounded-xl shadow-xl max-h-52 overflow-y-auto">
-          {filtered.length === 0 && !showAdd && (
-            <p className="px-3 py-2 text-xs text-[#28071C]/40 italic">Nenhum resultado</p>
-          )}
-          {filtered.map(f => (
-            <button key={f.id} type="button"
-              onMouseDown={() => { onChange(f.id); setText(f.nome); setOpen(false); }}
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-[#7598CF]/8 transition-colors flex items-center gap-2 ${f.id === value ? "bg-[#7598CF]/8 font-semibold text-[#7598CF]" : "text-[#28071C]"}`}>
-              <span className="flex-1 truncate">{f.nome}</span>
-              {f.codigo_erp && <span className="text-[10px] text-[#28071C]/30 font-mono shrink-0">{f.codigo_erp}</span>}
-            </button>
-          ))}
-          {showAdd && (
-            <button type="button" onMouseDown={handleAdd} disabled={adding}
-              className="w-full text-left px-3 py-2 text-sm text-[#7598CF] font-semibold hover:bg-[#7598CF]/8 border-t border-[#28071C]/8 flex items-center gap-2 disabled:opacity-50">
-              {adding
-                ? <><div className="w-3.5 h-3.5 border-2 border-[#7598CF]/30 border-t-[#7598CF] rounded-full animate-spin shrink-0" /> Adicionando…</>
-                : <><Plus className="w-3.5 h-3.5 shrink-0" /> Adicionar "{text.trim()}"</>}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── ComboboxFreetext — sugestões + texto livre ────────────────────────────
-
-function ComboboxFreetext({
-  value, onChange, suggestions, placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  suggestions: string[];
-  placeholder?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const filtered = value.trim()
-    ? suggestions.filter(s => s.toLowerCase().includes(value.toLowerCase()) && s.toLowerCase() !== value.trim().toLowerCase())
-    : suggestions;
-
-  return (
-    <div className="relative">
-      <input
-        value={value}
-        onChange={e => { onChange(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 160)}
-        placeholder={placeholder}
-        className="w-full px-2 py-1.5 border border-[#28071C]/10 rounded-lg text-sm text-[#28071C] bg-white focus:outline-none focus:ring-1 focus:ring-[#7598CF]/40"
-      />
-      {open && filtered.length > 0 && (
-        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-white border border-[#28071C]/10 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-          {filtered.map(s => (
-            <button key={s} type="button"
-              onMouseDown={() => { onChange(s); setOpen(false); }}
-              className="w-full text-left px-3 py-1.5 text-xs text-[#28071C] hover:bg-[#7598CF]/8 transition-colors">
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SelectField({
-  value, onChange, options, placeholder, allowEmpty,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  placeholder?: string;
-  allowEmpty?: string;
-}) {
-  return (
-    <div className="relative">
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="w-full pl-3 pr-8 py-2 border-2 border-[#7598CF]/30 rounded-xl text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] appearance-none bg-white cursor-pointer">
-        {allowEmpty !== undefined
-          ? <option value="">{allowEmpty}</option>
-          : placeholder && <option value="">{placeholder}</option>
-        }
-        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#28071C]/40 pointer-events-none" />
-    </div>
-  );
-}
-
-function Modal({ title, children, onClose, wide = false }: {
-  title: string; children: React.ReactNode; onClose: () => void; wide?: boolean;
-}) {
-  return (
-    <div className="fixed inset-0 z-[9100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-3xl" : "max-w-md"} overflow-hidden flex flex-col max-h-[90vh]`}>
-        <div className="flex items-center justify-between px-6 py-4 bg-[#28071C] shrink-0">
-          <h2 className="text-white font-semibold">{title}</h2>
-          <button onClick={onClose} className="p-1.5 text-white/60 hover:text-white rounded-xl transition-colors">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#28071C]/8">
+          <h2 className="font-semibold text-sm text-[#28071C]">
+            {initial ? "Editar Fornecedor" : "Novo Fornecedor"}
+          </h2>
+          <button onClick={onClose} className="text-[#28071C]/30 hover:text-[#28071C] transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="px-6 py-5 overflow-y-auto flex-1">{children}</div>
+
+        {/* Scrollable body */}
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
+
+          {/* Tipo */}
+          <div>
+            <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-2">
+              Tipo de Fornecedor
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["materia_prima","servico","produto_acabado"] as TipoFornecedorV2[]).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTipo(t)}
+                  className={`flex flex-col items-center gap-2 px-3 py-3 rounded-xl border-2 text-xs font-medium transition-colors ${
+                    tipo === t
+                      ? "border-[#28071C] bg-[#28071C] text-white"
+                      : "border-[#28071C]/15 text-[#28071C]/60 hover:border-[#28071C]/40"
+                  }`}
+                >
+                  {TIPO_ICONS[t]}
+                  {TIPO_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Origem — só para matéria prima */}
+          {tipo === "materia_prima" && (
+            <div>
+              <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-2">
+                Origem
+              </label>
+              <div className="flex gap-2">
+                {(["nacional","internacional"] as OrigemFornecedor[]).map(o => (
+                  <button
+                    key={o}
+                    onClick={() => setOrigem(o)}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                      origem === o
+                        ? "border-[#28071C] bg-[#28071C] text-white"
+                        : "border-[#28071C]/15 text-[#28071C]/50 hover:border-[#28071C]/40"
+                    }`}
+                  >
+                    {o === "nacional" ? <MapPin className="w-3 h-3" /> : <Globe className="w-3 h-3" />}
+                    {o === "nacional" ? "Nacional" : "Internacional"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Nome + ERP */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2 sm:col-span-1">
+              <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-1.5">
+                Nome do Fornecedor *
+              </label>
+              <input
+                value={nome}
+                onChange={e => setNome(e.target.value)}
+                placeholder="Ex: Tecidos São Paulo Ltda"
+                className="w-full border border-[#28071C]/20 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-1.5">
+                Código ERP
+              </label>
+              <input
+                value={erpCode}
+                onChange={e => setErpCode(e.target.value)}
+                placeholder="FM-ABC123"
+                className="w-full border border-[#28071C]/20 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+              />
+            </div>
+          </div>
+
+          {/* Prazo */}
+          <div>
+            <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-1.5">
+              Prazo de Entrega (dias)
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min="1"
+                value={prazo}
+                onChange={e => setPrazo(e.target.value)}
+                className="w-28 border border-[#28071C]/20 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+              />
+              <span className="text-xs text-[#28071C]/40 flex items-center gap-1">
+                <Info className="w-3 h-3" />
+                após pedido recebido pelo fornecedor
+              </span>
+            </div>
+          </div>
+
+          {/* Pagamento — múltiplas parcelas */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider">
+                Condição de Pagamento
+              </label>
+              <button
+                onClick={() => setParcRows(r => [...r, { _key: uid(), modalidade: "aprazo", pct: "0", gatilho: "pedido", dias: "0" }])}
+                className="text-[10px] text-[#7598CF] hover:text-[#28071C] font-medium flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" /> Adicionar parcela
+              </button>
+            </div>
+            <p className="text-[11px] text-[#28071C]/40 mb-3">
+              Defina quantas parcelas quiser. A soma dos % deve ser 100. O gatilho indica a partir de quando conta o prazo.
+            </p>
+            {/* Cabeçalho da tabela */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-2 px-1 mb-1">
+              <span className="text-[10px] text-[#28071C]/40 font-medium w-24">Modalidade</span>
+              <span className="text-[10px] text-[#28071C]/40 font-medium">Gatilho</span>
+              <span className="text-[10px] text-[#28071C]/40 font-medium text-right w-20">Dias após</span>
+              <span className="text-[10px] text-[#28071C]/40 font-medium text-right w-16">%</span>
+              <span className="w-6" />
+            </div>
+            <div className="space-y-2">
+              {parcRows.map((row) => (
+                <div key={row._key} className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-2 items-center">
+                  {/* Modalidade: à vista / a prazo */}
+                  <select
+                    value={row.modalidade}
+                    onChange={e => setParcRows(rows => rows.map(r => r._key === row._key ? { ...r, modalidade: e.target.value as PagamentoModalidade } : r))}
+                    className="w-24 border border-[#28071C]/20 rounded-lg px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+                  >
+                    <option value="avista">À vista</option>
+                    <option value="aprazo">A prazo</option>
+                  </select>
+                  {/* Gatilho */}
+                  <select
+                    value={row.gatilho}
+                    onChange={e => setParcRows(rows => rows.map(r => r._key === row._key ? { ...r, gatilho: e.target.value as PagamentoGatilho } : r))}
+                    className="border border-[#28071C]/20 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+                  >
+                    <option value="pedido">No pedido</option>
+                    <option value="faturamento">No faturamento</option>
+                    <option value="entrega">Na entrega</option>
+                  </select>
+                  {/* Dias após */}
+                  <div className="flex items-center gap-1.5 w-24">
+                    <input
+                      type="number"
+                      min="0"
+                      value={row.dias}
+                      onChange={e => setParcRows(rows => rows.map(r => r._key === row._key ? { ...r, dias: e.target.value } : r))}
+                      className="w-16 border border-[#28071C]/20 rounded-lg px-2 py-2 text-xs text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+                      placeholder="0"
+                    />
+                    <span className="text-[10px] text-[#28071C]/40 flex-shrink-0">d</span>
+                  </div>
+                  {/* % */}
+                  <div className="flex items-center gap-1 w-20">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={row.pct}
+                      onChange={e => setParcRows(rows => rows.map(r => r._key === row._key ? { ...r, pct: e.target.value } : r))}
+                      className="w-14 border border-[#28071C]/20 rounded-lg px-2 py-2 text-xs text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+                    />
+                    <span className="text-[10px] text-[#28071C]/40">%</span>
+                  </div>
+                  {parcRows.length > 1 ? (
+                    <button
+                      onClick={() => setParcRows(rows => rows.filter(r => r._key !== row._key))}
+                      className="p-1 rounded text-[#28071C]/20 hover:text-red-500 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  ) : <div className="w-6" />}
+                </div>
+              ))}
+            </div>
+            {/* Barra de soma */}
+            {(() => {
+              const soma = parcRows.reduce((s, r) => s + (parseFloat(r.pct) || 0), 0);
+              const ok = Math.abs(soma - 100) < 0.5;
+              return (
+                <div className={`flex items-center justify-between mt-3 px-1 text-xs font-semibold ${ok ? "text-emerald-600" : "text-orange-600"}`}>
+                  <span>Total</span>
+                  <span>{soma.toFixed(0)}%{ok ? " ✓" : " — deve ser 100%"}</span>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Escopo de categorias */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider">
+                Escopo de Categorias
+              </label>
+              <button
+                onClick={() => setCatRows(r => [...r, { _key: uid(), divisao: "", categoria: "", subcategoria: "", pct_custo_medio: "0" }])}
+                className="text-[10px] text-[#7598CF] hover:text-[#28071C] font-medium flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" /> Adicionar linha
+              </button>
+            </div>
+            <p className="text-[11px] text-[#28071C]/40 mb-3">
+              Deixe vazio para indicar que o fornecedor atende todas as categorias. O % de custo médio representa quanto este insumo representa no custo de um produto.
+            </p>
+            <div className="space-y-2">
+              {catRows.map((row, i) => (
+                <CatRowEditor
+                  key={row._key}
+                  row={row}
+                  hier={hier}
+                  onChange={updated => setCatRows(rows => rows.map(r => r._key === row._key ? updated : r))}
+                  onRemove={catRows.length > 1 ? () => setCatRows(rows => rows.filter(r => r._key !== row._key)) : undefined}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Etapas de produção — somente tipo=serviço */}
+          {tipo === "servico" && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider">
+                  Etapas de Produção
+                </label>
+                <button
+                  onClick={() => setEtapaRows(r => [...r, newEtapa(r.length + 1)])}
+                  className="text-[10px] text-[#7598CF] hover:text-[#28071C] font-medium flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" /> Adicionar etapa
+                </button>
+              </div>
+              <div className="space-y-3">
+                {etapaRows.map((row) => (
+                  <EtapaRowEditor
+                    key={row._key}
+                    row={row}
+                    hier={hier}
+                    onChange={updated => setEtapaRows(rows => rows.map(r => r._key === row._key ? updated : r))}
+                    onRemove={etapaRows.length > 1 ? () => setEtapaRows(rows => rows.filter(r => r._key !== row._key)) : undefined}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Observações */}
+          <div>
+            <label className="block text-[10px] font-semibold text-[#28071C]/50 uppercase tracking-wider mb-1.5">
+              Observações
+            </label>
+            <textarea
+              value={obs}
+              onChange={e => setObs(e.target.value)}
+              rows={2}
+              placeholder="Informações adicionais, contato, notas…"
+              className="w-full border border-[#28071C]/20 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+            />
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-600 bg-red-50 rounded-lg p-3 text-xs">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-[#28071C]/8 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-xs text-[#28071C]/50 hover:text-[#28071C] transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2 bg-[#28071C] text-white rounded-lg text-xs font-semibold hover:bg-[#28071C]/85 disabled:opacity-50 transition-colors"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {saving ? "Salvando…" : "Salvar"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function ModalFooter({ onClose, onSave, saving, disabled = false }: {
-  onClose: () => void;
-  onSave: () => void;
-  saving?: boolean;
-  disabled?: boolean;
-}) {
+// ══════════════════════════════════════════════════════════════════════════════
+// Linha de categoria
+// ══════════════════════════════════════════════════════════════════════════════
+
+function CatRowEditor({
+  row, hier, onChange, onRemove,
+}: { row: CatRow; hier: HierDistinct; onChange: (r: CatRow) => void; onRemove?: () => void }) {
   return (
-    <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-[#28071C]/8">
-      <button onClick={onClose}
-        className="px-4 py-2 border-2 border-[#28071C]/20 text-[#28071C]/60 rounded-xl text-sm font-semibold hover:border-[#28071C]/40 transition-colors">
-        Cancelar
-      </button>
-      <button onClick={onSave} disabled={saving || disabled}
-        className="flex items-center gap-2 px-5 py-2 bg-[#28071C] text-white rounded-xl text-sm font-semibold hover:bg-[#28071C]/85 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm">
-        {saving
-          ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Salvando…</>
-          : <><Save className="w-4 h-4" /> Salvar</>}
-      </button>
+    <div className="flex items-center gap-2">
+      <select
+        value={row.divisao}
+        onChange={e => onChange({ ...row, divisao: e.target.value })}
+        className="flex-1 border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+      >
+        <option value="">Todas as divisões</option>
+        {hier.divisions.map(d => <option key={d} value={d}>{d}</option>)}
+      </select>
+      <select
+        value={row.categoria}
+        onChange={e => onChange({ ...row, categoria: e.target.value })}
+        className="flex-1 border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+      >
+        <option value="">Todas as categorias</option>
+        {hier.categories.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.5"
+          value={row.pct_custo_medio}
+          onChange={e => onChange({ ...row, pct_custo_medio: e.target.value })}
+          className="w-16 border border-[#28071C]/20 rounded-lg px-2 py-1.5 text-xs text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+        />
+        <span className="text-[10px] text-[#28071C]/40">%</span>
+      </div>
+      {onRemove && (
+        <button onClick={onRemove} className="p-1 rounded text-[#28071C]/20 hover:text-red-500 transition-colors">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      )}
     </div>
   );
 }
 
-function EmptyState({ icon: Icon, title, desc }: {
-  icon: React.FC<{ className?: string }>; title: string; desc: string;
+// ══════════════════════════════════════════════════════════════════════════════
+// IMPORTAÇÃO VIA PLANILHA
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface SIField { key: string; label: string; required: boolean; match: string[] }
+
+const SI_FIELDS: SIField[] = [
+  { key: "nome",                label: "Nome do Fornecedor",     required: true,  match: ["nome","fornecedor","name","supplier"] },
+  { key: "tipo_fornecedor",     label: "Tipo de Fornecedor",     required: true,  match: ["tipo","type","tipo_fornecedor","tipo fornecedor"] },
+  { key: "prazo_entrega_dias",  label: "Prazo de Entrega (dias)",required: true,  match: ["prazo","lead","leadtime","lead time","prazo_entrega","prazo entrega"] },
+  { key: "pct_custo_medio",     label: "% Custo Médio",          required: true,  match: ["custo","pct_custo","pct custo","cost","custo medio","custo médio"] },
+  { key: "codigo_erp",          label: "Código ERP",             required: false, match: ["codigo","erp","code","cod","codigo_erp"] },
+  { key: "origem",              label: "Origem",                 required: false, match: ["origem","origin"] },
+  { key: "divisao",             label: "Divisão",                required: false, match: ["divisao","divisão","division"] },
+  { key: "categoria",           label: "Categoria",              required: false, match: ["categoria","category"] },
+  { key: "subcategoria",        label: "Subcategoria",           required: false, match: ["subcategoria","subcategory"] },
+  { key: "pagamento_pct_1",     label: "Pagamento % Parcela 1",  required: false, match: ["pct 1","pct1","pagamento_pct_1","pagamento pct 1","parcela 1 pct"] },
+  { key: "pagamento_gatilho_1", label: "Pagamento Gatilho 1",    required: false, match: ["gatilho 1","gatilho1","pagamento_gatilho_1","pagamento gatilho 1"] },
+  { key: "pagamento_dias_1",    label: "Pagamento Dias 1",       required: false, match: ["dias 1","dias1","pagamento_dias_1","pagamento dias 1"] },
+  { key: "pagamento_pct_2",     label: "Pagamento % Parcela 2",  required: false, match: ["pct 2","pct2","pagamento_pct_2","pagamento pct 2","parcela 2 pct"] },
+  { key: "pagamento_gatilho_2", label: "Pagamento Gatilho 2",    required: false, match: ["gatilho 2","gatilho2","pagamento_gatilho_2","pagamento gatilho 2"] },
+  { key: "pagamento_dias_2",    label: "Pagamento Dias 2",       required: false, match: ["dias 2","dias2","pagamento_dias_2","pagamento dias 2"] },
+  { key: "pagamento_pct_3",     label: "Pagamento % Parcela 3",  required: false, match: ["pct 3","pct3","pagamento_pct_3","pagamento pct 3","parcela 3 pct"] },
+  { key: "pagamento_gatilho_3", label: "Pagamento Gatilho 3",    required: false, match: ["gatilho 3","gatilho3","pagamento_gatilho_3","pagamento gatilho 3"] },
+  { key: "pagamento_dias_3",    label: "Pagamento Dias 3",       required: false, match: ["dias 3","dias3","pagamento_dias_3","pagamento dias 3"] },
+  { key: "observacoes",         label: "Observações",            required: false, match: ["obs","observ","notes","nota","observacoes","observações"] },
+];
+
+function downloadSupplyTemplate() {
+  const headers = ["nome","tipo_fornecedor","prazo_entrega_dias","pct_custo_medio",
+    "codigo_erp","origem","divisao","categoria","subcategoria",
+    "pagamento_pct_1","pagamento_gatilho_1","pagamento_dias_1",
+    "pagamento_pct_2","pagamento_gatilho_2","pagamento_dias_2",
+    "pagamento_pct_3","pagamento_gatilho_3","pagamento_dias_3","observacoes"];
+  const example = ["Tecidos SP Ltda","materia_prima","30","35",
+    "FM-001","nacional","Feminino","Vestuário","",
+    "100","pedido","0","","","","","","","Fornecedor principal de tecidos"];
+  const csv = [headers.join(","), example.map(v => `"${v}"`).join(",")].join("\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "modelo_fornecedores.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function normSI(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function autoMapSI(headers: string[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  SI_FIELDS.forEach(field => {
+    const h = headers.find(header => {
+      const hn = normSI(header);
+      return field.match.some(alias => {
+        const an = normSI(alias);
+        return an.includes(" ") ? hn.includes(an) : hn.split(/\s+/).includes(an);
+      });
+    });
+    if (h) m[field.key] = h;
+  });
+  return m;
+}
+
+interface SIPreviewRow {
+  rawRow: string[];
+  nome: string;
+  tipo: TipoFornecedorV2 | "";
+  prazo: number;
+  pctCusto: number;
+  pagamentoParcelas: PagamentoParcela[];
+  complete: boolean;
+  missing: string[];
+}
+
+const TIPO_NORM: Record<string, TipoFornecedorV2> = {
+  materia_prima: "materia_prima", "materia prima": "materia_prima", "matéria prima": "materia_prima",
+  mp: "materia_prima",
+  servico: "servico", "serviço": "servico", "servico faccao": "servico", "serviço / facção": "servico",
+  produto_acabado: "produto_acabado", "produto acabado": "produto_acabado", pa: "produto_acabado",
+};
+
+const GATILHO_NORM: Record<string, PagamentoGatilho> = {
+  pedido: "pedido", "no pedido": "pedido",
+  faturamento: "faturamento", "no faturamento": "faturamento",
+  entrega: "entrega", "na entrega": "entrega",
+};
+
+function buildSIPreview(headers: string[], rows: string[][], mapping: Record<string, string>): SIPreviewRow[] {
+  const hIdx = Object.fromEntries(headers.map((h, i) => [h, i]));
+  const get = (row: string[], fkey: string) => {
+    const h = mapping[fkey];
+    if (!h) return "";
+    const i = hIdx[h];
+    return i != null ? (row[i] ?? "").trim() : "";
+  };
+  return rows.map(row => {
+    const nome = get(row, "nome");
+    if (!nome) return null;
+    const tipoRaw = nome ? get(row, "tipo_fornecedor").toLowerCase().replace(/\s+/g, " ").trim() : "";
+    const tipo: TipoFornecedorV2 | "" = TIPO_NORM[tipoRaw] || "";
+    const prazo = parseInt(get(row, "prazo_entrega_dias")) || 0;
+    const pctCusto = parseFloat(get(row, "pct_custo_medio")) || 0;
+    const parcelas: PagamentoParcela[] = [];
+    for (let n = 1; n <= 3; n++) {
+      const pct = parseFloat(get(row, `pagamento_pct_${n}`));
+      if (!pct) continue;
+      const gatilhoRaw = get(row, `pagamento_gatilho_${n}`).toLowerCase();
+      const gatilho: PagamentoGatilho = GATILHO_NORM[gatilhoRaw] ?? "pedido";
+      const dias = parseInt(get(row, `pagamento_dias_${n}`)) || 0;
+      parcelas.push({ pct, gatilho, dias });
+    }
+    const missing: string[] = [];
+    if (!nome) missing.push("nome");
+    if (!tipo) missing.push("tipo_fornecedor (valores: materia_prima | servico | produto_acabado)");
+    if (!prazo) missing.push("prazo_entrega_dias");
+    if (!pctCusto) missing.push("pct_custo_medio");
+    return { rawRow: row, nome, tipo, prazo, pctCusto, pagamentoParcelas: parcelas, complete: missing.length === 0, missing };
+  }).filter(Boolean) as SIPreviewRow[];
+}
+
+type ImportStep = "upload" | "mapping" | "preview" | "done";
+
+function SupplyImportModal({ tenantId, onDone, onClose }: {
+  tenantId: string; onDone: () => void; onClose: () => void;
 }) {
+  const [step, setStep]               = useState<ImportStep>("upload");
+  const [fileName, setFileName]       = useState("");
+  const [parsedHdr, setParsedHdr]     = useState<string[]>([]);
+  const [parsedRows, setParsedRows]   = useState<string[][]>([]);
+  const [mapping, setMapping]         = useState<Record<string, string>>({});
+  const [previewRows, setPreviewRows] = useState<SIPreviewRow[]>([]);
+  const [importing, setImporting]     = useState(false);
+  const [result, setResult]           = useState<{ imported: number; pending: number; errors: string[] } | null>(null);
+  const [parseError, setParseError]   = useState<string | null>(null);
+  const [dragging, setDragging]       = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (file: File) => {
+    setParseError(null);
+    try {
+      const pf = await parseFile(file);
+      setFileName(file.name);
+      setParsedHdr(pf.headers);
+      setParsedRows(pf.rows);
+      setMapping(autoMapSI(pf.headers));
+      setStep("mapping");
+    } catch (e) {
+      setParseError(e instanceof Error ? e.message : "Erro ao ler arquivo.");
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  };
+
+  const handleConfirmMapping = () => {
+    setPreviewRows(buildSIPreview(parsedHdr, parsedRows, mapping));
+    setStep("preview");
+  };
+
+  const handleImport = async () => {
+    setImporting(true);
+    let imported = 0, pending = 0;
+    const errors: string[] = [];
+    const hIdx = Object.fromEntries(parsedHdr.map((h, i) => [h, i]));
+    const get = (row: string[], fkey: string) => {
+      const h = mapping[fkey]; const i = h != null ? hIdx[h] : -1;
+      return i >= 0 ? (row[i] ?? "").trim() : "";
+    };
+    for (const pr of previewRows) {
+      try {
+        const tipoFinal: TipoFornecedorV2 = pr.tipo || "produto_acabado";
+        const origemRaw = get(pr.rawRow, "origem").toLowerCase();
+        const origem: OrigemFornecedor | null = origemRaw === "nacional" ? "nacional" : origemRaw === "internacional" ? "internacional" : null;
+        const forn = await insertSupplyFornecedor(tenantId, {
+          nome: pr.nome,
+          codigo_erp: get(pr.rawRow, "codigo_erp") || null,
+          tipo_fornecedor: tipoFinal,
+          origem,
+          prazo_entrega_dias: pr.prazo || 30,
+          pagamento_parcelas: pr.pagamentoParcelas,
+          observacoes: get(pr.rawRow, "observacoes") || null,
+          ativo: true,
+        });
+        const divisao   = get(pr.rawRow, "divisao") || null;
+        const categoria = get(pr.rawRow, "categoria") || null;
+        const subcategoria = get(pr.rawRow, "subcategoria") || null;
+        if (pr.pctCusto > 0 || divisao || categoria) {
+          await replaceSupplyCategorias(tenantId, forn.id, [{
+            divisao, categoria, subcategoria, pct_custo_medio: pr.pctCusto,
+          }]);
+        }
+        if (pr.complete) imported++; else pending++;
+      } catch (e) {
+        errors.push(`${pr.nome}: ${e instanceof Error ? e.message : "erro"}`);
+      }
+    }
+    setResult({ imported, pending, errors });
+    setImporting(false);
+    setStep("done");
+    onDone();
+  };
+
+  const requiredMapped = SI_FIELDS.filter(f => f.required).every(f => !!mapping[f.key]);
+  const STEPS: ImportStep[] = ["upload","mapping","preview","done"];
+
   return (
-    <div className="bg-white/60 rounded-2xl border border-[#28071C]/8 py-16 text-center text-[#28071C]/40">
-      <Icon className="w-10 h-10 mx-auto mb-3 opacity-30" />
-      <p className="font-semibold">{title}</p>
-      <p className="text-sm mt-1">{desc}</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#28071C]/8">
+          <div className="flex items-center gap-3">
+            <FileSpreadsheet className="w-4 h-4 text-[#7598CF]" />
+            <h2 className="font-semibold text-sm text-[#28071C]">Importar Fornecedores</h2>
+            <div className="flex items-center gap-0.5 ml-2">
+              {STEPS.map((s, i) => (
+                <div key={s} className="flex items-center">
+                  {i > 0 && <div className="w-6 h-px bg-[#28071C]/15" />}
+                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors ${
+                    step === s ? "bg-[#28071C] text-white"
+                    : STEPS.indexOf(step) > i ? "bg-[#7598CF] text-white"
+                    : "bg-[#28071C]/10 text-[#28071C]/30"
+                  }`}>{i + 1}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-[#28071C]/30 hover:text-[#28071C] transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 px-6 py-5">
+
+          {/* ── Step 1: Upload ── */}
+          {step === "upload" && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between bg-[#F2F2F2] rounded-xl px-4 py-3">
+                <div>
+                  <p className="text-xs font-semibold text-[#28071C]">Não tem o modelo?</p>
+                  <p className="text-[11px] text-[#28071C]/50 mt-0.5">Baixe o template CSV com todos os campos</p>
+                </div>
+                <button
+                  onClick={downloadSupplyTemplate}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#28071C]/20 rounded-lg text-xs font-medium text-[#28071C] hover:bg-[#F2F2F2] transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Baixar modelo
+                </button>
+              </div>
+
+              <div
+                className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
+                  dragging ? "border-[#7598CF] bg-[#7598CF]/5" : "border-[#28071C]/20 hover:border-[#7598CF]/60"
+                }`}
+                onDrop={handleDrop}
+                onDragOver={e => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="w-8 h-8 text-[#28071C]/20 mx-auto mb-3" />
+                <p className="text-sm font-medium text-[#28071C]/50">
+                  Arraste o arquivo ou <span className="text-[#7598CF] font-semibold">clique para selecionar</span>
+                </p>
+                <p className="text-[11px] text-[#28071C]/30 mt-1">CSV ou XLSX — primeira linha deve ser o cabeçalho</p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+                />
+              </div>
+
+              {parseError && (
+                <div className="flex items-center gap-2 text-red-600 bg-red-50 rounded-lg p-3 text-xs">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" /> {parseError}
+                </div>
+              )}
+
+              <div className="bg-[#7598CF]/8 rounded-xl p-4">
+                <p className="text-[11px] font-semibold text-[#28071C] mb-2">Campos obrigatórios para o cálculo de orçamento</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {SI_FIELDS.filter(f => f.required).map(f => (
+                    <span key={f.key} className="text-[11px] bg-white border border-[#28071C]/15 px-2 py-0.5 rounded text-[#28071C]">
+                      {f.label}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-[11px] text-[#28071C]/50 mt-2">
+                  Fornecedores sem esses campos serão importados com pendência e não entrarão no cálculo automaticamente.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 2: Mapping ── */}
+          {step === "mapping" && (
+            <div className="space-y-4">
+              <p className="text-xs text-[#28071C]/60">
+                Arquivo: <span className="font-medium text-[#28071C]">{fileName}</span> · {parsedRows.length} linhas
+              </p>
+              <p className="text-[11px] text-[#28071C]/40">
+                O sistema mapeou automaticamente as colunas que reconheceu. Ajuste se necessário.
+              </p>
+              <div className="space-y-1">
+                <div className="grid grid-cols-[1fr_1fr] gap-3 px-2 pb-1">
+                  <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider">Campo do Sistema</span>
+                  <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider">Coluna do Arquivo (de → para)</span>
+                </div>
+                {SI_FIELDS.map(field => (
+                  <div
+                    key={field.key}
+                    className={`grid grid-cols-[1fr_1fr] gap-3 items-center px-2 py-1.5 rounded-lg ${field.required ? "bg-[#F6F3AA]/30" : ""}`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-[#28071C]">{field.label}</span>
+                      {field.required && (
+                        <span className="text-[9px] bg-[#F6F3AA] text-[#28071C]/70 px-1.5 py-0.5 rounded font-semibold">obrig.</span>
+                      )}
+                    </div>
+                    <select
+                      value={mapping[field.key] ?? ""}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setMapping(m => { const n = { ...m }; if (val) n[field.key] = val; else delete n[field.key]; return n; });
+                      }}
+                      className="border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 w-full"
+                    >
+                      <option value="">— ignorar —</option>
+                      {parsedHdr.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              {!requiredMapped && (
+                <div className="flex items-center gap-2 text-orange-600 bg-orange-50 rounded-lg p-3 text-xs">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  Mapeie os campos obrigatórios (destacados em amarelo) para prosseguir.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Step 3: Preview ── */}
+          {step === "preview" && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-[#F2F2F2] rounded-xl p-3 text-center">
+                  <p className="text-xl font-bold text-[#28071C]">{previewRows.length}</p>
+                  <p className="text-[10px] text-[#28071C]/50 mt-0.5">Total</p>
+                </div>
+                <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                  <p className="text-xl font-bold text-emerald-700">{previewRows.filter(r => r.complete).length}</p>
+                  <p className="text-[10px] text-emerald-600 mt-0.5">Completos</p>
+                </div>
+                <div className="bg-orange-50 rounded-xl p-3 text-center">
+                  <p className="text-xl font-bold text-orange-600">{previewRows.filter(r => !r.complete).length}</p>
+                  <p className="text-[10px] text-orange-500 mt-0.5">Com pendência</p>
+                </div>
+              </div>
+              <p className="text-[11px] text-[#28071C]/50">
+                Todos serão importados. Os com pendência podem ser completados manualmente depois — o cálculo usa apenas os 100% preenchidos.
+              </p>
+              <div className="border border-[#28071C]/10 rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-[#F2F2F2] border-b border-[#28071C]/10">
+                      <th className="px-3 py-2 text-left font-semibold text-[#28071C]/50">Nome</th>
+                      <th className="px-3 py-2 text-left font-semibold text-[#28071C]/50">Tipo</th>
+                      <th className="px-3 py-2 text-right font-semibold text-[#28071C]/50">Prazo</th>
+                      <th className="px-3 py-2 text-right font-semibold text-[#28071C]/50">% Custo</th>
+                      <th className="px-3 py-2 text-center font-semibold text-[#28071C]/50">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#28071C]/6">
+                    {previewRows.slice(0, 50).map((r, i) => (
+                      <tr key={i} className={r.complete ? "" : "bg-orange-50/50"}>
+                        <td className="px-3 py-2 font-medium text-[#28071C] max-w-[160px] truncate" title={r.nome}>{r.nome}</td>
+                        <td className="px-3 py-2 text-[#28071C]/60">
+                          {r.tipo ? TIPO_LABELS[r.tipo] : <span className="text-orange-500 font-medium">?</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right text-[#28071C]/60">
+                          {r.prazo ? `${r.prazo}d` : <span className="text-orange-500">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right text-[#28071C]/60">
+                          {r.pctCusto ? `${r.pctCusto}%` : <span className="text-orange-500">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {r.complete
+                            ? <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
+                                <CheckCircle2 className="w-3 h-3" />OK
+                              </span>
+                            : <span className="inline-flex items-center gap-1 text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-medium cursor-help" title={r.missing.join(", ")}>
+                                <Clock className="w-3 h-3" />Pendente
+                              </span>
+                          }
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {previewRows.length > 50 && (
+                  <div className="px-3 py-2 text-center text-[11px] text-[#28071C]/40 border-t border-[#28071C]/10">
+                    Mostrando 50 de {previewRows.length} linhas
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 4: Done ── */}
+          {step === "done" && result && (
+            <div className="py-4 space-y-5">
+              <div className="text-center">
+                <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-3" />
+                <p className="font-semibold text-[#28071C]">Importação concluída</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-emerald-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-emerald-700">{result.imported}</p>
+                  <p className="text-xs text-emerald-600 mt-1">Completos</p>
+                </div>
+                <div className="bg-orange-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-orange-600">{result.pending}</p>
+                  <p className="text-xs text-orange-500 mt-1">Com pendência</p>
+                </div>
+              </div>
+              {result.pending > 0 && (
+                <div className="bg-orange-50 rounded-xl p-3 text-xs text-orange-700">
+                  <p className="font-semibold mb-1">Fornecedores com pendência</p>
+                  <p>Foram importados mas não entrarão no cálculo de orçamento. Complete o cadastro de cada um clicando no ícone de edição.</p>
+                </div>
+              )}
+              {result.errors.length > 0 && (
+                <div className="bg-red-50 rounded-xl p-3 text-xs text-red-700">
+                  <p className="font-semibold mb-1">{result.errors.length} erro(s) durante a importação:</p>
+                  <ul className="space-y-0.5 mt-1">
+                    {result.errors.map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-[#28071C]/8 flex justify-between items-center">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs text-[#28071C]/50 hover:text-[#28071C] transition-colors"
+          >
+            {step === "done" ? "Fechar" : "Cancelar"}
+          </button>
+          <div className="flex items-center gap-2">
+            {(step === "mapping" || step === "preview") && (
+              <button
+                onClick={() => setStep(step === "mapping" ? "upload" : "mapping")}
+                className="flex items-center gap-1.5 px-3 py-2 border border-[#28071C]/20 rounded-lg text-xs text-[#28071C] hover:bg-[#F2F2F2] transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" /> Voltar
+              </button>
+            )}
+            {step === "mapping" && (
+              <button
+                onClick={handleConfirmMapping}
+                disabled={!requiredMapped}
+                className="flex items-center gap-1.5 px-5 py-2 bg-[#28071C] text-white rounded-lg text-xs font-semibold disabled:opacity-40 hover:bg-[#28071C]/85 transition-colors"
+              >
+                Pré-visualizar <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {step === "preview" && (
+              <button
+                onClick={handleImport}
+                disabled={importing || previewRows.length === 0}
+                className="flex items-center gap-1.5 px-5 py-2 bg-[#28071C] text-white rounded-lg text-xs font-semibold disabled:opacity-40 hover:bg-[#28071C]/85 transition-colors"
+              >
+                {importing
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Importando…</>
+                  : <><Upload className="w-3.5 h-3.5" /> Importar {previewRows.length} fornecedor{previewRows.length !== 1 ? "es" : ""}</>
+                }
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Linha de etapa de serviço
+// ══════════════════════════════════════════════════════════════════════════════
+
+function EtapaRowEditor({
+  row, hier, onChange, onRemove,
+}: { row: EtapaRow; hier: HierDistinct; onChange: (r: EtapaRow) => void; onRemove?: () => void }) {
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const filtered = ETAPAS_SUGERIDAS.filter(s => !row.nome_etapa || s.toLowerCase().includes(row.nome_etapa.toLowerCase()));
+
+  return (
+    <div className="bg-[#F2F2F2] rounded-xl p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min="1"
+          value={row.sequencia}
+          onChange={e => onChange({ ...row, sequencia: e.target.value })}
+          className="w-12 border border-[#28071C]/20 rounded-lg px-2 py-1.5 text-xs text-center bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+          title="Sequência"
+        />
+        <div className="flex-1 relative">
+          <input
+            ref={inputRef}
+            value={row.nome_etapa}
+            onChange={e => { onChange({ ...row, nome_etapa: e.target.value }); setShowSuggestions(true); }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 160)}
+            placeholder="Nome da etapa"
+            className="w-full border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+          />
+          {showSuggestions && filtered.length > 0 && (
+            <div className="absolute z-10 top-full mt-1 left-0 right-0 bg-white border border-[#28071C]/15 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+              {filtered.map(s => (
+                <button
+                  key={s}
+                  onMouseDown={() => { onChange({ ...row, nome_etapa: s }); setShowSuggestions(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[#F2F2F2] text-[#28071C]"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            min="1"
+            value={row.prazo_etapa_dias}
+            onChange={e => onChange({ ...row, prazo_etapa_dias: e.target.value })}
+            className="w-16 border border-[#28071C]/20 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+            placeholder="Dias"
+          />
+          <span className="text-[10px] text-[#28071C]/40">d</span>
+        </div>
+        {onRemove && (
+          <button onClick={onRemove} className="p-1 rounded text-[#28071C]/20 hover:text-red-500 transition-colors">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <select
+          value={row.tipo_entrega}
+          onChange={e => onChange({ ...row, tipo_entrega: e.target.value as TipoEntregaEtapa })}
+          className="flex-1 border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+        >
+          {(["semi_acabado","acabado","white_label","private_label"] as TipoEntregaEtapa[]).map(t => (
+            <option key={t} value={t}>{ENTREGA_LABELS[t]}</option>
+          ))}
+        </select>
+        <select
+          value={row.divisao}
+          onChange={e => onChange({ ...row, divisao: e.target.value })}
+          className="flex-1 border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+        >
+          <option value="">Todas as divisões</option>
+          {hier.divisions.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <select
+          value={row.categoria}
+          onChange={e => onChange({ ...row, categoria: e.target.value })}
+          className="flex-1 border border-[#28071C]/20 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+        >
+          <option value="">Todas as categorias</option>
+          {hier.categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
     </div>
   );
 }

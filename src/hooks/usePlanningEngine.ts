@@ -113,7 +113,16 @@ export function usePlanningEngine(
           persistLocal(hydrated)
           const last = hydrated[hydrated.length - 1]
           setActive(last)
-          setCurrent(deserializeState(last.state, baseline))
+          // Só restaura o estado salvo se a receita do cenário é compatível com a baseline atual.
+          // Se divergir >50%, o cenário foi salvo com dados de fallback (HIST_FALLBACK) —
+          // deixamos o reset() do Planning.tsx (acionado por histIsReal) reconstruir current.
+          const savedReceita = ((last.state.values ?? {}) as Record<string, number>).receitaBruta ?? 0
+          const baseReceita  = baseline.receitaBruta ?? 0
+          const isCompatible = baseReceita === 0 ||
+            Math.abs(savedReceita - baseReceita) / Math.max(baseReceita, 1) < 0.5
+          if (isCompatible) {
+            setCurrent(deserializeState(last.state, baseline))
+          }
         }
       } catch (err) {
         console.warn('[usePlanningEngine] Supabase sync:', err)
@@ -127,6 +136,26 @@ export function usePlanningEngine(
       const touched = new Set(prev.touched)
       if (value !== null) touched.add(field)
       else touched.delete(field)
+      return recalculate({
+        ...prev,
+        values: { ...prev.values, [field]: value },
+        states: { ...prev.states, [field]: 'free' },
+        touched,
+      }, activeKeys)
+    })
+    setIsDirty(true)
+  }, [activeKeys])
+
+  /**
+   * Variante de setField que REINICIA o conjunto "touched" para apenas {field}.
+   * Usar quando o campo deve ser tratado como ÚNICO driver (ex: modo % de receita).
+   * Garante que soAlterouReceita = true na engine, ativando o scaling proporcional
+   * mesmo que o usuário tenha tocado outros campos anteriormente.
+   */
+  const setFieldAsBase = useCallback((field: FieldKey, value: number | null) => {
+    setCurrent(prev => {
+      const touched = new Set<FieldKey>()
+      if (value !== null) touched.add(field)
       return recalculate({
         ...prev,
         values: { ...prev.values, [field]: value },
@@ -207,6 +236,6 @@ export function usePlanningEngine(
 
   return {
     current, scenarios, activeScenario, isDirty, baseline,
-    setField, unlock, reset, saveScenario, loadScenario, deleteScenario,
+    setField, setFieldAsBase, unlock, reset, saveScenario, loadScenario, deleteScenario,
   }
 }

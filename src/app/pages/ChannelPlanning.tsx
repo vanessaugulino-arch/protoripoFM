@@ -3,9 +3,19 @@ import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
   Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown, HelpCircle,
+  SendHorizonal, ArrowRight,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
+import {
+  createApprovalRequest,
+  getPendingApprovalsForUser,
+  resolveApproval,
+  hasPendingRequest,
+  type PlanApprovalRequest,
+  type ImpactedIndicator,
+} from "../../services/supabase/planApprovalService";
+import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -95,6 +105,42 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
 
 const RATE_MACRO_FIELDS = new Set(["margemBruta", "mkdPct", "giro", "cobertura", "gmroi"]);
 
+// ── Bandas bilaterais de aprovação ────────────────────────────────────────────
+// higherIsBetter: true = ↑ melhor | false = ↓ melhor | null = bilateral (cobertura)
+// badNeg: magnitude do gap NEGATIVO que dispara (para ↑: abaixo da meta; para ↓: abaixo tb = suspeito)
+// badPos: magnitude do gap POSITIVO que dispara (para ↑: acima da banda; para ↓: acima da meta = ruim)
+// mode 'pct' = % relativo ao planejado | 'abs' = unidades absolutas
+const APPROVAL_BANDS: Record<string, {
+  higherIsBetter: boolean | null;
+  badNeg: number;
+  badPos: number;
+  mode: 'pct' | 'abs';
+}> = {
+  receitaBruta:  { higherIsBetter: true,  badNeg: 2,   badPos: 2,   mode: 'pct' },
+  margemBruta:   { higherIsBetter: true,  badNeg: 0.5, badPos: 2,   mode: 'abs' },
+  giro:          { higherIsBetter: true,  badNeg: 0.5, badPos: 0.5, mode: 'abs' },
+  pmv:           { higherIsBetter: true,  badNeg: 5,   badPos: 7,   mode: 'pct' },
+  ticketMedio:   { higherIsBetter: true,  badNeg: 5,   badPos: 7,   mode: 'pct' },
+  gmroi:         { higherIsBetter: true,  badNeg: 0.3, badPos: 0.5, mode: 'abs' },
+  custoMedio:    { higherIsBetter: false, badNeg: 5,   badPos: 2,   mode: 'pct' },
+  mkdPct:        { higherIsBetter: false, badNeg: 2,   badPos: 0.5, mode: 'abs' },
+  cobertura:     { higherIsBetter: null,  badNeg: 8,   badPos: 8,   mode: 'abs' },
+  producaoPecas: { higherIsBetter: true,  badNeg: 2,   badPos: 2,   mode: 'pct' },
+  orcamento:     { higherIsBetter: false, badNeg: 5,   badPos: 2,   mode: 'pct' },
+};
+
+function isOutsideBand(key: string, planned: number, projected: number): boolean {
+  const band = APPROVAL_BANDS[key];
+  if (!band || !planned) return false;
+  const gap         = projected - planned;
+  const absPlanned  = Math.abs(planned);
+  const negMag      = band.mode === 'pct' ? (-gap / absPlanned) * 100 : -gap;
+  const posMag      = band.mode === 'pct' ? (gap  / absPlanned) * 100 :  gap;
+  if (band.higherIsBetter === null) return Math.abs(gap) > band.badNeg; // bilateral
+  if (band.higherIsBetter)         return negMag > band.badNeg || posMag > band.badPos;
+  /* lower is better */             return posMag > band.badPos || negMag > band.badNeg;
+}
+
 const DRIVER_FIELDS = new Set<keyof ChannelData>([
   "margemBruta", "pmv", "ticketMedio", "custoMedio", "giro", "cobertura", "mkdPct", "gmroi",
 ]);
@@ -150,18 +196,18 @@ const DRIVER_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
 
 function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
   const orcRate        = data.receita > 0 ? data.orcamento / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365);
-  const estoqueMedioRS = data.giro > 0 ? Math.round(newReceita / data.giro) : 0;
-  const producao       = data.pmv > 0 ? Math.round(newReceita / data.pmv) : 0;
+  const estoqueMedioRS = data.giro > 0 ? newReceita / data.giro : 0;
+  const producao       = data.pmv > 0 ? newReceita / data.pmv : 0;
   return {
     ...data,
     receita:           newReceita,
-    margemBrutaRS:     Math.round(newReceita * data.margemBruta / 100),
-    orcamento:         Math.round(newReceita * orcRate),
+    margemBrutaRS:     newReceita * data.margemBruta / 100,
+    orcamento:         newReceita * orcRate,
     estoqueMedioRS,
-    estoqueMedioPecas: data.pmv > 0 ? Math.round(estoqueMedioRS / data.pmv) : 0,
+    estoqueMedioPecas: data.pmv > 0 ? estoqueMedioRS / data.pmv : 0,
     producao,
     totalPecas:        producao,
-    markdown:          Math.round(newReceita * data.mkdPct / 100),
+    markdown:          newReceita * data.mkdPct / 100,
   };
 }
 
@@ -169,31 +215,96 @@ function buildChannel(
   receita: number,
   rates: Pick<ChannelData, "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi">
 ): ChannelData {
-  const estoqueMedioRS = rates.giro > 0 ? Math.round(receita / rates.giro) : 0;
-  const producao       = rates.pmv > 0 ? Math.round(receita / rates.pmv) : 0;
+  const estoqueMedioRS = rates.giro > 0 ? receita / rates.giro : 0;
+  const producao       = rates.pmv > 0 ? receita / rates.pmv : 0;
   const orcRate2       = rates.custoMedio > 0 && rates.pmv > 0 ? rates.custoMedio / rates.pmv : 0.365;
   return {
     receita,
-    margemBrutaRS:     Math.round(receita * rates.margemBruta / 100),
+    margemBrutaRS:     receita * rates.margemBruta / 100,
     ...rates,
-    orcamento:         Math.round(receita * orcRate2),
+    orcamento:         receita * orcRate2,
     estoqueMedioRS,
-    estoqueMedioPecas: rates.pmv > 0 ? Math.round(estoqueMedioRS / rates.pmv) : 0,
+    estoqueMedioPecas: rates.pmv > 0 ? estoqueMedioRS / rates.pmv : 0,
     producao,
     totalPecas:        producao,
-    markdown:          Math.round(receita * rates.mkdPct / 100),
+    markdown:          receita * rates.mkdPct / 100,
   };
 }
 
-function initChannelData(macroReceita: number): Record<ChannelId, ChannelData> {
+// Taxas fallback usadas apenas quando o M1 não tem o indicador planejado.
+// Quando o M1 tem o valor, ele é passado via macroRates e todos os canais
+// iniciam com a mesma taxa → consolidado = exatamente o valor do M1.
+const CHANNEL_FALLBACK_RATES: Record<ChannelId, Pick<ChannelData,
+  "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi"
+>> = {
+  atacado:   { margemBruta: 38.5, pmv: 165, ticketMedio: 320, custoMedio: 60, giro: 4.5, cobertura: 80, mkdPct: 4.0, gmroi: 1.85 },
+  varejo:    { margemBruta: 48.0, pmv: 185, ticketMedio: 290, custoMedio: 72, giro: 4.6, cobertura: 75, mkdPct: 4.0, gmroi: 2.35 },
+  ecommerce: { margemBruta: 52.0, pmv: 195, ticketMedio: 340, custoMedio: 75, giro: 4.8, cobertura: 70, mkdPct: 4.0, gmroi: 2.65 },
+};
+
+function initChannelData(
+  macroReceita: number,
+  macroRates?: Partial<Pick<ChannelData, "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi">>
+): Record<ChannelId, ChannelData> {
+  // Se o M1 fornece a taxa, todos os canais iniciam com ela → agregação produz EXATAMENTE o valor do M1.
+  // O usuário então ajusta por canal; desvios disparam o fluxo de aprovação.
+  const ratesFor = (ch: ChannelId) => ({
+    margemBruta: macroRates?.margemBruta ?? CHANNEL_FALLBACK_RATES[ch].margemBruta,
+    pmv:         macroRates?.pmv         ?? CHANNEL_FALLBACK_RATES[ch].pmv,
+    ticketMedio: macroRates?.ticketMedio ?? CHANNEL_FALLBACK_RATES[ch].ticketMedio,
+    custoMedio:  macroRates?.custoMedio  ?? CHANNEL_FALLBACK_RATES[ch].custoMedio,
+    giro:        macroRates?.giro        ?? CHANNEL_FALLBACK_RATES[ch].giro,
+    cobertura:   macroRates?.cobertura   ?? CHANNEL_FALLBACK_RATES[ch].cobertura,
+    mkdPct:      macroRates?.mkdPct      ?? CHANNEL_FALLBACK_RATES[ch].mkdPct,
+    gmroi:       macroRates?.gmroi       ?? CHANNEL_FALLBACK_RATES[ch].gmroi,
+  });
   return {
-    atacado:   buildChannel(Math.round(macroReceita * 0.40), { margemBruta: 38.5, pmv: 165, ticketMedio: 320, custoMedio: 60, giro: 4.5, cobertura: 80, mkdPct: 4.0, gmroi: 1.85 }),
-    varejo:    buildChannel(Math.round(macroReceita * 0.35), { margemBruta: 48.0, pmv: 185, ticketMedio: 290, custoMedio: 72, giro: 4.6, cobertura: 75, mkdPct: 4.0, gmroi: 2.35 }),
-    ecommerce: buildChannel(Math.round(macroReceita * 0.25), { margemBruta: 52.0, pmv: 195, ticketMedio: 340, custoMedio: 75, giro: 4.8, cobertura: 70, mkdPct: 4.0, gmroi: 2.65 }),
+    atacado:   buildChannel(macroReceita * 0.40, ratesFor("atacado")),
+    varejo:    buildChannel(macroReceita * 0.35, ratesFor("varejo")),
+    ecommerce: buildChannel(macroReceita * 0.25, ratesFor("ecommerce")),
   };
 }
 
 const INIT_PERCENTS: Record<ChannelId, number> = { atacado: 40, varejo: 35, ecommerce: 25 };
+
+// Tipo para as taxas do M1 passadas a M2
+type MacroRates = Partial<Pick<ChannelData,
+  "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi"
+>>;
+
+const RATE_KEYS_FOR_DELTA: Array<keyof MacroRates> = [
+  "giro", "margemBruta", "mkdPct", "pmv", "cobertura", "gmroi", "custoMedio", "ticketMedio",
+];
+
+/**
+ * Calcula taxas consolidadas a partir de dados de canais salvos — sempre dos absolutos
+ * acumulados, nunca média ponderada de taxas.
+ * Usado para computar o delta entre o cenário salvo e o novo alvo do M1.
+ */
+function computeConsolidatedFromRaw(
+  chData: Record<string, Record<string, number>>,
+  channels: ChannelId[]
+): MacroRates {
+  const totalR        = channels.reduce((s, ch) => s + (chData[ch]?.receita       ?? 0), 0);
+  const totalEstMedio = channels.reduce((s, ch) => s + (chData[ch]?.estoqueMedioRS  ?? 0), 0);
+  const totalLucro    = channels.reduce((s, ch) => s + (chData[ch]?.margemBrutaRS  ?? 0), 0);
+  const totalOrc      = channels.reduce((s, ch) => s + (chData[ch]?.orcamento      ?? 0), 0);
+  const totalMkd      = channels.reduce((s, ch) => s + (chData[ch]?.markdown       ?? 0), 0);
+  const totalProd     = channels.reduce((s, ch) => s + (chData[ch]?.producao       ?? 0), 0);
+  const wAvg = (key: string) => totalR > 0
+    ? channels.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR
+    : undefined;
+  return {
+    giro:        totalEstMedio > 0 ? totalR / totalEstMedio          : undefined,
+    cobertura:   totalR > 0       ? (totalEstMedio / totalR) * 365   : undefined,
+    gmroi:       totalEstMedio > 0 ? totalLucro / totalEstMedio      : undefined,
+    margemBruta: totalR > 0       ? (totalLucro / totalR) * 100      : undefined,
+    mkdPct:      totalR > 0       ? (totalMkd / totalR) * 100        : undefined,
+    pmv:         totalProd > 0    ? totalR / totalProd               : undefined,
+    custoMedio:  totalProd > 0    ? totalOrc / totalProd             : undefined,
+    ticketMedio: wAvg("ticketMedio"),
+  };
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function ChannelPlanning() {
@@ -212,7 +323,7 @@ export default function ChannelPlanning() {
       const hasAccess = u.profile === "CEO" || u.system_role === "support" || u.system_role === "client_admin";
       if (!hasAccess) navigate("/dashboard");
 
-      // Carregar cenários e anos revisados do Supabase
+      // Carregar cenários, anos revisados e pedidos de aprovação do Supabase
       if (tid) {
         dbListChannelScenarios(tid, defaultYear)
           .then(rows => setSavedScenarios(rows))
@@ -220,6 +331,23 @@ export default function ChannelPlanning() {
         dbGetReviewedYears(tid)
           .then(years => setReviewedYears(years))
           .catch(() => {/* fallback */});
+
+        // Verificar se já tem pedido pendente de M2→M1 (para este usuário)
+        hasPendingRequest(tid, 2, defaultYear)
+          .then(has => setAlreadyPending(has))
+          .catch(() => {});
+
+        // Verificar pedidos de aprovação direcionados a M2 (de M3 ou M4)
+        const isCeoOrAdmin = u.profile === "CEO" || u.system_role === "support" || u.system_role === "client_admin";
+        getPendingApprovalsForUser(tid, 2, u.email, isCeoOrAdmin)
+          .then(reqs => {
+            setIncomingApprovals(reqs);
+            if (reqs.length > 0) {
+              setActiveIncoming(reqs[0]);
+              setShowIncomingApproval(true);
+            }
+          })
+          .catch(() => {});
       }
     } else navigate("/");
   }, [navigate]);
@@ -259,20 +387,104 @@ export default function ChannelPlanning() {
     return result;
   }, [visibleChannels]);
 
+  // Extrai taxas do M1 para inicializar M2 com valores que produzem o consolidado = M1 exato.
+  const macroRatesForChannels = useMemo(() => ({
+    margemBruta: (macroValues?.margemBruta as number | null)  ?? undefined,
+    pmv:         (macroValues?.pmv         as number | null)  ?? undefined,
+    ticketMedio: (macroValues?.ticketMedio as number | null)  ?? undefined,
+    custoMedio:  (macroValues?.custoMedio  as number | null)  ?? undefined,
+    giro:        (macroValues?.giro        as number | null)  ?? undefined,
+    cobertura:   (macroValues?.cobertura   as number | null)  ?? undefined,
+    mkdPct:      (macroValues?.mkdPct      as number | null)  ?? undefined,
+    gmroi:       (macroValues?.gmroi       as number | null)  ?? undefined,
+  }), [macroValues]);
+
   const [percents, setPercents]       = useState<Record<ChannelId, number>>(initPercents);
-  const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(() => initChannelData(macroReceita));
+  const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(
+    () => initChannelData(macroReceita, macroRatesForChannels)
+  );
 
   useEffect(() => {
     const plan      = getPlanCycle(selectedYear);
-    const newMacroR = (plan?.versions?.[0]?.values?.receitaBruta as number | null) ?? 3_120_000;
-    setChannelData(initChannelData(newMacroR));
+    const vals      = plan?.versions?.[0]?.values ?? null;
+    const newMacroR = (vals?.receitaBruta as number | null) ?? 3_120_000;
+    const newRates: MacroRates = {
+      margemBruta: (vals?.margemBruta as number | null) ?? undefined,
+      pmv:         (vals?.pmv         as number | null) ?? undefined,
+      ticketMedio: (vals?.ticketMedio as number | null) ?? undefined,
+      custoMedio:  (vals?.custoMedio  as number | null) ?? undefined,
+      giro:        (vals?.giro        as number | null) ?? undefined,
+      cobertura:   (vals?.cobertura   as number | null) ?? undefined,
+      mkdPct:      (vals?.mkdPct      as number | null) ?? undefined,
+      gmroi:       (vals?.gmroi       as number | null) ?? undefined,
+    };
+
+    // Helper: aplica delta do M1 sobre os canais salvos e retorna channelData ajustado.
+    // Se o M1 mudou após o último save, cada canal tem sua taxa multiplicada pelo mesmo
+    // fator → o consolidado emergirá EXATAMENTE igual ao novo alvo do M1.
+    const applyDeltaToSaved = (
+      chData: Record<string, Record<string, number>>,
+      channels: ChannelId[],
+      targetRates: MacroRates
+    ): Record<ChannelId, ChannelData> => {
+      const savedCons = computeConsolidatedFromRaw(chData, channels);
+
+      // delta[key] = target_M1 / consolidado_salvo — 1 quando não há mudança
+      const deltas: Partial<Record<string, number>> = {};
+      for (const key of RATE_KEYS_FOR_DELTA) {
+        const base   = savedCons[key];
+        const target = targetRates[key];
+        if (base != null && target != null && base > 0 && Math.abs(target / base - 1) > 0.001) {
+          deltas[key] = target / base;
+        }
+      }
+
+      return Object.fromEntries(
+        channels.map(ch => {
+          const base = { ...(chData[ch] ?? {}) } as Record<string, unknown>;
+          for (const [key, factor] of Object.entries(deltas)) {
+            const v = base[key];
+            if (typeof v === "number" && v > 0) base[key] = v * (factor as number);
+          }
+          const asChannelData = base as unknown as ChannelData;
+          return [ch, applyRevenue(asChannelData, (base.receita as number) ?? 0)];
+        })
+      ) as Record<ChannelId, ChannelData>;
+    };
+
     setPercents(initPercents);
-    if (tenantId) {
-      dbListChannelScenarios(tenantId, selectedYear)
-        .then(rows => setSavedScenarios(rows))
-        .catch(() => setSavedScenarios([]));
+
+    if (!tenantId) {
+      setChannelData(initChannelData(newMacroR, newRates));
+      return;
     }
-  }, [selectedYear, initPercents, tenantId]);
+
+    dbListChannelScenarios(tenantId, selectedYear)
+      .then(rows => {
+        setSavedScenarios(rows);
+        const last = rows.length > 0 ? rows[rows.length - 1] : null;
+
+        if (!last) {
+          // Sem cenário salvo → inicializa com taxas uniformes do M1
+          setChannelData(initChannelData(newMacroR, newRates));
+          return;
+        }
+
+        const chData    = last.channel_data as unknown as Record<string, Record<string, number>>;
+        const savedPcts = last.percents as unknown as Record<ChannelId, number>;
+        const channels  = visibleChannels.length > 0 ? visibleChannels : (["atacado", "varejo", "ecommerce"] as ChannelId[]);
+
+        // Propaga delta proporcional do M1 sobre o cenário salvo.
+        // Caso não haja delta (M1 não mudou), restaura o cenário exatamente.
+        setChannelData(applyDeltaToSaved(chData, channels, newRates));
+        setPercents({ ...initPercents, ...savedPcts });
+      })
+      .catch(() => {
+        setSavedScenarios([]);
+        setChannelData(initChannelData(newMacroR, newRates));
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedYear, tenantId]);
 
   // Scenarios
   const [savedScenarios, setSavedScenarios]         = useState<ChannelScenario[]>([]);
@@ -348,6 +560,19 @@ export default function ChannelPlanning() {
   };
 
   const [isExportingPDF, setIsExportingPDF] = useState(false);
+
+  // ── Approval flow state ───────────────────────────────────────────────────
+  const [showPostApplyModal, setShowPostApplyModal]           = useState(false);
+  const [showSubmitApprovalDialog, setShowSubmitApprovalDialog] = useState(false);
+  const [approvalJustification, setApprovalJustification]    = useState("");
+  const [isSubmittingApproval, setIsSubmittingApproval]      = useState(false);
+  const [alreadyPending, setAlreadyPending]                  = useState(false);
+  // Pedidos direcionados a M2 (de M3 ou M4)
+  const [incomingApprovals, setIncomingApprovals]            = useState<PlanApprovalRequest[]>([]);
+  const [showIncomingApproval, setShowIncomingApproval]      = useState(false);
+  const [activeIncoming, setActiveIncoming]                  = useState<PlanApprovalRequest | null>(null);
+  const [isResolvingApproval, setIsResolvingApproval]        = useState(false);
+
   const handleExportPDF = async () => {
     setIsExportingPDF(true);
     await exportToPDF({
@@ -360,15 +585,58 @@ export default function ChannelPlanning() {
 
   const handleApplyMetas = () => {
     if (!tenantId) return;
-    // Aplica o cenário mais recente e marca o ano como revisado
     const last = savedScenarios[savedScenarios.length - 1];
     if (last) {
-      import("../../services/supabase/channelScenarioService").then(({ applyChannelScenario }) =>
-        applyChannelScenario(tenantId, selectedYear, last.id)
-      ).catch(() => {});
+      applyChannelScenario(tenantId, selectedYear, last.id).catch(() => {});
     }
     setReviewedYears(prev => prev.includes(selectedYear) ? prev : [...prev, selectedYear]);
-    showToast(`Metas do ciclo ${selectedYear} aplicadas. Ciclo marcado como revisado.`);
+    showToast(`Metas do ciclo ${selectedYear} aplicadas.`);
+    setShowPostApplyModal(true);
+  };
+
+  const handleSubmitApproval = async () => {
+    if (!tenantId || !user) return;
+    setIsSubmittingApproval(true);
+    try {
+      // Quem aplicou M1? Lemos created_by do cenário mais recente do planCycle
+      const m1ApplierEmail: string | undefined = undefined; // planCycle não expõe o email do aplicador por hora
+      await createApprovalRequest({
+        tenantId,
+        year:                selectedYear,
+        fromModule:          2,
+        toModule:            1,
+        requesterEmail:      user.email,
+        approverEmail:       m1ApplierEmail,
+        justification:       approvalJustification,
+        proposedData:        consolidated as unknown as Record<string, unknown>,
+        originalData:        (macroValues ?? {}) as Record<string, unknown>,
+        impactedIndicators:  impactedMacro as ImpactedIndicator[],
+        scenarioId:          savedScenarios[savedScenarios.length - 1]?.id,
+      });
+      setAlreadyPending(true);
+      showToast("Solicitação de revisão enviada ao responsável pelo plano macro.");
+      setShowSubmitApprovalDialog(false);
+      setApprovalJustification("");
+    } catch {
+      showToast("Erro ao enviar solicitação. Tente novamente.");
+    }
+    setIsSubmittingApproval(false);
+  };
+
+  const handleResolveIncoming = async (req: PlanApprovalRequest, decision: 'approved' | 'denied') => {
+    if (!user) return;
+    setIsResolvingApproval(true);
+    try {
+      await resolveApproval(req.id, decision, user.email);
+      setIncomingApprovals(prev => prev.filter(r => r.id !== req.id));
+      const next = incomingApprovals.find(r => r.id !== req.id) ?? null;
+      setActiveIncoming(next);
+      if (!next) setShowIncomingApproval(false);
+      showToast(decision === 'approved' ? "Revisão aprovada." : "Revisão negada.");
+    } catch {
+      showToast("Erro ao resolver solicitação.");
+    }
+    setIsResolvingApproval(false);
   };
 
   const handleCompare = () => {
@@ -383,32 +651,45 @@ export default function ChannelPlanning() {
     };
 
     const summary: ScenarioSummary[] = sel.map(sc => {
-      const chs = visibleChannels;
+      const chs    = visibleChannels;
       const chData = (sc.channel_data as unknown as Record<string, Record<string, number>>);
-      const totalR = chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0), 0);
+      const sum    = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
+      // Média ponderada por receita — usada apenas para ticketMedio (sem base absoluta de transações)
+      const totalR          = sum('receita');
       const wAvg = (key: string) =>
         totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
-      const sum = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
+
+      // Absolutos acumulados
+      const totalEstMedio   = sum('estoqueMedioRS');
+      const totalLucroBruto = sum('margemBrutaRS');
+      const totalOrcamento  = sum('orcamento');
+      const totalMkd        = sum('markdown');
+      const totalProd       = sum('producao');
 
       return {
         name: sc.name,
         savedAt: sc.saved_at,
         channels: Object.fromEntries(chs.map(ch => [ch, chData[ch] ?? {}])),
         consolidated: {
-          receita:           totalR,
-          margemBruta:       +wAvg('margemBruta').toFixed(1),
-          margemBrutaRS:     Math.round(totalR * wAvg('margemBruta') / 100),
-          pmv:               +wAvg('pmv').toFixed(0),
-          ticketMedio:       +wAvg('ticketMedio').toFixed(0),
-          custoMedio:        +wAvg('custoMedio').toFixed(0),
-          giro:              +wAvg('giro').toFixed(2),
-          cobertura:         +wAvg('cobertura').toFixed(0),
-          orcamento:         sum('orcamento'),
-          mkdPct:            +wAvg('mkdPct').toFixed(1),
-          markdown:          sum('markdown'),
-          producao:          sum('producao'),
-          totalPecas:        sum('totalPecas'),
-          gmroi:             +wAvg('gmroi').toFixed(2),
+          receita:       totalR,
+          // Margem derivada dos absolutos
+          margemBrutaRS: totalLucroBruto,
+          margemBruta:   totalR > 0 ? (totalLucroBruto / totalR) * 100 : 0,
+          // PMV e CustoMédio derivados dos absolutos
+          pmv:           totalProd > 0 ? totalR / totalProd : 0,
+          custoMedio:    totalProd > 0 ? totalOrcamento / totalProd : 0,
+          // TicketMédio sem base absoluta — média ponderada
+          ticketMedio:   wAvg('ticketMedio'),
+          // Giro, Cobertura e GMROI derivados dos absolutos
+          giro:          totalEstMedio > 0 ? totalR / totalEstMedio : 0,
+          cobertura:     totalR > 0 ? (totalEstMedio / totalR) * 365 : 0,
+          gmroi:         totalEstMedio > 0 ? totalLucroBruto / totalEstMedio : 0,
+          // Somas diretas
+          orcamento:     totalOrcamento,
+          mkdPct:        totalR > 0 ? (totalMkd / totalR) * 100 : 0,
+          markdown:      totalMkd,
+          producao:      totalProd,
+          totalPecas:    sum('totalPecas'),
         },
       };
     });
@@ -417,28 +698,37 @@ export default function ChannelPlanning() {
 
   // ── Consolidated ──────────────────────────────────────────────────────────────
   const consolidated = useMemo(() => {
-    const chs = visibleChannels.map(ch => channelData[ch]);
-    const totalR = chs.reduce((s, c) => s + c.receita, 0);
+    const chs             = visibleChannels.map(ch => channelData[ch]);
+    const totalR          = chs.reduce((s, c) => s + c.receita, 0);
+    const totalEstMedio   = chs.reduce((s, c) => s + c.estoqueMedioRS, 0);
+    const totalLucroBruto = chs.reduce((s, c) => s + c.margemBrutaRS, 0);
+    const totalOrcamento  = chs.reduce((s, c) => s + c.orcamento, 0);
+    const totalMkd        = chs.reduce((s, c) => s + c.markdown, 0);
+    const totalProd       = chs.reduce((s, c) => s + c.producao, 0);
+    // Média ponderada por receita — usada apenas para drivers sem base absoluta (ticketMédio)
     const w = (fn: (c: ChannelData) => number) => totalR > 0 ? chs.reduce((s, c) => s + c.receita * fn(c), 0) / totalR : 0;
-    const totalMkd = chs.reduce((s, c) => s + c.markdown, 0);
-    const totalProd = chs.reduce((s, c) => s + c.producao, 0);
     return {
       receita:           totalR,
-      margemBrutaRS:     Math.round(totalR * w(c => c.margemBruta) / 100),
-      margemBruta:       +w(c => c.margemBruta).toFixed(1),
-      pmv:               +w(c => c.pmv).toFixed(0),
-      ticketMedio:       +w(c => c.ticketMedio).toFixed(0),
-      custoMedio:        +w(c => c.custoMedio).toFixed(0),
-      giro:              +w(c => c.giro).toFixed(2),
-      cobertura:         +w(c => c.cobertura).toFixed(0),
-      orcamento:         chs.reduce((s, c) => s + c.orcamento, 0),
-      estoqueMedioRS:    chs.reduce((s, c) => s + c.estoqueMedioRS, 0),
+      // Margem derivada dos absolutos acumulados
+      margemBrutaRS:     totalLucroBruto,
+      margemBruta:       totalR > 0 ? (totalLucroBruto / totalR) * 100 : 0,
+      // PMV e CustoMédio derivados dos absolutos (Receita/Peças e Orçamento/Peças)
+      pmv:               totalProd > 0 ? totalR / totalProd : 0,
+      custoMedio:        totalProd > 0 ? totalOrcamento / totalProd : 0,
+      // TicketMédio não tem base absoluta de transações — mantém média ponderada
+      ticketMedio:       w(c => c.ticketMedio),
+      // Giro, Cobertura e GMROI derivados dos absolutos acumulados
+      giro:              totalEstMedio > 0 ? totalR / totalEstMedio : 0,
+      cobertura:         totalR > 0 ? (totalEstMedio / totalR) * 365 : 0,
+      gmroi:             totalEstMedio > 0 ? totalLucroBruto / totalEstMedio : 0,
+      // Somas diretas
+      orcamento:         totalOrcamento,
+      estoqueMedioRS:    totalEstMedio,
       estoqueMedioPecas: chs.reduce((s, c) => s + c.estoqueMedioPecas, 0),
-      mkdPct:            +(totalR > 0 ? (totalMkd / totalR) * 100 : 0).toFixed(1),
+      mkdPct:            totalR > 0 ? (totalMkd / totalR) * 100 : 0,
       markdown:          totalMkd,
       producao:          totalProd,
       totalPecas:        totalProd,
-      gmroi:             +w(c => c.gmroi).toFixed(2),
     };
   }, [channelData, visibleChannels]);
 
@@ -459,7 +749,7 @@ export default function ChannelPlanning() {
       const planned = macroValues[key] as number | null;
       const proj    = projected[key];
       if (planned == null || proj == null) return false;
-      return Math.abs((proj - planned) / Math.abs(planned)) * 100 > (RATE_MACRO_FIELDS.has(key) ? 0.5 : 2.0);
+      return isOutsideBand(key, planned as number, proj);
     }).map(key => ({
       key, label: MACRO_FIELD_LABELS[key] ?? key,
       planned: macroValues[key] as number,
@@ -507,14 +797,33 @@ export default function ChannelPlanning() {
 
   // useMemo MUST be before `if (!user) return null` — React rules of hooks
   const kpiFields = useMemo(() => {
-    return [...kpiFieldsBase].sort((a, b) => {
-      const ra = a.macroKey != null && macroKeyOrder.has(a.macroKey) ? macroKeyOrder.get(a.macroKey)! * 2 : 999;
-      const rb = b.macroKey != null && macroKeyOrder.has(b.macroKey) ? macroKeyOrder.get(b.macroKey)! * 2 : 999;
-      const ra2 = a.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : ra;
-      const rb2 = b.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : rb;
-      return ra2 - rb2;
-    });
-  }, [activeMacroKeys]);
+    // Quando M1 tem prioridades configuradas, oculta campos cujo macroKey foi explicitamente
+    // marcado como inativo/dismissed. Campos sem macroKey (markdown, totalPecas, estoqueMedio*,
+    // receita) são sempre exibidos — são derivados essenciais independentes de prioridade.
+    const hasPriorities = activeMacroKeys.length > 0 && !!planCycle?.fieldPriorities;
+    const inactiveKeys = hasPriorities
+      ? new Set(
+          (planCycle!.fieldPriorities ?? [])
+            .filter(fp => fp.status === "inactive" || fp.status === "dismissed")
+            .map(fp => fp.key)
+        )
+      : new Set<string>();
+
+    return [...kpiFieldsBase]
+      .filter(f => {
+        // Sem macroKey: sempre mostra (cálculos derivados essenciais)
+        if (!f.macroKey) return true;
+        // Com macroKey: oculta só se explicitamente inativo no M1
+        return !inactiveKeys.has(f.macroKey);
+      })
+      .sort((a, b) => {
+        const ra = a.macroKey != null && macroKeyOrder.has(a.macroKey) ? macroKeyOrder.get(a.macroKey)! * 2 : 999;
+        const rb = b.macroKey != null && macroKeyOrder.has(b.macroKey) ? macroKeyOrder.get(b.macroKey)! * 2 : 999;
+        const ra2 = a.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : ra;
+        const rb2 = b.key === "margemBrutaRS" && macroKeyOrder.has("margemBruta") ? macroKeyOrder.get("margemBruta")! * 2 + 1 : rb;
+        return ra2 - rb2;
+      });
+  }, [activeMacroKeys, planCycle]);
 
   if (!user) return null;
 
@@ -890,14 +1199,61 @@ export default function ChannelPlanning() {
                 <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
               </button>
             </div>
-            <button onClick={handleApplyMetas}
-              disabled={totalPercent !== 100}
-              title={totalPercent !== 100 ? "Participação dos canais deve somar 100%" : "Aplicar metas e concluir revisão"}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
-                totalPercent === 100 ? "bg-[#28071C] text-[#F6F3AA] hover:opacity-90" : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
-              }`}>
-              <Lock className="w-4 h-4" />Aplicar Metas
-            </button>
+            {/* ── Botão direito: depende do número de desvios macro ── */}
+            {impactedMacro.length === 0 ? (
+              /* 0 desvios → Aplicar normal */
+              <button onClick={handleApplyMetas}
+                disabled={totalPercent !== 100 || savedScenarios.length === 0}
+                title={totalPercent !== 100 ? "Participação deve somar 100%" : savedScenarios.length === 0 ? "Salve um cenário antes de aplicar" : "Aplicar metas e concluir revisão"}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
+                  totalPercent === 100 && savedScenarios.length > 0
+                    ? "bg-[#28071C] text-[#F6F3AA] hover:opacity-90"
+                    : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
+                }`}>
+                <Lock className="w-4 h-4" />Aplicar Metas
+              </button>
+            ) : impactedMacro.length <= 2 ? (
+              /* 1-2 desvios → Submeter para Aprovação */
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={() => {
+                    if (alreadyPending) {
+                      showToast("Já existe uma solicitação pendente para este ciclo.");
+                      return;
+                    }
+                    if (savedScenarios.length === 0) {
+                      showToast("Salve um cenário antes de submeter.");
+                      return;
+                    }
+                    setShowSubmitApprovalDialog(true);
+                  }}
+                  disabled={totalPercent !== 100}
+                  title={totalPercent !== 100 ? "Participação deve somar 100%" : alreadyPending ? "Solicitação já enviada" : "Submeter para aprovação do plano macro"}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
+                    totalPercent === 100
+                      ? alreadyPending
+                        ? "bg-amber-100 text-amber-800 border border-amber-300 cursor-not-allowed"
+                        : "bg-[#7598CF] text-white hover:opacity-90"
+                      : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
+                  }`}>
+                  <SendHorizonal className="w-4 h-4" />
+                  {alreadyPending ? "Aguardando aprovação…" : "Submeter para Aprovação"}
+                </button>
+                <span className="text-[9px] text-amber-700 font-medium">
+                  {impactedMacro.length} indicador{impactedMacro.length > 1 ? 'es' : ''} com desvio — requer aprovação do plano macro
+                </span>
+              </div>
+            ) : (
+              /* 3+ desvios → Bloqueado */
+              <div className="flex flex-col items-end gap-1">
+                <button disabled className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm bg-red-100 text-red-400 cursor-not-allowed">
+                  <Lock className="w-4 h-4" />Aplicar Metas
+                </button>
+                <span className="text-[9px] text-red-600 font-medium">
+                  {impactedMacro.length} desvios — ajuste os indicadores destacados para continuar
+                </span>
+              </div>
+            )}
           </div>
           <p className="text-[9px] text-[#28071C]/25 mt-2">
             Cenários não alteram dados oficiais até "Aplicar Metas" ser acionado.
@@ -1067,6 +1423,183 @@ export default function ChannelPlanning() {
 
       {tour.isOpen && (
         <ProductTour steps={CHANNEL_PLANNING_TOUR} onClose={tour.dismiss} />
+      )}
+
+      {/* ── POST-APPLY MODAL ─────────────────────────────────────────────────── */}
+      {showPostApplyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl px-8 py-7 max-w-md w-full mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-[#28071C] font-bold text-base">Metas por Canal aplicadas!</p>
+                <p className="text-[#28071C]/50 text-xs">Módulo 2 — {selectedYear} concluído</p>
+              </div>
+            </div>
+            <p className="text-[#28071C]/60 text-sm mb-6 leading-relaxed">
+              O plano por canal está registrado. O próximo passo é detalhar as metas por divisão de produto dentro de cada canal.
+            </p>
+            <div className="flex flex-col gap-2.5">
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/module3-division-planning"); }}
+                className="w-full flex items-center justify-center gap-2 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl font-semibold text-sm hover:opacity-90">
+                Ir para Módulo 3 — Planejamento por Divisão <ArrowRight className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
+                className="w-full py-2.5 border-2 border-[#28071C]/15 text-[#28071C]/60 rounded-xl font-semibold text-sm hover:bg-gray-50">
+                Voltar ao Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── SUBMIT APPROVAL DIALOG ───────────────────────────────────────────── */}
+      {showSubmitApprovalDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl px-6 py-5 max-w-lg w-full mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-[#28071C] font-bold text-base">Submeter Plano para Aprovação</h3>
+                <p className="text-[#28071C]/45 text-xs mt-0.5">O responsável pelo plano macro receberá um aviso de revisão</p>
+              </div>
+              <button onClick={() => setShowSubmitApprovalDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Indicadores impactados */}
+            <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <p className="text-amber-800 text-xs font-semibold uppercase tracking-wide mb-2">
+                {impactedMacro.length} indicador{impactedMacro.length > 1 ? 'es' : ''} com desvio do plano macro
+              </p>
+              <div className="space-y-1.5">
+                {impactedMacro.map(item => (
+                  <div key={item.key} className="flex justify-between text-xs text-amber-900">
+                    <span className="font-medium">{item.label}</span>
+                    <span className="font-mono text-amber-700">
+                      Meta {fmt(item.planned, item.isRate ? "percent" : "currency")} →&nbsp;
+                      Proposto {fmt(item.projected, item.isRate ? "percent" : "currency")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <label className="block text-xs font-semibold text-[#28071C]/70 mb-1.5 uppercase tracking-wide">
+              Justificativa *
+            </label>
+            <textarea
+              autoFocus
+              value={approvalJustification}
+              onChange={e => setApprovalJustification(e.target.value)}
+              placeholder="Explique por que o desvio proposto é necessário e como a nova distribuição atende melhor ao negócio…"
+              className="w-full px-4 py-3 border-2 border-[#28071C]/15 rounded-xl text-sm focus:border-[#7598CF] focus:outline-none resize-none mb-5"
+              rows={5}
+            />
+
+            <div className="flex gap-3">
+              <button onClick={() => setShowSubmitApprovalDialog(false)}
+                className="flex-1 py-2.5 border-2 border-[#28071C]/15 rounded-xl text-sm font-semibold text-[#28071C]/60 hover:bg-gray-50">
+                Cancelar
+              </button>
+              <button
+                onClick={handleSubmitApproval}
+                disabled={!approvalJustification.trim() || isSubmittingApproval}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold disabled:opacity-40 hover:opacity-90">
+                <SendHorizonal className="w-4 h-4" />
+                {isSubmittingApproval ? "Enviando…" : "Enviar solicitação"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── INCOMING APPROVAL MODAL (de M3 ou M4 → M2) ──────────────────────── */}
+      {showIncomingApproval && activeIncoming && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
+              <div>
+                <p className="text-[#F6F3AA] font-bold text-base">
+                  Pedido de Revisão — Módulo {activeIncoming.from_module}
+                </p>
+                <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
+                  Solicitado por {activeIncoming.requester_email} · {new Date(activeIncoming.created_at).toLocaleDateString("pt-BR")}
+                </p>
+              </div>
+              {incomingApprovals.length > 1 && (
+                <span className="text-[10px] bg-white/20 text-[#F6F3AA] rounded-full px-2 py-0.5 font-semibold">
+                  {incomingApprovals.length} pendentes
+                </span>
+              )}
+            </div>
+
+            <div className="overflow-y-auto p-6 flex-1">
+              {/* Comparativo original vs proposto */}
+              <h4 className="text-[#28071C] font-semibold text-sm mb-3 uppercase tracking-wide">
+                Comparativo de Indicadores
+              </h4>
+              <div className="overflow-x-auto mb-5">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="text-left px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest rounded-tl-lg">Indicador</th>
+                      <th className="text-right px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest">Plano Atual (M2)</th>
+                      <th className="text-right px-3 py-2 bg-[#7598CF]/10 text-[#7598CF] font-semibold uppercase tracking-widest rounded-tr-lg">Proposto (M{activeIncoming.from_module})</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#28071C]/6">
+                    {(activeIncoming.impacted_indicators as ImpactedIndicator[]).map(item => (
+                      <tr key={item.key} className="hover:bg-[#28071C]/2">
+                        <td className="px-3 py-2 text-[#28071C]/70 font-medium">{item.label}</td>
+                        <td className="px-3 py-2 text-right font-mono text-[#28071C]">
+                          {fmt(item.planned, item.isRate ? "percent" : "currency")}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold text-[#7598CF]">
+                          {fmt(item.projected, item.isRate ? "percent" : "currency")}
+                          <span className={`ml-1.5 text-[9px] font-normal ${item.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                            {item.gap >= 0 ? "+" : ""}{item.isRate ? `${item.gap.toFixed(1)}pp` : `R$${Math.round(item.gap).toLocaleString("pt-BR")}`}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Justificativa */}
+              {activeIncoming.justification && (
+                <div className="mb-5">
+                  <h4 className="text-[#28071C] font-semibold text-sm mb-2 uppercase tracking-wide">Justificativa</h4>
+                  <div className="bg-[#7598CF]/6 border border-[#7598CF]/20 rounded-xl px-4 py-3 text-sm text-[#28071C]/80 leading-relaxed italic">
+                    "{activeIncoming.justification}"
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-[#28071C]/8 flex gap-3 flex-shrink-0">
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, 'denied')}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 border-2 border-red-200 text-red-600 rounded-xl text-sm font-semibold hover:bg-red-50 disabled:opacity-40">
+                Negar revisão
+              </button>
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, 'approved')}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40">
+                {isResolvingApproval ? "Processando…" : "Aceitar e aplicar ajuste"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── PDF hidden element — scenario comparison cards ────────────────── */}

@@ -2,7 +2,7 @@
  * Hook para gerenciar lógica do Módulo 3 - Planejamento por Divisão
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Module3State,
   DivisionPlanBlock,
@@ -46,7 +46,13 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
   };
 }
 
-function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
+/**
+ * Inicializa os blocos de divisão usando as taxas do M1 (macro targets).
+ * Todos os blocos iniciam com a mesma taxa macro → o consolidado inicial
+ * produz EXATAMENTE os valores do M1.
+ * O usuário depois ajusta por divisão; desvios disparam o fluxo de aprovação.
+ */
+function initializeDivisions(macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
   const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
 
   (["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).forEach((divId) => {
@@ -54,10 +60,12 @@ function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
       divisionId: divId,
       participation: DEFAULT_PARTICIPATION[divId],
       indicators: {
-        avgPrice: 195,
-        mkd: 15,
-        margin: 48,
-        sellThrough: 75,
+        // Lê do M1; fallback para valores de referência quando M1 não tem o indicador
+        avgPrice:    195,
+        mkd:         15,
+        margin:      macroTargets?.margin      ?? 48,
+        sellThrough: macroTargets?.sellThrough ?? 75,
+        gmroi:       macroTargets?.gmroi       ?? 2.35,
       },
       priceRange: {
         entry: "119-169",
@@ -87,10 +95,20 @@ function initializeDivisions(): Record<BusinessDivisionId, DivisionPlanBlock> {
 }
 
 export function useModule3(options: UseModule3Options) {
+  // Rastreia contexto anterior para detecção de delta: temporada + taxas do M1.
+  // Quando a temporada muda → re-inicializa divisões (sem delta).
+  // Quando as taxas do M1 mudam dentro da mesma temporada → aplica delta proporcional.
+  const prevMacroCtxRef = useRef<{
+    seasonId: string;
+    margin: number;
+    gmroi: number;
+    sellThrough: number;
+  } | null>(null);
+
   const [state, setState] = useState<Module3State>(() => ({
     selectedSeasonId: options.seasonId,
     referenceSeasonId: options.referenceSeasonId,
-    divisions: initializeDivisions(),
+    divisions: initializeDivisions(options.macroTargets),
     scenarios: options.seasonId ? listModule3Scenarios(options.seasonId) : [],
     activeScenarioId: undefined,
     consolidated: buildInitialConsolidated(options.macroTargets),
@@ -105,7 +123,7 @@ export function useModule3(options: UseModule3Options) {
       ...prev,
       selectedSeasonId: options.seasonId,
       referenceSeasonId: options.referenceSeasonId,
-      divisions: initializeDivisions(),
+      divisions: initializeDivisions(options.macroTargets),
       scenarios: listModule3Scenarios(options.seasonId),
       activeScenarioId: undefined,
       consolidated: buildInitialConsolidated(options.macroTargets),
@@ -113,14 +131,70 @@ export function useModule3(options: UseModule3Options) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.seasonId]);
 
-  // Atualizar macroTargets no consolidado quando mudam
+  // Propagação delta: quando as taxas do M1 mudam dentro da mesma temporada,
+  // cada divisão tem sua taxa multiplicada pelo mesmo fator k.
+  // Prova: consolidated_rate = Σ(revDiv × rate_div) / ΣrevDiv
+  //        → após ×k em todos: = k × old_consolidated = exatamente o novo alvo do M1.
   useEffect(() => {
-    setState((prev) => ({
-      ...prev,
-      consolidated: recalcConsolidated(prev.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
-    }));
+    const prev = prevMacroCtxRef.current;
+    const curr = {
+      seasonId:    options.seasonId,
+      margin:      options.macroTargets.margin,
+      gmroi:       options.macroTargets.gmroi,
+      sellThrough: options.macroTargets.sellThrough,
+    };
+    prevMacroCtxRef.current = curr;
+
+    if (!prev || prev.seasonId !== curr.seasonId) {
+      // Temporada mudou (ou primeira carga) — re-init já feito pelo efeito de temporada;
+      // só atualiza o consolidado.
+      setState(prevState => ({
+        ...prevState,
+        consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+      }));
+      return;
+    }
+
+    // Mesma temporada — detecta quais taxas mudaram no M1
+    const deltas: Partial<Record<"margin" | "gmroi" | "sellThrough", number>> = {};
+    if (prev.margin      > 0 && curr.margin      > 0 && Math.abs(curr.margin      / prev.margin      - 1) > 0.001) deltas.margin      = curr.margin      / prev.margin;
+    if (prev.gmroi       > 0 && curr.gmroi       > 0 && Math.abs(curr.gmroi       / prev.gmroi       - 1) > 0.001) deltas.gmroi       = curr.gmroi       / prev.gmroi;
+    if (prev.sellThrough > 0 && curr.sellThrough > 0 && Math.abs(curr.sellThrough / prev.sellThrough - 1) > 0.001) deltas.sellThrough = curr.sellThrough / prev.sellThrough;
+
+    setState(prevState => {
+      if (Object.keys(deltas).length === 0) {
+        // Apenas receita mudou — recalcula consolidado sem alterar divisões
+        return {
+          ...prevState,
+          consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+        };
+      }
+
+      // Aplica delta proporcional a cada divisão — o consolidado emergirá = alvo M1 exato
+      const newDivisions: Record<BusinessDivisionId, DivisionPlanBlock> =
+        {} as Record<BusinessDivisionId, DivisionPlanBlock>;
+
+      for (const divId of Object.keys(prevState.divisions) as BusinessDivisionId[]) {
+        const block = prevState.divisions[divId];
+        newDivisions[divId] = {
+          ...block,
+          indicators: {
+            ...block.indicators,
+            margin:      deltas.margin      ? block.indicators.margin                 * deltas.margin      : block.indicators.margin,
+            gmroi:       deltas.gmroi       ? (block.indicators.gmroi       ?? 0)     * deltas.gmroi       : block.indicators.gmroi,
+            sellThrough: deltas.sellThrough ? block.indicators.sellThrough            * deltas.sellThrough : block.indicators.sellThrough,
+          },
+        };
+      }
+
+      return {
+        ...prevState,
+        divisions:   newDivisions,
+        consolidated: recalcConsolidated(newDivisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+      };
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.macroTargets.revenue, options.macroTargets.margin, options.macroTargets.gmroi]);
+  }, [options.macroTargets.revenue, options.macroTargets.margin, options.macroTargets.gmroi, options.macroTargets.sellThrough, options.seasonId]);
 
   // ─── Recalcular Consolidado ────────────────────────────────────────────────
   function recalcConsolidated(
@@ -129,7 +203,9 @@ export function useModule3(options: UseModule3Options) {
     seasonId: string,
     refSeasonId: string
   ): SeasonConsolidated {
-    const raw = calculateScenarioConsolidated(divisions);
+    // Passa a receita macro da temporada para que o cálculo derive receita por divisão
+    // de forma exata (receita_div = revenue × participation/100 → Σ = revenue exato).
+    const raw = calculateScenarioConsolidated(divisions, macroTargets.revenue > 0 ? macroTargets.revenue : undefined);
 
     const reachesMacroTarget =
       (macroTargets.revenue === 0 || raw.totalRevenue >= macroTargets.revenue * 0.95) &&
@@ -145,6 +221,10 @@ export function useModule3(options: UseModule3Options) {
       avgMargin: raw.avgMargin,
       avgSellThrough: raw.avgSellThrough,
       avgGmroi: raw.avgGmroi,
+      avgPmv: raw.avgPmv,
+      avgMkd: raw.avgMkd,
+      avgGiro: raw.avgGiro,
+      avgCobertura: raw.avgCobertura,
       macroTarget: macroTargets,
       reachesMacroTarget,
       gaps: {

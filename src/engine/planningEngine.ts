@@ -395,30 +395,25 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         s.receitaBruta   = 'calculated'
         s.margemBruta    = 'locked'
       } else if (hasRL && hasMarg && v.margemBruta !== null) {
-        if (ambosAtivos && v.custoMedio !== null) {
-          s.custoMedio = 'locked'
-          applyMkdFromMargem()
-        } else {
-          const cpv    = rl * (1 - v.margemBruta / 100)
-          v.custoMedio = cpv / pec
-          s.custoMedio = 'locked'
-          s.margemBruta = 'locked'
-        }
+        // RL + Margem → CustoMédio absorve (mkdPct só absorve se custoMedio TAMBÉM foi tocado)
+        const cpv    = rl * (1 - v.margemBruta / 100)
+        if (pec && pec > 0) { v.custoMedio = cpv / pec; s.custoMedio = 'locked' }
+        s.margemBruta = 'locked'
       } else if (hasRL && hasCusto && v.custoMedio) {
+        // RL + CustoMédio → Margem% absorve (derivada).
+        // CustoMédio NÃO trava: hierarquia T3 é Custo > Margem > MKD%.
+        // CustoMédio é sempre soberano — nunca deve ser bloqueado quando editado.
         const cpv     = v.custoMedio * pec
         v.margemBruta = ((rl - cpv) / rl) * 100
         s.margemBruta = 'calculated'
-        s.custoMedio  = 'locked'
+        // s.custoMedio permanece 'free' — editável após este passo
       }
     } else if (hasMarg && !hasCusto && !hasRL && v.margemBruta !== null && rl && pec && pec > 0) {
-      if (ambosAtivos && v.custoMedio !== null) {
-        s.custoMedio = 'locked'
-        applyMkdFromMargem()
-      } else {
-        const cpv    = rl * (1 - v.margemBruta / 100)
-        v.custoMedio = cpv / pec
-        s.custoMedio = 'locked'
-      }
+      // Só Margem tocada → CustoMédio absorve (mkdPct mantém-se livre)
+      // mkdPct só vira 'calculated' quando usuário toca custo E remarcação juntos
+      const cpv    = rl * (1 - v.margemBruta / 100)
+      v.custoMedio = cpv / pec
+      s.custoMedio = 'locked'
     } else if (hasCusto && !hasMarg && !hasRL && v.custoMedio && rl && pec && pec > 0) {
       const cpv     = v.custoMedio * pec
       v.margemBruta = ((rl - cpv) / rl) * 100
@@ -547,7 +542,10 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         s.comprasPecas = 'calculated'
       }
     } else {
-      // Nenhum tocado → fórmula delta (comportamento legado)
+      // Nenhum tocado (nem orcamento nem comprasPecas) → fórmula delta
+      // Orçamento deriva de: (PeçasVendidas × CustoMédio) + variação de estoque
+      // s.orcamento permanece 'free' — campo primário de T4, sempre editável pelo usuário.
+      // (Remover a flag 'calculated' condicional a producaoPecas que bloqueava o campo)
       const pec     = v.pecasVendidas
       const estPlan = v.estoqueMediao
       const estBase = base.estoqueMediao ?? 0
@@ -555,9 +553,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
       if (pec !== null && custo !== null && custo > 0 && estPlan !== null) {
         const orcCalc = (pec * custo) + (estPlan - estBase)
         v.orcamento   = Math.max(0, orcCalc)
-        if (touched.has('producaoPecas')) {
-          s.orcamento = 'calculated'
-        }
+        // Orçamento fica 'free' — usuário pode sobrescrever editando diretamente
         // ComprasPeças deriva do orcamento calculado
         v.comprasPecas = Math.round(v.orcamento / custo)
         s.comprasPecas = 'calculated'

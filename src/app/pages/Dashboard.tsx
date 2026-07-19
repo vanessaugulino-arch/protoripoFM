@@ -7,9 +7,8 @@ import {
   MonitorPlay, ClipboardList, SlidersHorizontal, Bug, HelpCircle,
   FlaskConical,
 } from "lucide-react";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
-import { getChannelReviewedYears } from "../../services/channelScenarioService";
-import { hasModule3ActiveScenario } from "../../services/module3ScenarioService";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
+import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 
@@ -36,8 +35,8 @@ const DASHBOARD_TOUR: TourStep[] = [
   },
   {
     targetId: "tour-module-4",
-    title: "Validação de Ciclo",
-    content: "Aqui você confere o ritmo: a curva de vendas mês a mês por canal, comparada ao período real da coleção. Depois, calibre a entrada de mercadorias — seja por produção ou compra —, garantindo previsibilidade de orçamento e prevenção de rupturas. Qualquer gap de prazo ou volume aparece aqui, antes de comprometer o seu caixa.",
+    title: "Sazonalidade",
+    content: "Aqui você valida o ritmo da coleção: distribua a receita mês a mês por canal e confira se a curva está alinhada ao calendário da temporada. A distribuição mensal ancora o planejamento de abastecimento e previne rupturas.",
   },
   {
     targetId: "tour-module-5",
@@ -116,12 +115,12 @@ const MODULE_CARDS: ModuleCard[] = [
   },
   {
     id: 4,
-    title: "Validação de Ciclo",
+    title: "Sazonalidade",
     level: "Tático",
     levelColor: "text-[#9B8CD8]",
     icon: Package,
-    description: "Ajuste a curva de vendas por canal para definir o orçamento e/ou produção no período da coleção desejada.",
-    cta: "Validar ciclo",
+    description: "Distribua a receita mês a mês e valide a curva da coleção por canal. A distribuição mensal ancora o planejamento de abastecimento e previne rupturas.",
+    cta: "Planejar sazonalidade",
     route: "/cycle-validation",
     ceoOnly: true,
     requiresModules: [2],
@@ -162,6 +161,7 @@ function isModuleUnlocked(
   card: ModuleCard,
   plannedYears: number[],
   reviewedYears: number[],
+  hasActiveM3: boolean,
   isDemoMode: boolean,
 ): boolean {
   if (card.id === 1) return true;
@@ -173,7 +173,7 @@ function isModuleUnlocked(
   return card.requiresModules.every((req) => {
     if (req === 1) return Boolean(getPlanCycle(latestYear)?.versions?.length);
     if (req === 2) return reviewedYears.includes(latestYear);
-    if (req === 3) return hasModule3ActiveScenario();
+    if (req === 3) return hasActiveM3;
     return true;
   });
 }
@@ -188,7 +188,8 @@ export default function Dashboard() {
   const tour = useTour("dashboard");
 
   const plannedYears = getPlannedYears();
-  const reviewedYears = getChannelReviewedYears();
+  const [reviewedYears, setReviewedYears] = useState<number[]>([]);
+  const [hasM3Active, setHasM3Active] = useState(false);
 
   // Modo Desenvolvimento: bypassa todos os locks — disponível para client_admin e support
   const [devMode, setDevMode] = useState<boolean>(() => {
@@ -217,6 +218,19 @@ export default function Dashboard() {
       const u = JSON.parse(storedUserStr);
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
       if (tid) {
+        // Carrega anos revisados (M2) e cenário ativo M3 do Supabase
+        getReviewedYears(tid).then(setReviewedYears).catch(() => {});
+        supabase
+          .from("division_scenarios")
+          .select("id")
+          .eq("tenant_id", tid)
+          .eq("is_applied", true)
+          .limit(1)
+          .then(
+            ({ data }: { data: { id: string }[] | null }) => setHasM3Active((data ?? []).length > 0),
+            () => {},
+          );
+
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
           supabase.from("sales_history").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
@@ -256,7 +270,7 @@ export default function Dashboard() {
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, plannedYears, reviewedYears, allUnlocked)) return;
+    if (!isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked)) return;
     navigate(card.route);
   };
 
@@ -387,7 +401,7 @@ export default function Dashboard() {
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, allUnlocked);
+            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;

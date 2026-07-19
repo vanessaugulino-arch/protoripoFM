@@ -184,16 +184,21 @@ export default function PlanningSetup() {
       const fps = existingCycle.fieldPriorities as PlanFieldPriority[]
       setFocus(f)
       if (fps?.length) {
+        // Filtra chaves que existem no PLAN_INDICATORS atual (previne crash com dados stale do localStorage)
+        const knownKeys = new Set(PLAN_INDICATORS.map(i => i.key))
         const initStatuses: Record<string, FieldStatus> = {}
         const order: string[] = []
         const refs = new Set<string>()
         let dismissed = 0
         for (const fp of fps) {
+          if (!knownKeys.has(fp.key)) continue   // ignora chaves obsoletas
           initStatuses[fp.key] = fp.status as FieldStatus
           if (fp.isPriority) order.push(fp.key)
           if (fp.isReference) refs.add(fp.key)
           if (fp.status === 'dismissed') dismissed++
         }
+        // Garante que Receita Bruta está sempre presente
+        if (!order.includes(RECEITA_KEY)) order.unshift(RECEITA_KEY)
         setStatuses(initStatuses)
         setActiveOrder(order)
         setReferences(refs)
@@ -669,7 +674,9 @@ export default function PlanningSetup() {
                   )}
 
                   {activeOrder.map((key, idx) => {
-                    const ind       = indMeta(key)
+                    const ind = indMeta(key)
+                    if (!ind) return null   // guard: ignora chave sem metadado (dados stale)
+
                     const status    = statuses[key] as Exclude<FieldStatus, 'inactive'>
                     const isRef     = references.has(key)
                     const isFirst   = idx === 0
@@ -808,6 +815,7 @@ export default function PlanningSetup() {
 
                   {inactiveKeys.map(key => {
                     const ind           = indMeta(key)
+                    if (!ind) return null   // guard: chave obsoleta
                     const isDismissed   = statuses[key] === "dismissed"
                     const canUnlockThis = canUnlock && !isDismissed
                     return (

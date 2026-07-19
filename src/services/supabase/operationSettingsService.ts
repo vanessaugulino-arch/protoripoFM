@@ -113,20 +113,23 @@ export async function saveTierLabels(
 }
 
 // ─── Salvar apenas faixas por categoria (P1/P2/P3) ───────────────────────────
+// Usa a função Postgres save_faixas_categoria_with_history para:
+//   1. Fazer upsert de faixas_categoria na linha do tenant
+//   2. Acumular snapshot {saved_at, faixas} em faixas_categoria_historico (jsonb[])
+// Operação atômica — sem race condition entre leitura e escrita do histórico.
 
 export async function saveFaixasCategoria(
   tenantId: string,
   faixas: FaixaCategoria[]
 ): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const row: any = {
-    tenant_id: tenantId,
-    faixas_categoria: faixas,
-    updated_at: new Date().toISOString(),
-  };
-  const { error } = await supabase
-    .from("operation_settings")
-    .upsert(row, { onConflict: "tenant_id" });
+  const { error } = await (supabase as any).rpc(
+    "save_faixas_categoria_with_history",
+    {
+      p_tenant_id: tenantId,
+      p_faixas: faixas,
+    }
+  );
   if (error) throw error;
 }
 

@@ -53,6 +53,14 @@ import ImportWizard from "../components/ImportWizard";
 import { ColorBankCard } from "../components/ColorBankCard";
 import { HierarchyConceptSlides } from "../components/HierarchyConceptSlides";
 import {
+  listColecoes,
+  insertColecao,
+  updateColecao,
+  deleteColecao,
+  deleteColecoesBySeason,
+  type ColecaoRow,
+} from "../../services/supabase/collectionsService";
+import {
   fetchHierarchyPaths,
   fetchHierDistinct,
   searchProductsForMigration,
@@ -155,14 +163,7 @@ interface UserData {
 // Temporada interface e helpers importados de temporadaService
 
 // ─── Coleções / Drops ─────────────────────────────────────────────────────────
-// Podem ser editadas a qualquer momento
-interface Colecao {
-  id: number;
-  temporadaId: string; // uuid da season no Supabase
-  nome: string;
-  dataInicio: string; // YYYY-MM-DD
-  dataFim: string;    // YYYY-MM-DD
-}
+// Gerenciadas via Supabase (collectionsService). ColecaoRow é o tipo canônico.
 
 // FaixaCategoria (P1/P2/P3 por grupo/categoria) importada do serviço
 // FaixaPreco é alias para compatibilidade interna
@@ -218,8 +219,6 @@ const SYSTEM_FIELDS_HIERARQUIA: SystemField[] = [
   { key: "hierLevel3", label: "Nível Hierárquico 3",               required: false },
   { key: "hierLevel4", label: "Nível Hierárquico 4",               required: false },
 ];
-
-const COLECOES_KEY = "fashionmind_colecoes";
 
 // ─── Componente recursivo da árvore de hierarquia ────────────────────────────
 function HierNodeRow({
@@ -452,41 +451,28 @@ export default function OperationSettings() {
   const [editingCanalId,  setEditingCanalId]  = useState<string | null>(null);
   const [editingCanalMes, setEditingCanalMes] = useState("");
 
-  // ── Coleções / Drops ─────────────────────────────────────────────────────────
-  const [colecoes, setColecoes] = useState<Colecao[]>(() => {
-    try {
-      const raw = localStorage.getItem(COLECOES_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-  });
+  // ── Coleções / Drops — carregadas do Supabase via useEffect ─────────────────
+  const [colecoes, setColecoes] = useState<ColecaoRow[]>([]);
   const [selectedTemporadaId, setSelectedTemporadaId] = useState<string | "">("");
   const [colNome,     setColNome]     = useState("");
   const [colInicio,   setColInicio]   = useState("");
   const [colFim,      setColFim]      = useState("");
-  const [editingColId, setEditingColId] = useState<number | null>(null);
+  const [editingColId, setEditingColId] = useState<string | null>(null);
 
   // ── Regra de bloqueio: coleções com produtos em produção ───────────────────
   // Apenas datas de entrada podem ser alteradas quando a coleção já tem produtos.
   const [lockedColNames, setLockedColNames] = useState<Set<string>>(new Set());
 
 
-  // ── Hierarquia de Produtos ───────────────────────────────────────────────────
-  const [hierDivisaoAtiva, setHierDivisaoAtiva] = useState<boolean>(() => {
-    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).hierDivisaoAtiva ?? false : false; } catch { return false; }
-  });
-  const [hierOrdem, setHierOrdem] = useState<"divisao_primeiro" | "grupo_primeiro">(() => {
-    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).hierOrdem ?? "grupo_primeiro" : "grupo_primeiro"; } catch { return "grupo_primeiro"; }
-  });
-  const [subcategorias, setSubcategorias] = useState<string[]>(() => {
-    try { const r = localStorage.getItem("fashionmind_hierarquia"); return r ? JSON.parse(r).subcategorias ?? SUBCATEGORIAS_DEFAULT : SUBCATEGORIAS_DEFAULT; } catch { return SUBCATEGORIAS_DEFAULT; }
-  });
+  // ── Hierarquia de Produtos — carregados do Supabase via useEffect ───────────
+  const [hierDivisaoAtiva, setHierDivisaoAtiva] = useState<boolean>(false);
+  const [hierOrdem, setHierOrdem] = useState<"divisao_primeiro" | "grupo_primeiro">("grupo_primeiro");
+  const [subcategorias, setSubcategorias] = useState<string[]>(SUBCATEGORIAS_DEFAULT);
   const [novaSubcategoria, setNovaSubcategoria] = useState("");
   const [hierSavedOk, setHierSavedOk] = useState(false);
 
-  // ── Faixas de Preço por Categoria ────────────────────────────────────────────
-  const [faixasPreco, setFaixasPreco] = useState<FaixaPreco[]>(() => {
-    try { const r = localStorage.getItem("fashionmind_faixas_preco"); return r ? JSON.parse(r) : []; } catch { return []; }
-  });
+  // ── Faixas de Preço por Categoria — carregadas do Supabase via useEffect ─────
+  const [faixasPreco, setFaixasPreco] = useState<FaixaPreco[]>([]);
   const [fpGrupo,    setFpGrupo]    = useState("");
   const [fpDivisao,  setFpDivisao]  = useState("");
   const [fpCategoria, setFpCategoria] = useState("");
@@ -508,42 +494,27 @@ export default function OperationSettings() {
   const [showFaixasHistoryModal, setShowFaixasHistoryModal] = useState(false);
 
   // ── Faixas de Preço — Catálogo (tier labels simples: nome, min, max) ─────────
-  const TIER_LABELS_KEY = "fashionmind_tier_labels";
-  const [tierLabels, setTierLabels] = useState<TierLabel[]>(() => {
-    try { const r = localStorage.getItem("fashionmind_tier_labels"); return r ? JSON.parse(r) : []; } catch { return []; }
-  });
+  const [tierLabels, setTierLabels] = useState<TierLabel[]>([]);
   const [tlNome,      setTlNome]      = useState("");
   const [tlMin,       setTlMin]       = useState<number>(0);
   const [tlMax,       setTlMax]       = useState<number>(0);
   const [tlSavedOk,   setTlSavedOk]   = useState(false);
   const [tlImporting, setTlImporting] = useState(false);
 
-  // ── Cadastro de Básicos ──────────────────────────────────────────────────────
-  const [basicosSkus, setBasicosSkus] = useState<string>(() => {
-    try { const r = localStorage.getItem("fashionmind_basicos_sustentador"); return r ? JSON.parse(r).basicosSkus ?? "" : ""; } catch { return ""; }
-  });
+  // ── Cadastro de Básicos — carregados do Supabase via useEffect ───────────────
+  const [basicosSkus, setBasicosSkus] = useState<string>("");
   const [basicosSavedOk, setBasicosSavedOk] = useState(false);
 
   // Básicos — busca e seleção de produtos do DB
-  const [basicosSkuArr, setBasicosSkuArr] = useState<string[]>(() => {
-    try {
-      const r = localStorage.getItem("fashionmind_basicos_sustentador");
-      const raw = r ? JSON.parse(r).basicosSkus ?? "" : "";
-      if (!raw) return [];
-      if (raw.startsWith("[")) return JSON.parse(raw) as string[];
-      return raw.split(",").map((s: string) => s.trim()).filter(Boolean);
-    } catch { return []; }
-  });
+  const [basicosSkuArr, setBasicosSkuArr] = useState<string[]>([]);
   const [basicosProds, setBasicosProds]     = useState<ProductForMigration[]>([]); // detalhes dos SKUs selecionados
   const [basicosSearch, setBasicosSearch]   = useState("");
   const [basicosResults, setBasicosResults] = useState<ProductForMigration[]>([]);
   const [basicosSearching, setBasicosSearching] = useState(false);
   const [basicosShowDrop, setBasicosShowDrop]   = useState(false);
 
-  // ── Hierarquia estruturada (árvore de Divisão → Grupo → Categoria → Subcat.) ──
-  const [hierStruct, setHierStruct] = useState<HierNode[]>(() => {
-    try { return JSON.parse(localStorage.getItem(HIER_STRUCT_KEY) ?? '[]') } catch { return [] }
-  });
+  // ── Hierarquia estruturada — carregada do Supabase via useEffect ─────────────
+  const [hierStruct, setHierStruct] = useState<HierNode[]>([]);
   const [hierExpanded, setHierExpanded] = useState<Set<string>>(new Set());
   const [hierAddTarget, setHierAddTarget] = useState<string | null>(null); // 'root' | nodeId
   const [hierAddLabel,  setHierAddLabel]  = useState('');
@@ -669,6 +640,11 @@ export default function OperationSettings() {
           .then(setTemporadas)
           .catch(err => console.error("Erro ao carregar temporadas:", err));
 
+        // Carrega coleções do Supabase
+        listColecoes(u.tenant_id)
+          .then(setColecoes)
+          .catch(err => console.error("Erro ao carregar coleções:", err));
+
         // Carrega operation_settings do Supabase
         getOperationSettings(u.tenant_id).then(row => {
           if (!row) return;
@@ -677,24 +653,19 @@ export default function OperationSettings() {
             const nodes = JSON.parse(row.hier_ordem);
             if (Array.isArray(nodes) && nodes.length > 0) {
               setHierStruct(nodes);
-              try { localStorage.setItem(HIER_STRUCT_KEY, JSON.stringify(nodes)); } catch { /* */ }
             }
-          } catch { /* format mismatch — keep localStorage */ }
+          } catch { /* format mismatch — ignora */ }
           setHierDivisaoAtiva(row.hier_divisao_ativa);
           setSubcategorias(row.subcategorias ?? SUBCATEGORIAS_DEFAULT);
           // Básicos — carrega SKUs do DB
           if (row.basicos_skus) setBasicosSkus(row.basicos_skus);
           // Faixas de preço — catálogo (tier labels)
           if (Array.isArray(row.faixas_preco) && row.faixas_preco.length > 0) {
-            const labels = row.faixas_preco as TierLabel[];
-            setTierLabels(labels);
-            try { localStorage.setItem("fashionmind_tier_labels", JSON.stringify(labels)); } catch { /* */ }
+            setTierLabels(row.faixas_preco as TierLabel[]);
           }
           // Faixas de preço — por categoria (P1/P2/P3)
           if (Array.isArray(row.faixas_categoria) && row.faixas_categoria.length > 0) {
-            const cats = row.faixas_categoria as FaixaPreco[];
-            setFaixasPreco(cats);
-            try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(cats)); } catch { /* */ }
+            setFaixasPreco(row.faixas_categoria as FaixaPreco[]);
           }
           // Rótulos de hierarquia
           if (row.hier_labels) setHierLabels(row.hier_labels as HierLabels);
@@ -716,7 +687,7 @@ export default function OperationSettings() {
               .in("sku", skuArr)
               .then(({ data }) => { if (data) setBasicosProds(data as ProductForMigration[]); });
           }
-        }).catch(() => { /* fallback to localStorage already loaded in useState init */ });
+        }).catch(err => console.error("Erro ao carregar operation_settings:", err));
 
         // Carrega hierarquia dos produtos reais
         const tid = u.tenant_id;
@@ -753,9 +724,6 @@ export default function OperationSettings() {
   const persistTemporadas = (data: Temporada[]) => {
     setTemporadas(data);
   };
-  const persistColecoes = (data: Colecao[]) => {
-    try { localStorage.setItem(COLECOES_KEY, JSON.stringify(data)); } catch { /* silent */ }
-  };
 
   // ── Handlers: Temporadas ──────────────────────────────────────────────────────
   const handleSaveTemporada = async () => {
@@ -784,14 +752,12 @@ export default function OperationSettings() {
   const executeDeleteTemporada = async (id: string, deleteLinkedColecoes: boolean) => {
     try {
       await deleteSeasonDb(id);
-      let updatedColecoes = colecoes;
-      if (deleteLinkedColecoes) {
-        updatedColecoes = colecoes.filter(c => c.temporadaId !== id);
-        setColecoes(updatedColecoes);
-        persistColecoes(updatedColecoes);
+      if (deleteLinkedColecoes && user?.tenant_id) {
+        await deleteColecoesBySeason(user.tenant_id, id);
+        setColecoes(prev => prev.filter(c => c.season_id !== id));
       }
       persistTemporadas(temporadas.filter(t => t.id !== id));
-      if (editingColId && colecoes.find(c => c.id === editingColId)?.temporadaId === id) {
+      if (editingColId && colecoes.find(c => c.id === editingColId)?.season_id === id) {
         setEditingColId(null); setColNome(""); setColInicio(""); setColFim("");
       }
     } catch (err) {
@@ -806,7 +772,7 @@ export default function OperationSettings() {
       alert("Temporadas de anos fiscais encerrados não podem ser excluídas.");
       return;
     }
-    const linkedColecoes = colecoes.filter(c => c.temporadaId === t.id);
+    const linkedColecoes = colecoes.filter(c => c.season_id === t.id);
 
     // Temporada auto-gerada → modal de impacto
     if (t.autoGerada) {
@@ -850,7 +816,7 @@ export default function OperationSettings() {
       editNome:         editingAutoNome.trim() || t.nome,
       editMesInicio:    editingAutoInicio,
       editMesFim:       editingAutoFim,
-      hasLinkedColecoes: colecoes.some(c => c.temporadaId === t.id),
+      hasLinkedColecoes: colecoes.some(c => c.season_id === t.id),
     });
   };
 
@@ -949,8 +915,8 @@ export default function OperationSettings() {
   };
 
   // ── Handlers: Coleções ────────────────────────────────────────────────────────
-  const handleSaveColecao = () => {
-    if (!selectedTemporadaId) { alert("Selecione uma temporada."); return; }
+  const handleSaveColecao = async () => {
+    if (!user?.tenant_id || !selectedTemporadaId) { alert("Selecione uma temporada."); return; }
     if (!colNome.trim())      { alert("Preencha o nome da coleção."); return; }
     if (!colInicio || !colFim){ alert("Preencha as datas de início e fim."); return; }
     if (colInicio > colFim)   { alert("A data de início deve ser anterior à data de fim."); return; }
@@ -967,45 +933,51 @@ export default function OperationSettings() {
       return;
     }
 
-    let updated: Colecao[];
-    if (editingColId !== null) {
-      updated = colecoes.map(c =>
-        c.id === editingColId
-          ? { ...c, nome: colNome.trim(), dataInicio: colInicio, dataFim: colFim }
-          : c
-      );
-      setEditingColId(null);
-    } else {
-      const nova: Colecao = {
-        id:          Date.now(),
-        temporadaId: selectedTemporadaId,
-        nome:        colNome.trim(),
-        dataInicio:  colInicio,
-        dataFim:     colFim,
-      };
-      updated = [...colecoes, nova];
+    try {
+      if (editingColId !== null) {
+        const updated = await updateColecao(user.tenant_id, editingColId, {
+          name:       colNome.trim(),
+          start_date: colInicio,
+          end_date:   colFim,
+        });
+        setColecoes(prev => prev.map(c => c.id === editingColId ? updated : c));
+        setEditingColId(null);
+      } else {
+        const nova = await insertColecao({
+          tenant_id:  user.tenant_id,
+          season_id:  selectedTemporadaId,
+          name:       colNome.trim(),
+          start_date: colInicio,
+          end_date:   colFim,
+        });
+        setColecoes(prev => [...prev, nova]);
+      }
+      setColNome(""); setColInicio(""); setColFim("");
+    } catch (err) {
+      console.error("Erro ao salvar coleção:", err);
+      alert("Erro ao salvar coleção. Tente novamente.");
     }
-
-    setColecoes(updated);
-    persistColecoes(updated);
-    setColNome(""); setColInicio(""); setColFim("");
   };
 
-  const handleEditColecao = (c: Colecao) => {
-    setSelectedTemporadaId(c.temporadaId);
-    setColNome(c.nome);
-    setColInicio(c.dataInicio);
-    setColFim(c.dataFim);
+  const handleEditColecao = (c: ColecaoRow) => {
+    setSelectedTemporadaId(c.season_id);
+    setColNome(c.name);
+    setColInicio(c.start_date);
+    setColFim(c.end_date);
     setEditingColId(c.id);
-    // Scroll para o formulário de edição
     document.getElementById("tour-op-colecoes")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const handleDeleteColecao = (id: number) => {
-    const updated = colecoes.filter(c => c.id !== id);
-    setColecoes(updated);
-    persistColecoes(updated);
-    if (editingColId === id) { setEditingColId(null); setColNome(""); setColInicio(""); setColFim(""); }
+  const handleDeleteColecao = async (id: string) => {
+    if (!user?.tenant_id) return;
+    try {
+      await deleteColecao(user.tenant_id, id);
+      setColecoes(prev => prev.filter(c => c.id !== id));
+      if (editingColId === id) { setEditingColId(null); setColNome(""); setColInicio(""); setColFim(""); }
+    } catch (err) {
+      console.error("Erro ao excluir coleção:", err);
+      alert("Erro ao excluir coleção. Tente novamente.");
+    }
   };
 
   const handleCancelEdit = () => {
@@ -1024,7 +996,6 @@ export default function OperationSettings() {
     setSubcategorias(subcategorias.filter(x => x !== s));
 
   const handleSaveHierarquia = () => {
-    try { localStorage.setItem("fashionmind_hierarquia", JSON.stringify({ hierDivisaoAtiva, hierOrdem, subcategorias })); } catch { /* */ }
     setHierSavedOk(true);
     setTimeout(() => setHierSavedOk(false), 2500);
     // Write-through → Supabase
@@ -1053,7 +1024,6 @@ export default function OperationSettings() {
 
   function persistHierStruct(nodes: HierNode[]) {
     setHierStruct(nodes);
-    try { localStorage.setItem(HIER_STRUCT_KEY, JSON.stringify(nodes)); } catch { /* */ }
     setHierSavedStructOk(true);
     setTimeout(() => setHierSavedStructOk(false), 2000);
     // Write-through → Supabase
@@ -1305,7 +1275,6 @@ export default function OperationSettings() {
 
   const persistFaixasCategoria = (updated: FaixaPreco[]) => {
     setFaixasPreco(updated);
-    try { localStorage.setItem("fashionmind_faixas_preco", JSON.stringify(updated)); } catch { /* */ }
     if (user?.tenant_id) {
       saveFaixasCategoria(user.tenant_id, updated)
         .catch(err => console.warn("[OpSettings] saveFaixasCategoria:", err));
@@ -1398,7 +1367,6 @@ export default function OperationSettings() {
   // ── Helpers: TierLabels persistence ─────────────────────────────────────────
   const persistTierLabels = (labels: TierLabel[]) => {
     setTierLabels(labels);
-    try { localStorage.setItem(TIER_LABELS_KEY, JSON.stringify(labels)); } catch { /* */ }
     if (user?.tenant_id) {
       saveTierLabels(user.tenant_id, labels)
         .catch(err => console.warn("[OpSettings] saveTierLabels:", err));
@@ -1531,7 +1499,6 @@ export default function OperationSettings() {
   const handleSaveBasicos = () => {
     const serial = basicosSkusSerial(basicosSkuArr);
     setBasicosSkus(serial);
-    try { localStorage.setItem("fashionmind_basicos_sustentador", JSON.stringify({ basicosSkus: serial })); } catch { /* */ }
     setBasicosSavedOk(true);
     setTimeout(() => setBasicosSavedOk(false), 2500);
     // Write-through → Supabase
@@ -1556,7 +1523,7 @@ export default function OperationSettings() {
     return `${day}/${m}/${y}`;
   };
 
-  const colecoesVisíveis = colecoes.filter(c => c.temporadaId === selectedTemporadaId);
+  const colecoesVisíveis = colecoes.filter(c => c.season_id === selectedTemporadaId);
 
   if (!user) return null;
 
@@ -1677,7 +1644,7 @@ export default function OperationSettings() {
                   <tr><td colSpan={6} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
                 )}
                 {temporadas.map(t => {
-                  const n      = colecoes.filter(c => c.temporadaId === t.id).length;
+                  const n      = colecoes.filter(c => c.season_id === t.id).length;
                   const isPast = isTemporadaPast(t);
                   const isEditingThis = editingAutoId === t.id;
                   return (
@@ -2127,13 +2094,13 @@ export default function OperationSettings() {
                   </tr>
                 )}
                 {(selectedTemporadaId ? colecoesVisíveis : colecoes).map(c => {
-                  const temp     = temporadas.find(t => t.id === c.temporadaId);
-                  const isLocked = lockedColNames.has(c.nome);
+                  const temp     = temporadas.find(t => t.id === c.season_id);
+                  const isLocked = lockedColNames.has(c.name);
                   return (
                     <tr key={c.id} className={`border-b border-[#28071C]/10 hover:bg-gray-50 ${editingColId === c.id ? "bg-gray-50" : ""}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span className="text-[#28071C] font-medium">{c.nome}</span>
+                          <span className="text-[#28071C] font-medium">{c.name}</span>
                           {isLocked && (
                             <span
                               title="Há produtos em produção vinculados — apenas datas podem ser alteradas"
@@ -2146,8 +2113,8 @@ export default function OperationSettings() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-[#28071C]/70 text-sm">{temp?.nome ?? "—"}</td>
-                      <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.dataInicio)}</td>
-                      <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.dataFim)}</td>
+                      <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.start_date)}</td>
+                      <td className="px-4 py-3 text-[#28071C]">{fmtDate(c.end_date)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-center gap-2">
                           <button

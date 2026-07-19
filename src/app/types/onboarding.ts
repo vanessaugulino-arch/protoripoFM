@@ -221,6 +221,14 @@ export const SALES_CHANNELS: SalesChannelDef[] = [
   { id: 'social_commerce',   label: 'Redes sociais (social commerce)', erpFound: false },
 ]
 
+// ─── Modelo híbrido detalhado ─────────────────────────────────────────────────
+export type HybridProcessType = Exclude<OrigemPecas, 'hibrido'>
+
+export interface HybridProcess {
+  type: HybridProcessType
+  participation: number // percentual aproximado (0–100)
+}
+
 // ─── Convites de equipe ───────────────────────────────────────────────────────
 export type TeamRole = 'estrategico' | 'tatico' | 'operacional'
 
@@ -242,6 +250,7 @@ export interface OnboardingProfile {
   segments: SegmentId[]
   rawMaterials: RawMaterialGroupId[]
   origem: OrigemPecas
+  hybridProcesses?: HybridProcess[]    // preenchido quando origem === 'hibrido'
   hasImportedMaterial: boolean
   exports: boolean
   productHierarchy: string[]

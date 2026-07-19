@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
 import { signIn, getUserProfile } from "../../services/supabase/authService";
 import type { SystemRole } from "../../services/supabase/adminService";
+import { initPlanCycles } from "../types/planCycle";
 
 export interface CurrentUser {
   id: string;
@@ -46,6 +47,11 @@ export default function Login() {
       };
 
       sessionStorage.setItem("currentUser", JSON.stringify(currentUser));
+
+      // Pré-carrega ciclos de planejamento do Supabase para o cache em memória
+      if (currentUser.tenant_id) {
+        initPlanCycles(currentUser.tenant_id).catch(() => { /* silent — ciclos carregados sob demanda */ });
+      }
 
       // Conta demo — reinicia o fluxo completo a cada login
       if (currentUser.email === "contato@thefashionoffice.com.br") {

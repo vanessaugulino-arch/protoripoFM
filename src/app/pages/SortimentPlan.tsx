@@ -60,6 +60,13 @@ const SORTIMENT_TOUR: TourStep[] = [
 ];
 import { supabase } from "../../lib/supabase";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
+import {
+  getWorkingPlan,
+  saveWorkingPlan,
+  listPlanScenarios,
+  savePlanScenario,
+  deletePlanScenario,
+} from "../../services/supabase/sortimentPlanService";
 import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
@@ -81,24 +88,13 @@ interface UserData {
   system_role?: string;
 }
 
-// LocalStorage key for collections (shared with OperationSettings)
-const COLECOES_KEY = "fashionmind_colecoes";
-interface LocalColecao {
-  id: number;
-  temporadaId: string;
-  nome: string;
-  dataInicio: string;
-  dataFim: string;
-}
-
-// ── Scenarios ─────────────────────────────────────────────────────────────────
+// ── Scenarios (backed by Supabase via sortimentPlanService) ───────────────────
 interface Scenario {
   id: string;
   name: string;
-  savedAt: string; // ISO string
+  savedAt: string;
   data: Division[];
 }
-const SCENARIOS_KEY = (seasonId: string) => `fashionmind_sortiment_scenarios_${seasonId}`;
 
 type CollectionType = "colecao" | "drop";
 type ProfileType = "Sustentador de Margem" | "Motor de Giro" | "Ícone de Marca";
@@ -345,40 +341,21 @@ export default function SortimentPlan() {
     return localStorage.getItem(LAST_SEASON_KEY) ?? null;
   });
 
-  const [divisions, setDivisions] = useState<Division[]>(() => {
-    try {
-      const sid = localStorage.getItem(LAST_SEASON_KEY);
-      if (!sid) return INITIAL_DIVISIONS;
-      const saved = localStorage.getItem(`fashionmind_sortiment_${sid}`);
-      return saved ? JSON.parse(saved) : INITIAL_DIVISIONS;
-    } catch {
-      return INITIAL_DIVISIONS;
-    }
-  });
+  const [divisions, setDivisions] = useState<Division[]>(INITIAL_DIVISIONS);
 
-  // Troca de temporada: persiste a atual e carrega a nova
+  // Troca de temporada: persiste a atual no Supabase e carrega a nova
   const selectSeason = (id: string) => {
     if (id === seasonId) return;
-    // persiste plano atual antes de trocar
-    if (seasonId) {
-      try { localStorage.setItem(`fashionmind_sortiment_${seasonId}`, JSON.stringify(divisions)); } catch { /* */ }
+    // persiste plano atual antes de trocar (fire-and-forget)
+    if (seasonId && user?.tenant_id) {
+      saveWorkingPlan(user.tenant_id, seasonId, divisions as unknown as Record<string, unknown>[])
+        .catch(() => { /* silent */ });
     }
     localStorage.setItem(LAST_SEASON_KEY, id);
     setSeasonIdRaw(id);
-    // carrega dados da nova temporada
-    try {
-      const saved = localStorage.getItem(`fashionmind_sortiment_${id}`);
-      setDivisions(saved ? JSON.parse(saved) : INITIAL_DIVISIONS);
-    } catch {
-      setDivisions(INITIAL_DIVISIONS);
-    }
-    // recarrega cenários da nova temporada
-    try {
-      const sc = localStorage.getItem(SCENARIOS_KEY(id));
-      setScenarios(sc ? JSON.parse(sc) : []);
-    } catch {
-      setScenarios([]);
-    }
+    // carrega dados da nova temporada (via useEffect abaixo)
+    setDivisions(INITIAL_DIVISIONS);
+    setScenarios([]);
     setActiveDivId(INITIAL_DIVISIONS[0]?.id ?? "");
     setActiveMixColId(null);
   };
@@ -393,14 +370,8 @@ export default function SortimentPlan() {
   // ── Plano macro estratégico (Módulo 1) ───────────────────────────────────────
   const [macroPlan, setMacroPlan] = useState<AnnualPlanCycle | null>(null);
 
-  // ── Cenários ─────────────────────────────────────────────────────────────────
-  const [scenarios, setScenarios] = useState<Scenario[]>(() => {
-    try {
-      const sid = localStorage.getItem(LAST_SEASON_KEY);
-      if (!sid) return [];
-      return JSON.parse(localStorage.getItem(SCENARIOS_KEY(sid)) ?? "[]");
-    } catch { return []; }
-  });
+  // ── Cenários (carregados do Supabase quando a temporada é selecionada) ────────
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [showSeasonPicker,  setShowSeasonPicker]  = useState(false);
   const [showScenarioPanel, setShowScenarioPanel] = useState(false);
   const [showSaveModal,     setShowSaveModal]     = useState(false);
@@ -409,18 +380,28 @@ export default function SortimentPlan() {
   const [compareScenarioId, setCompareScenarioId] = useState<string>("");
 
   const saveScenario = () => {
-    if (!scenarioName.trim()) return;
-    const newScen: Scenario = {
-      id: `scen-${Date.now()}`,
-      name: scenarioName.trim(),
-      savedAt: new Date().toISOString(),
-      data: JSON.parse(JSON.stringify(divisions)), // deep clone
-    };
-    const updated = [...scenarios, newScen];
-    setScenarios(updated);
-    try { localStorage.setItem(SCENARIOS_KEY(seasonId), JSON.stringify(updated)); } catch { /* */ }
+    if (!scenarioName.trim() || !seasonId || !user?.tenant_id) return;
+    const name = scenarioName.trim();
+    const data: Division[] = JSON.parse(JSON.stringify(divisions)); // deep clone
     setScenarioName("");
     setShowSaveModal(false);
+    savePlanScenario(
+      user.tenant_id,
+      seasonId,
+      name,
+      data as unknown as Record<string, unknown>[],
+    ).then(row => {
+      setScenarios(prev => [...prev, { ...row, data }]);
+    }).catch(err => {
+      console.warn("[SortimentPlan] saveScenario:", err);
+      // Fallback: add optimistic entry
+      setScenarios(prev => [...prev, {
+        id: `scen-${Date.now()}`,
+        name,
+        savedAt: new Date().toISOString(),
+        data,
+      }]);
+    });
   };
 
   const loadScenario = (scen: Scenario) => {
@@ -431,9 +412,10 @@ export default function SortimentPlan() {
   };
 
   const deleteScenario = (id: string) => {
-    const updated = scenarios.filter(s => s.id !== id);
-    setScenarios(updated);
-    try { localStorage.setItem(SCENARIOS_KEY(seasonId), JSON.stringify(updated)); } catch { /* */ }
+    setScenarios(prev => prev.filter(s => s.id !== id));
+    if (user?.tenant_id) {
+      deletePlanScenario(user.tenant_id, id).catch(() => { /* silent */ });
+    }
   };
 
   const exportPDF = () => window.print();
@@ -510,11 +492,18 @@ export default function SortimentPlan() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
-  // Persiste no localStorage quando divisions muda (só se houver temporada selecionada)
+  // Carrega plano de trabalho e simulações do Supabase quando temporada/usuário mudam
   useEffect(() => {
-    if (!seasonId) return;
-    localStorage.setItem(`fashionmind_sortiment_${seasonId}`, JSON.stringify(divisions));
-  }, [divisions, seasonId]);
+    if (!seasonId || !user?.tenant_id) return;
+    const tid = user.tenant_id;
+    getWorkingPlan(tid, seasonId).then(saved => {
+      if (saved && saved.length > 0) setDivisions(saved as unknown as Division[]);
+    }).catch(() => {});
+    listPlanScenarios(tid, seasonId).then(rows => {
+      setScenarios(rows.map(r => ({ ...r, data: r.data as unknown as Division[] })));
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasonId, user?.tenant_id]);
 
   // Carrega macroPlan do anoFiscal da temporada selecionada
   useEffect(() => {
@@ -551,11 +540,12 @@ export default function SortimentPlan() {
     });
     allocPieces = Math.round(allocPieces);
 
-    // Sell-through implícito: COGS_alvo / Orçamento_custo
-    // COGS_alvo = receita × (1 – margem%)  →  ST = COGS_alvo / Orçamento
+    // Sell-through implícito: COGS_alvo / Orçamento_custo × 100
+    // COGS_alvo = receita × (1 – margem%)  →  ST% = (COGS_alvo / Orçamento) × 100
+    // Sem arredondamento intermediário — toFixed() apenas na renderização
     let sellThrough: number | null = null;
     if (macroRec != null && macroMgm != null && macroOrcamento != null && macroOrcamento > 0) {
-      sellThrough = Math.round(((macroRec * (1 - macroMgm / 100)) / macroOrcamento) * 1000) / 10;
+      sellThrough = (macroRec * (1 - macroMgm / 100)) / macroOrcamento * 100;
     }
 
     // Peças de Orçamento disponíveis (capacidade total – peças já planejadas)
@@ -661,21 +651,7 @@ export default function SortimentPlan() {
         else if (error) console.warn("Aviso: erro ao salvar no Supabase:", error.message);
       }
 
-      // 2. Sync to localStorage fashionmind_colecoes (shared with OperationSettings)
-      try {
-        const raw = localStorage.getItem(COLECOES_KEY);
-        const existing: LocalColecao[] = raw ? JSON.parse(raw) : [];
-        const nova: LocalColecao = {
-          id: Date.now(),
-          temporadaId: modalSeasonId,
-          nome: modalNome.trim(),
-          dataInicio: modalInicio,
-          dataFim: modalFim,
-        };
-        localStorage.setItem(COLECOES_KEY, JSON.stringify([...existing, nova]));
-      } catch { /* silent */ }
-
-      // 3. Add to division's planning collections
+      // 2. Add to division's planning collections
       const localId = supabaseId ?? `col-${modalDivId}-${Date.now()}`;
       const newCol: Collection = {
         id: localId,
@@ -878,17 +854,10 @@ export default function SortimentPlan() {
     const prevSeasons = temporadas.filter(t => t.anoFiscal === prevYear);
     if (prevSeasons.length === 0) return {};
 
-    // Encontra a mesma divisão nos dados do ano anterior
-    let prevDiv: Division | null = null;
-    for (const ps of prevSeasons) {
-      try {
-        const raw = localStorage.getItem(`fashionmind_sortiment_${ps.id}`);
-        if (!raw) continue;
-        const divs: Division[] = JSON.parse(raw);
-        const found = divs.find(d => d.name === activeDivision.name);
-        if (found) { prevDiv = found; break; }
-      } catch { /* */ }
-    }
+    // Histórico migrado para Supabase — dados de anos anteriores não disponíveis em cache
+    // TODO: carregar via getWorkingPlan para cada ps.id e armazenar em state
+    void prevSeasons; // used above for early-return check
+    const prevDiv: Division | null = null;
     if (!prevDiv) return {};
 
     const allCols     = prevDiv.collections;
@@ -1210,7 +1179,7 @@ export default function SortimentPlan() {
           <div className="flex">
             {(
               [
-                { view: "sortiment" as ModuleView, label: "1 · Sortiment", sub: "Estrutura de Coleções por Divisão" },
+                { view: "sortiment" as ModuleView, label: "1 · Sortimento", sub: "Estrutura de Coleções por Divisão" },
                 { view: "mix"       as ModuleView, label: "2 · Mix de Produtos", sub: "Categorias e Faixas de Preço" },
               ] as const
             ).map(({ view, label, sub }) => (
@@ -1644,30 +1613,27 @@ export default function SortimentPlan() {
 
                         {/* Num Entradas (only for coleção, locked when has products) */}
                         {col.type === "colecao" && (
-                          <div className="w-28">
+                          <div>
                             <label className="block text-xs text-[#28071C]/40 uppercase tracking-wide mb-1">
                               Entradas
                             </label>
-                            <input
-                              type="number"
-                              min={1}
-                              max={6}
-                              value={col.numEntradas}
-                              disabled={isLocked}
-                              onChange={e =>
-                                changeNumEntradas(
-                                  activeDivision.id,
-                                  col.id,
-                                  parseInt(e.target.value) || 1,
-                                  col
-                                )
-                              }
-                              className={`w-full rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 ${
-                                isLocked
-                                  ? "bg-[#28071C]/5 text-[#28071C]/50 cursor-not-allowed"
-                                  : "bg-[#F2F2F2]"
-                              }`}
-                            />
+                            <div className="flex items-center">
+                              <button
+                                type="button"
+                                disabled={isLocked || col.numEntradas <= 1}
+                                onClick={() => changeNumEntradas(activeDivision.id, col.id, col.numEntradas - 1, col)}
+                                className="w-7 h-9 flex items-center justify-center rounded-l-lg bg-[#28071C]/8 text-[#28071C]/60 hover:bg-[#28071C]/15 disabled:opacity-30 disabled:cursor-not-allowed text-base font-bold transition-colors"
+                              >−</button>
+                              <span className="w-9 h-9 flex items-center justify-center bg-[#F2F2F2] text-[#28071C] text-sm font-semibold select-none">
+                                {col.numEntradas}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={isLocked || col.numEntradas >= 6}
+                                onClick={() => changeNumEntradas(activeDivision.id, col.id, col.numEntradas + 1, col)}
+                                className="w-7 h-9 flex items-center justify-center rounded-r-lg bg-[#28071C]/8 text-[#28071C]/60 hover:bg-[#28071C]/15 disabled:opacity-30 disabled:cursor-not-allowed text-base font-bold transition-colors"
+                              >+</button>
+                            </div>
                           </div>
                         )}
 
@@ -1899,7 +1865,7 @@ export default function SortimentPlan() {
                 ) : (
                   <p className="flex items-center gap-2 text-sm text-emerald-600 font-medium">
                     <CheckCircle className="w-4 h-4" />
-                    Sortiment completo — pronto para configurar o Mix de Produtos
+                    Sortimento completo — pronto para configurar o Mix de Produtos
                   </p>
                 )}
               </div>
@@ -1929,13 +1895,13 @@ export default function SortimentPlan() {
                 <Layers className="w-14 h-14 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium mb-2">Nenhuma coleção configurada</p>
                 <p className="text-sm mb-5">
-                  Configure pelo menos uma coleção com data de lançamento no Sortiment.
+                  Configure pelo menos uma coleção com data de lançamento no Sortimento.
                 </p>
                 <button
                   onClick={() => setActiveView("sortiment")}
                   className="text-[#7598CF] hover:underline text-sm"
                 >
-                  ← Ir para Sortiment
+                  ← Ir para Sortimento
                 </button>
               </div>
             ) : (
@@ -2119,7 +2085,7 @@ export default function SortimentPlan() {
                                     />
                                     <span className="text-sm text-[#28071C]/50">%</span>
                                     <span className="text-sm text-[#28071C]/70 font-medium">
-                                      {fmtCurrency(cRev)}
+                                      <span className="text-xs text-[#28071C]/40 font-normal uppercase tracking-wide">Receita </span>{fmtCurrency(cRev)}
                                     </span>
                                   </div>
 
@@ -2410,7 +2376,7 @@ export default function SortimentPlan() {
                             Projeção de Orçamento por Mês
                           </h3>
                           <p className="text-xs text-[#28071C]/40 mb-4">
-                            Lead time estimado: 90 dias &nbsp;·&nbsp; Pagamento: 30% no pedido · 40% na entrega · 30% em 30 dias após entrega
+                            Lead time estimado: 90 dias
                           </p>
                           <div className="overflow-x-auto">
                             <div className="flex gap-3 pb-1">

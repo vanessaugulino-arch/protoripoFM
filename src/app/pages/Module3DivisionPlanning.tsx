@@ -40,9 +40,16 @@ import {
   GitCompare,
   CheckCheck,
   HelpCircle,
+  ArrowRight,
+  SendHorizonal,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
+import {
+  createApprovalRequest,
+  hasPendingRequest,
+  type ImpactedIndicator,
+} from "../../services/supabase/planApprovalService";
 
 const MODULE3_TOUR: TourStep[] = [
   {
@@ -91,6 +98,7 @@ import {
   deleteModule3Scenario,
   listModule3Scenarios,
   saveModule3Scenario,
+  initModule3Scenarios,
 } from "../../services/module3ScenarioService";
 import {
   listDivisionScenarios,
@@ -98,6 +106,20 @@ import {
   deleteDivisionScenario,
 } from "../../services/supabase/divisionScenarioService";
 import { useModule3 } from "../../hooks/useModule3";
+import {
+  fetchHistoricalTierAvgs,
+  loadAllDivisionGlobalRanges,
+  type TierHistoricalAvg,
+  type TierRange,
+} from "../../services/supabase/pricePyramidService";
+import type { PriceTierId } from "../types/pricePyramid";
+
+// Fallback hardcoded — usado quando operation_settings ainda não tem faixas configuradas
+const M3_TIER_RANGES_FALLBACK: Record<PriceTierId, TierRange> = {
+  p1: { min: 89,  max: 169 },
+  p2: { min: 179, max: 259 },
+  p3: { min: 269, max: 389 },
+};
 
 // ─── Tipos locais ─────────────────────────────────────────────────────────────
 
@@ -116,10 +138,59 @@ interface Temporada {
   anoFiscal?: number;
 }
 
-const FALLBACK_TEMPORADAS: Temporada[] = [
-  { id: 1, nome: "Verão 2027",   mesInicio: "Outubro", mesFim: "Março" },
-  { id: 2, nome: "Inverno 2027", mesInicio: "Abril",   mesFim: "Setembro" },
-];
+
+// ─── Bandas bilaterais de aprovação — M3 ─────────────────────────────────────
+// Mesmas diretrizes do M2; aplicadas sobre os indicadores foco ativos do M1.
+const APPROVAL_BANDS_M3: Record<string, {
+  higherIsBetter: boolean | null; badNeg: number; badPos: number; mode: "pct" | "abs";
+}> = {
+  receitaBruta: { higherIsBetter: true,  badNeg: 2,   badPos: 2,   mode: "pct" },
+  margemBruta:  { higherIsBetter: true,  badNeg: 0.5, badPos: 2,   mode: "abs" },
+  giro:         { higherIsBetter: true,  badNeg: 0.5, badPos: 0.5, mode: "abs" },
+  pmv:          { higherIsBetter: true,  badNeg: 5,   badPos: 7,   mode: "pct" },
+  gmroi:        { higherIsBetter: true,  badNeg: 0.3, badPos: 0.5, mode: "abs" },
+  mkdPct:       { higherIsBetter: false, badNeg: 2,   badPos: 0.5, mode: "abs" },
+  cobertura:    { higherIsBetter: null,  badNeg: 8,   badPos: 8,   mode: "abs" },
+};
+
+function isOutsideBandM3(key: string, planned: number, projected: number): boolean {
+  const band = APPROVAL_BANDS_M3[key];
+  if (!band || planned === 0) return false;
+  const gap    = projected - planned;
+  const absP   = Math.abs(planned);
+  const negMag = band.mode === "pct" ? (-gap / absP) * 100 : -gap;
+  const posMag = band.mode === "pct" ? ( gap / absP) * 100 :  gap;
+  if (band.higherIsBetter === null) return Math.abs(gap) > band.badNeg;
+  if (band.higherIsBetter)         return negMag > band.badNeg || posMag > band.badPos;
+  /* lower is better */             return posMag > band.badPos || negMag > band.badNeg;
+}
+
+// Mapeamento macro key → label e campo do consolidado M3
+const M3_INDICATOR_LABELS: Record<string, string> = {
+  receitaBruta: "Receita Total",
+  margemBruta:  "Margem Bruta %",
+  gmroi:        "GMROI",
+  giro:         "Giro",
+  cobertura:    "Cobertura (dias)",
+  pmv:          "PMV (R$)",
+  mkdPct:       "MKD %",
+  sellThrough:  "Sell-Through %",
+};
+
+function getM3ConsolidatedValue(key: string, c: import("../types/module3").SeasonConsolidated | null): number {
+  if (!c) return 0;
+  switch (key) {
+    case "receitaBruta": return c.totalRevenue    ?? 0;
+    case "margemBruta":  return c.avgMargin        ?? 0;
+    case "gmroi":        return c.avgGmroi         ?? 0;
+    case "giro":         return c.avgGiro          ?? 0;
+    case "cobertura":    return c.avgCobertura     ?? 0;
+    case "pmv":          return c.avgPmv           ?? 0;
+    case "mkdPct":       return c.avgMkd           ?? 0;
+    case "sellThrough":  return c.avgSellThrough   ?? 0;
+    default:             return 0;
+  }
+}
 
 // ─── Utilitário: derivar meta macro da temporada a partir do Módulo 1 ─────────
 
@@ -197,6 +268,7 @@ export default function Module3DivisionPlanning() {
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [expandedDivision, setExpandedDivision] = useState<BusinessDivisionId | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
   const [scenarioName, setScenarioName] = useState("");
@@ -204,7 +276,15 @@ export default function Module3DivisionPlanning() {
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
-  const [applySuccess, setApplySuccess] = useState(false);
+  const [applySuccess, setApplySuccess]                       = useState(false);
+  const [showPostApplyModal, setShowPostApplyModal]           = useState(false);
+  const [showSubmitApprovalDialog, setShowSubmitApprovalDialog] = useState(false);
+  const [approvalJustification, setApprovalJustification]    = useState("");
+  const [isSubmittingApproval, setIsSubmittingApproval]      = useState(false);
+  const [alreadyPending, setAlreadyPending]                  = useState(false);
+
+  // Médias históricas por divisão — carregadas quando a temporada de referência é selecionada
+  const [historicalAvgs, setHistoricalAvgs] = useState<Partial<Record<BusinessDivisionId, TierHistoricalAvg>>>({});
 
   // ─── Inicialização ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -226,24 +306,11 @@ export default function Module3DivisionPlanning() {
               setSelectedSeasonId(String(seasons[0].id));
               if (seasons.length > 1) setReferenceSeasonId(String(seasons[1].id));
             } else {
-              setTemporadas(FALLBACK_TEMPORADAS);
-              setSelectedSeasonId(String(FALLBACK_TEMPORADAS[0].id));
-              setReferenceSeasonId(String(FALLBACK_TEMPORADAS[1].id));
+              setLoadError("Nenhuma temporada cadastrada. Configure as temporadas em Configurações de Operação antes de usar este módulo.");
             }
           })
         ).catch(() => {
-          // Fallback para localStorage
-          try {
-            const stored = localStorage.getItem("fashionmind_temporadas");
-            if (stored) {
-              const parsed: Temporada[] = JSON.parse(stored);
-              setTemporadas(parsed);
-              if (parsed.length > 0) {
-                setSelectedSeasonId(String(parsed[0].id));
-                if (parsed.length > 1) setReferenceSeasonId(String(parsed[1].id));
-              }
-            }
-          } catch { /* ignore */ }
+          setLoadError("Não foi possível carregar as temporadas do banco de dados. Verifique sua conexão ou contate o suporte.");
         });
       }
     } else {
@@ -264,6 +331,44 @@ export default function Module3DivisionPlanning() {
     return deriveSeasonMacroTarget(selectedTemporada);
   }, [selectedTemporada]);
 
+  // Lê os indicadores foco ativos do M1 (todos os 6 potenciais) e os valores macro
+  // correspondentes para alimentar o banner dinâmico e as bandas de aprovação do M3.
+  const macroM1Extras = useMemo(() => {
+    if (!selectedTemporada) return { activeMacroKeys: [] as string[], values: {} as Record<string, number> };
+    const candidateYears = selectedTemporada.anoFiscal
+      ? [selectedTemporada.anoFiscal, ...getPlannedYears().filter(y => y !== selectedTemporada.anoFiscal)]
+      : getPlannedYears();
+    for (const year of candidateYears) {
+      const cycle   = getPlanCycle(year);
+      const version = cycle?.versions?.find(v =>
+        (v.values?.receitaBruta as number | undefined) != null && (v.values.receitaBruta as number) > 0
+      );
+      if (version) {
+        const vals = version.values as Record<string, unknown>;
+        return {
+          activeMacroKeys: (cycle?.fieldPriorities ?? [])
+            .filter(fp => fp.status !== "inactive" && fp.status !== "dismissed")
+            .map(fp => fp.key),
+          values: {
+            // Receita: pro-rata à temporada (já calculado em macroTargets)
+            receitaBruta: macroTargets.revenue,
+            // Taxas: não têm pro-rata — valem para toda a temporada
+            margemBruta:  macroTargets.margin,
+            gmroi:        macroTargets.gmroi,
+            sellThrough:  macroTargets.sellThrough,
+            pmv:          (vals.pmv         as number) ?? 0,
+            mkdPct:       (vals.mkdPct      as number) ?? 0,
+            giro:         (vals.giro        as number) ?? 0,
+            cobertura:    (vals.cobertura   as number) ?? 0,
+            custoMedio:   (vals.custoMedio  as number) ?? 0,
+            ticketMedio:  (vals.ticketMedio as number) ?? 0,
+          },
+        };
+      }
+    }
+    return { activeMacroKeys: [] as string[], values: {} as Record<string, number> };
+  }, [selectedTemporada, macroTargets]);
+
   // ─── Hook do Módulo 3 ─────────────────────────────────────────────────────
   const {
     state,
@@ -283,6 +388,36 @@ export default function Module3DivisionPlanning() {
 
   const meetsTarget = validateAgainstMacro();
 
+  // Carrega cenários do Supabase para o cache em memória quando temporada/tenant mudam
+  useEffect(() => {
+    if (!tenantId || !selectedSeasonId) return;
+    initModule3Scenarios(tenantId, selectedSeasonId).then(() => {
+      reloadScenarios();
+      setScenarioListVersion(v => v + 1);
+    }).catch(() => {});
+  }, [tenantId, selectedSeasonId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Busca médias históricas por faixa para todas as divisões — usadas na compact card view.
+  // Carrega os ranges dinâmicos do OperationSettings antes de filtrar os produtos;
+  // cai no fallback hardcoded se o tenant ainda não configurou as faixas.
+  useEffect(() => {
+    if (!tenantId) return;
+    const divisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
+
+    loadAllDivisionGlobalRanges(tenantId).then(divRanges => {
+      Promise.all(
+        divisions.map(divId => {
+          const ranges = divRanges?.[divId] ?? M3_TIER_RANGES_FALLBACK;
+          return fetchHistoricalTierAvgs(tenantId, divId, ranges)
+            .then(avgs => [divId, avgs] as [BusinessDivisionId, TierHistoricalAvg])
+            .catch(() => [divId, { p1: null, p2: null, p3: null }] as [BusinessDivisionId, TierHistoricalAvg]);
+        }),
+      ).then(results => {
+        setHistoricalAvgs(Object.fromEntries(results) as Record<BusinessDivisionId, TierHistoricalAvg>);
+      });
+    });
+  }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const totalParticipation = Object.values(state.divisions).reduce(
     (sum, d) => sum + d.participation,
     0
@@ -300,6 +435,30 @@ export default function Module3DivisionPlanning() {
 
   // Derivadas simples (não são hooks — podem vir depois do early return)
   const activeScenario = scenarios.find(s => s.isActive) ?? null;
+
+  // Verifica todos os indicadores foco ativos do M1 contra as bandas bilaterais.
+  // Quando M1 não tem prioridades configuradas, usa fallback para receita e margem.
+  const impactedMacroM3: ImpactedIndicator[] = (() => {
+    if (!state.consolidated) return [];
+    const keysToCheck = macroM1Extras.activeMacroKeys.length > 0
+      ? macroM1Extras.activeMacroKeys
+      : ["receitaBruta", "margemBruta"];  // fallback mínimo
+    return keysToCheck.flatMap(key => {
+      if (!(key in M3_INDICATOR_LABELS)) return [];
+      const planned   = macroM1Extras.values[key] ?? 0;
+      const projected = getM3ConsolidatedValue(key, state.consolidated);
+      if (planned <= 0 || projected === 0) return [];
+      if (!isOutsideBandM3(key, planned, projected)) return [];
+      return [{
+        key,
+        label:     M3_INDICATOR_LABELS[key],
+        planned,
+        projected,
+        gap:       projected - planned,
+        isRate:    key !== "receitaBruta",
+      }] as ImpactedIndicator[];
+    });
+  })();
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -360,12 +519,36 @@ export default function Module3DivisionPlanning() {
       applyModule3Scenario(selectedSeasonId, active.id);
       setScenarioListVersion(v => v + 1);
     } else if (scenarios.length > 0) {
-      // aplica o primeiro cenário se nenhum estiver ativo
       applyModule3Scenario(selectedSeasonId, scenarios[0].id);
       setScenarioListVersion(v => v + 1);
     }
     setApplySuccess(true);
     setTimeout(() => setApplySuccess(false), 2500);
+    setShowPostApplyModal(true);
+  };
+
+  const handleSubmitApprovalM3 = async () => {
+    if (!tenantId || !user) return;
+    setIsSubmittingApproval(true);
+    try {
+      const scenarioForApproval = scenarios.find(s => s.isActive) ?? scenarios[scenarios.length - 1] ?? null;
+      await createApprovalRequest({
+        tenantId,
+        year:               selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
+        fromModule:         3,
+        toModule:           1,
+        requesterEmail:     user.email,
+        justification:      approvalJustification,
+        proposedData:       (state.consolidated ?? {}) as Record<string, unknown>,
+        originalData:       macroTargets as unknown as Record<string, unknown>,
+        impactedIndicators: impactedMacroM3,
+        scenarioId:         scenarioForApproval?.id,
+      });
+      setAlreadyPending(true);
+      setShowSubmitApprovalDialog(false);
+      setApprovalJustification("");
+    } catch { /* silent */ }
+    setIsSubmittingApproval(false);
   };
 
   const handleExport = () => {
@@ -523,18 +706,19 @@ export default function Module3DivisionPlanning() {
             </div>
           )}
 
-          {temporadas.length === 0 && (
-            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm text-amber-800 mt-2">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          {loadError && (
+            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-800 mt-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>
-                Nenhuma temporada configurada. Configure as temporadas em{" "}
-                <button
-                  onClick={() => navigate("/operation-settings")}
-                  className="underline font-semibold"
-                >
-                  Configurações de Operação
-                </button>
-                .
+                {loadError}{" "}
+                {loadError.includes("cadastrada") && (
+                  <button
+                    onClick={() => navigate("/operation-settings")}
+                    className="underline font-semibold"
+                  >
+                    Ir para Configurações de Operação
+                  </button>
+                )}
               </span>
             </div>
           )}
@@ -619,68 +803,80 @@ export default function Module3DivisionPlanning() {
                 </div>
               </div>
 
-              {/* E — Consolidado de Metas Macro (sticky, compacto) */}
-              <div id="tour-m3-consolidated" className={`rounded-xl px-4 py-2.5 shadow-sm border-t-4 ${
-                meetsTarget ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"
-              }`}>
-                <div className="flex items-center gap-3">
-                  {meetsTarget
-                    ? <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
-                    : <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />}
-                  <span className={`text-[11px] font-bold shrink-0 ${meetsTarget ? "text-green-800" : "text-red-800"}`}>
-                    {meetsTarget ? "Metas atingidas" : "Metas NÃO atingidas"}
-                  </span>
-                  <div className="flex-1 grid grid-cols-4 gap-2">
-                    {[
-                      {
-                        label: "Receita",
-                        value: fmtCurrency(state.consolidated.totalRevenue),
-                        target: macroTargets.revenue > 0 ? fmtCurrency(macroTargets.revenue) : "—",
-                        gap: macroTargets.revenue > 0 ? fmtCurrency(state.consolidated.totalRevenue - macroTargets.revenue) : null,
-                        meets: macroTargets.revenue === 0 || state.consolidated.totalRevenue >= macroTargets.revenue * 0.95,
-                      },
-                      {
-                        label: "Margem",
-                        value: fmtPct(state.consolidated.avgMargin),
-                        target: fmtPct(macroTargets.margin),
-                        gap: fmtPct(state.consolidated.avgMargin - macroTargets.margin),
-                        meets: state.consolidated.avgMargin >= macroTargets.margin * 0.95,
-                      },
-                      {
-                        label: "Sell-Through",
-                        value: fmtPct(state.consolidated.avgSellThrough),
-                        target: fmtPct(macroTargets.sellThrough),
-                        gap: fmtPct(state.consolidated.avgSellThrough - macroTargets.sellThrough),
-                        meets: state.consolidated.avgSellThrough >= macroTargets.sellThrough * 0.95,
-                      },
-                      {
-                        label: "GMROI",
-                        value: `${state.consolidated.avgGmroi.toFixed(2)}x`,
-                        target: `${macroTargets.gmroi.toFixed(2)}x`,
-                        gap: `${(state.consolidated.avgGmroi - macroTargets.gmroi).toFixed(2)}x`,
-                        meets: state.consolidated.avgGmroi >= macroTargets.gmroi * 0.95,
-                      },
-                    ].map((item, i) => (
-                      <div key={i} className={`rounded-lg px-2.5 py-1.5 border bg-white/80 ${
-                        item.meets ? "border-green-200" : "border-red-200"
-                      }`}>
-                        <div className="text-[10px] text-[#28071C]/50 uppercase tracking-wide font-semibold">{item.label}</div>
-                        <div className="flex items-baseline gap-1 mt-0.5">
-                          <span className={`text-[13px] font-bold ${item.meets ? "text-green-700" : "text-red-700"}`}>
-                            {item.value}
-                          </span>
-                          <span className="text-[10px] text-[#28071C]/40">/ {item.target}</span>
-                        </div>
-                        {item.gap !== null && (
-                          <div className={`text-[10px] font-semibold ${item.meets ? "text-green-600" : "text-red-600"}`}>
-                            Δ {item.gap}
-                          </div>
-                        )}
+              {/* E — Consolidado de Metas Macro (sticky, dinâmico) */}
+              {/* Exibe TODOS os indicadores foco ativos do M1 para esta temporada.  */}
+              {/* Fallback para receita+margem+sellThrough+gmroi quando M1 não tem prioridades. */}
+              {(() => {
+                const allOk = impactedMacroM3.length === 0;
+                const fmtV  = (key: string, v: number) => {
+                  if (key === "receitaBruta" || key === "pmv" || key === "custoMedio" || key === "ticketMedio") return fmtCurrency(v);
+                  if (key === "giro" || key === "gmroi") return `${v.toFixed(2)}x`;
+                  if (key === "cobertura") return `${Math.round(v)}d`;
+                  return fmtPct(v);
+                };
+
+                // Indicadores a exibir: foco do M1 (filtrado para os que M3 consegue calcular)
+                // ou fallback padrão quando M1 não tem prioridades configuradas.
+                const focusKeys = macroM1Extras.activeMacroKeys.length > 0
+                  ? macroM1Extras.activeMacroKeys.filter(k => k in M3_INDICATOR_LABELS)
+                  : ["receitaBruta", "margemBruta", "sellThrough", "gmroi"];
+
+                const cols = focusKeys.length <= 4 ? "grid-cols-4"
+                  : focusKeys.length <= 6 ? "grid-cols-6"
+                  : "grid-cols-4 flex-wrap";
+
+                return (
+                  <div id="tour-m3-consolidated" className={`rounded-xl px-4 py-2.5 shadow-sm border-t-4 ${
+                    allOk ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      {allOk
+                        ? <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
+                        : <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />}
+                      <span className={`text-[11px] font-bold shrink-0 ${allOk ? "text-green-800" : "text-red-800"}`}>
+                        {allOk ? "Metas atingidas" : "Metas NÃO atingidas"}
+                      </span>
+                      <div className={`flex-1 grid ${cols} gap-2`}>
+                        {focusKeys.map(key => {
+                          const planned   = macroM1Extras.values[key] ?? 0;
+                          const projected = getM3ConsolidatedValue(key, state.consolidated);
+                          const gap       = projected - planned;
+                          const band      = APPROVAL_BANDS_M3[key];
+                          // "meets" usa threshold de 95% para indicadores ↑ melhor,
+                          // e banda positiva para indicadores ↓ melhor
+                          const meets     = planned === 0 || (
+                            band?.higherIsBetter === false
+                              ? gap <= band.badPos
+                              : projected >= planned * 0.95
+                          );
+                          return (
+                            <div key={key} className={`rounded-lg px-2.5 py-1.5 border bg-white/80 ${
+                              meets ? "border-green-200" : "border-red-200"
+                            }`}>
+                              <div className="text-[10px] text-[#28071C]/50 uppercase tracking-wide font-semibold">
+                                {M3_INDICATOR_LABELS[key]}
+                              </div>
+                              <div className="flex items-baseline gap-1 mt-0.5">
+                                <span className={`text-[13px] font-bold ${meets ? "text-green-700" : "text-red-700"}`}>
+                                  {fmtV(key, projected)}
+                                </span>
+                                {planned > 0 && (
+                                  <span className="text-[10px] text-[#28071C]/40">/ {fmtV(key, planned)}</span>
+                                )}
+                              </div>
+                              {planned > 0 && (
+                                <div className={`text-[10px] font-semibold ${meets ? "text-green-600" : "text-red-600"}`}>
+                                  Δ {fmtV(key, gap)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    </div>
                   </div>
-                </div>
-              </div>
+                );
+              })()}
 
             </div>
 
@@ -699,6 +895,10 @@ export default function Module3DivisionPlanning() {
                   onUpdateIndicators={(ind) => updateIndicators(divId, ind)}
                   onUpdateRiskMatrix={(matrix) => updateRiskMatrix(divId, matrix)}
                   onUpdateVolume={(vol) => updateVolumeCoverage(divId, vol)}
+                  seasonId={selectedSeasonId}
+                  referenceSeasonId={referenceSeasonId}
+                  tenantId={tenantId}
+                  historicalAvgs={historicalAvgs}
                 />
               ))}
             </div>
@@ -826,15 +1026,39 @@ export default function Module3DivisionPlanning() {
                 ✓ Metas aplicadas ao plano
               </span>
             )}
-            <button
-              onClick={handleApplyMetas}
-              disabled={scenarios.length === 0}
-              title={scenarios.length === 0 ? "Salve um cenário antes de aplicar" : activeScenario ? `Aplicar metas do cenário "${activeScenario.name}"` : "Aplicar metas do último cenário salvo"}
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
-            >
-              <CheckCheck className="w-4 h-4" />
-              Aplicar metas
-            </button>
+            {impactedMacroM3.length === 0 ? (
+              <button
+                onClick={handleApplyMetas}
+                disabled={scenarios.length === 0}
+                title={scenarios.length === 0 ? "Salve um cenário antes de aplicar" : activeScenario ? `Aplicar metas do cenário "${activeScenario.name}"` : "Aplicar metas do último cenário salvo"}
+                className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
+              >
+                <CheckCheck className="w-4 h-4" />
+                Aplicar metas
+              </button>
+            ) : impactedMacroM3.length <= 2 ? (
+              <button
+                onClick={() => { if (!alreadyPending) setShowSubmitApprovalDialog(true); }}
+                disabled={scenarios.length === 0}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm ${
+                  alreadyPending
+                    ? "bg-amber-100 text-amber-700 border border-amber-300 cursor-default"
+                    : "bg-[#7598CF] text-white hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
+                }`}
+              >
+                <SendHorizonal className="w-4 h-4" />
+                {alreadyPending ? "Aguardando aprovação…" : "Submeter para Aprovação"}
+              </button>
+            ) : (
+              <button
+                disabled
+                title="Corrija os indicadores macro antes de aplicar (3 ou mais desvios)"
+                className="flex items-center gap-2 px-5 py-2.5 bg-red-100 text-red-400 border border-red-200 rounded-xl text-sm font-semibold cursor-not-allowed shadow-sm"
+              >
+                <AlertTriangle className="w-4 h-4" />
+                Aplicar metas
+              </button>
+            )}
           </div>
         </div>
         <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
@@ -1004,6 +1228,115 @@ export default function Module3DivisionPlanning() {
           </div>
         )}
       </div>
+
+      {/* ─── MODAL: Pós-Aplicação ─────────────────────────────────────────── */}
+      {showPostApplyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 flex flex-col items-center gap-5">
+            <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center">
+              <CheckCircle className="w-8 h-8 text-green-600" />
+            </div>
+            <div className="text-center">
+              <h2 className="text-[#28071C] font-bold text-lg mb-1">Metas aplicadas!</h2>
+              <p className="text-[#28071C]/60 text-sm">O plano por divisão foi confirmado. Continue para o próximo módulo.</p>
+            </div>
+            <div className="flex flex-col gap-2 w-full">
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/cycle-validation"); }}
+                className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
+              >
+                Ir para Módulo 4 — Validação de Ciclo
+                <ArrowRight className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
+                className="w-full px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
+              >
+                Voltar ao Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: Submeter para Aprovação (M3→M2) ──────────────────────── */}
+      {showSubmitApprovalDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-7 flex flex-col gap-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-[#28071C] font-bold text-base">Submeter para Aprovação</h2>
+                <p className="text-[#28071C]/50 text-xs mt-0.5">
+                  {impactedMacroM3.length} indicador{impactedMacroM3.length > 1 ? "es" : ""} fora das metas macro estratégicas (Módulo 1).
+                </p>
+              </div>
+              <button onClick={() => setShowSubmitApprovalDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Tabela de indicadores impactados */}
+            <div className="rounded-xl overflow-hidden border border-[#28071C]/8">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[#F2F2F2]">
+                    <th className="text-left text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Indicador</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Meta M1</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Projetado M3</th>
+                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Gap</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {impactedMacroM3.map((ind) => (
+                    <tr key={ind.key} className="border-t border-[#28071C]/5">
+                      <td className="px-4 py-2.5 text-[#28071C]/70">{ind.label}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-[#28071C]">
+                        {ind.isRate ? `${ind.planned.toFixed(1)}%` : `R$ ${Math.round(ind.planned).toLocaleString("pt-BR")}`}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-amber-600">
+                        {ind.isRate ? `${ind.projected.toFixed(1)}%` : `R$ ${Math.round(ind.projected).toLocaleString("pt-BR")}`}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-red-500 font-semibold">
+                        {ind.isRate ? `${ind.gap.toFixed(1)} p.p.` : `R$ ${Math.round(ind.gap).toLocaleString("pt-BR")}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Justificativa */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Justificativa</label>
+              <textarea
+                value={approvalJustification}
+                onChange={e => setApprovalJustification(e.target.value)}
+                placeholder="Explique por que o plano por divisão diverge das metas do canal e como isso impacta os objetivos da coleção…"
+                rows={3}
+                className="w-full border border-[#28071C]/15 rounded-xl px-4 py-3 text-sm text-[#28071C] placeholder-[#28071C]/30 resize-none focus:outline-none focus:border-[#7598CF]"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSubmitApprovalDialog(false)}
+                className="flex-1 px-4 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSubmitApprovalM3}
+                disabled={isSubmittingApproval || !approvalJustification.trim()}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                <SendHorizonal className="w-4 h-4" />
+                {isSubmittingApproval ? "Enviando…" : "Enviar para Aprovação"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1020,6 +1353,10 @@ interface DivisionBlockCardProps {
   onUpdateIndicators: (ind: Partial<CommercialIndicators>) => void;
   onUpdateRiskMatrix: (matrix: Partial<RiskMatrix>) => void;
   onUpdateVolume: (vol: Partial<VolumeAndCoverage>) => void;
+  seasonId: string;
+  referenceSeasonId: string;
+  tenantId: string;
+  historicalAvgs: Partial<Record<BusinessDivisionId, TierHistoricalAvg>>;
 }
 
 function DivisionBlockCard({
@@ -1028,15 +1365,117 @@ function DivisionBlockCard({
   onUpdateIndicators,
   onUpdateRiskMatrix,
   onUpdateVolume,
+  seasonId,
+  referenceSeasonId,
+  tenantId,
+  historicalAvgs,
 }: DivisionBlockCardProps) {
   const navigate = useNavigate();
   const [isProducer, setIsProducer] = useState(true);
+  const [showReviewModal, setShowReviewModal] = useState(false);
 
   const riskValid = isValidRiskMatrix(block.riskMatrix);
   const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
 
+  const divisionName = DEFAULT_DIVISIONS[divId];
+
   return (
     <div className="space-y-2">
+
+      {/* ── MODAL: Revisão de Faixas de Preço ─────────────────────────────── */}
+      {showReviewModal && (
+        <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowReviewModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+
+            {/* Cabeçalho */}
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between">
+              <div>
+                <p className="text-white font-semibold text-sm">Revisão de Faixas de Preço</p>
+                <p className="text-white/70 text-xs mt-0.5">{divisionName}</p>
+              </div>
+              <button onClick={() => setShowReviewModal(false)} className="text-white/60 hover:text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Corpo */}
+            <div className="px-6 py-5 space-y-3">
+              <p className="text-[#28071C]/60 text-xs">O que deseja revisar?</p>
+
+              {/* Opção 1 — Ajuste de Ciclo */}
+              <button
+                onClick={() => {
+                  setShowReviewModal(false);
+                  navigate(`/module3-price-pyramid/${divId}`, {
+                    state: {
+                      plannedAvgPrice: block.indicators.avgPrice,
+                      seasonId,
+                      referenceSeasonId,
+                      tenantId,
+                    },
+                  });
+                }}
+                className="w-full text-left flex items-start gap-4 px-4 py-4 border-2 border-[#7598CF]/30 rounded-xl hover:border-[#7598CF] hover:bg-[#7598CF]/4 transition-all group"
+              >
+                <div className="mt-0.5 w-8 h-8 rounded-full bg-[#7598CF]/15 flex items-center justify-center flex-shrink-0 group-hover:bg-[#7598CF]/25 transition-colors">
+                  <BarChart3 className="w-4 h-4 text-[#7598CF]" />
+                </div>
+                <div>
+                  <p className="text-[#28071C] font-semibold text-sm">
+                    Ajustar Média de Preço
+                    <span className="ml-2 text-[10px] font-normal text-[#7598CF] bg-[#7598CF]/10 px-2 py-0.5 rounded-full">Ajuste de Ciclo</span>
+                  </p>
+                  <p className="text-[#28071C]/55 text-xs mt-1 leading-relaxed">
+                    Altera a média de preço que se estima atingir na faixa de preço dentro da categoria. Ideal para corrigir distorções do histórico do ano anterior ou alinhar a média aos produtos específicos que irão compor o estoque deste ciclo.
+                  </p>
+                  <p className="text-[#7598CF] text-[10px] font-semibold mt-2">
+                    Não altera as configurações estruturais do sistema.
+                  </p>
+                </div>
+              </button>
+
+              {/* Opção 2 — Ajuste Estrutural */}
+              <button
+                onClick={() => {
+                  setShowReviewModal(false);
+                  navigate("/operation-settings", {
+                    state: { openCard: "faixas-preco" },
+                  });
+                }}
+                className="w-full text-left flex items-start gap-4 px-4 py-4 border-2 border-[#28071C]/15 rounded-xl hover:border-[#28071C]/40 hover:bg-[#28071C]/3 transition-all group"
+              >
+                <div className="mt-0.5 w-8 h-8 rounded-full bg-[#28071C]/8 flex items-center justify-center flex-shrink-0 group-hover:bg-[#28071C]/15 transition-colors">
+                  <Layers className="w-4 h-4 text-[#28071C]/70" />
+                </div>
+                <div>
+                  <p className="text-[#28071C] font-semibold text-sm">
+                    Redefinir Limites da Faixa
+                    <span className="ml-2 text-[10px] font-normal text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Ajuste Estrutural</span>
+                  </p>
+                  <p className="text-[#28071C]/55 text-xs mt-1 leading-relaxed">
+                    Altera os valores de início e fim da faixa de preço de forma permanente nas configurações da divisão. Ideal para repasses de inflação, aumento de custos de matéria-prima ou reposicionamento da categoria.
+                  </p>
+                  <p className="text-amber-700 text-[10px] font-semibold mt-2">
+                    Atenção: Os novos limites passarão a valer para este e para todos os planejamentos futuros.
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            {/* Rodapé */}
+            <div className="px-6 pb-5">
+              <button
+                onClick={() => setShowReviewModal(false)}
+                className="w-full text-center text-xs text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors py-1"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Cabeçalho do segmento */}
       <div className="bg-[#28071C] rounded-xl px-3 py-2">
@@ -1107,19 +1546,21 @@ function DivisionBlockCard({
         <div className="flex items-center justify-between mb-2">
           <div className="text-[10px] uppercase font-bold text-[#28071C]/50 tracking-wide">Pirâmide de Preço</div>
           <button
-            onClick={() => navigate(`/module3-price-pyramid/${divId}`, { state: { plannedAvgPrice: block.indicators.avgPrice } })}
+            onClick={() => setShowReviewModal(true)}
             className="flex items-center gap-0.5 text-[10px] font-semibold text-[#7598CF] hover:text-[#28071C] transition-colors"
           >
             Revisão <ChevronRight className="w-3 h-3" />
           </button>
         </div>
         <div className="space-y-1.5">
-          {[
-            { label: "P1 Entrada", range: block.priceRange.entry,   pct: block.priceRange.entryPercent,   color: "bg-blue-500" },
-            { label: "P2 Médio",   range: block.priceRange.middle,  pct: block.priceRange.middlePercent,  color: "bg-amber-500" },
-            { label: "P3 Premium", range: block.priceRange.premium, pct: block.priceRange.premiumPercent, color: "bg-[#28071C]" },
-          ].map((item) => {
-            const mid = parsePriceMidpoint(item.range);
+          {([
+            { label: "P1 Entrada", range: block.priceRange.entry,   pct: block.priceRange.entryPercent,   color: "bg-blue-500",  tierId: "p1" as PriceTierId },
+            { label: "P2 Médio",   range: block.priceRange.middle,  pct: block.priceRange.middlePercent,  color: "bg-amber-500", tierId: "p2" as PriceTierId },
+            { label: "P3 Premium", range: block.priceRange.premium, pct: block.priceRange.premiumPercent, color: "bg-[#28071C]", tierId: "p3" as PriceTierId },
+          ]).map((item) => {
+            // Usa média histórica real quando disponível; caso contrário usa ponto médio do range
+            const histAvg = historicalAvgs[divId]?.[item.tierId];
+            const mid = histAvg ?? parsePriceMidpoint(item.range);
             return (
               <div key={item.label} className="flex items-center justify-between gap-1">
                 <div className="flex items-center gap-1 min-w-0">
@@ -1129,7 +1570,11 @@ function DivisionBlockCard({
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   <span className="text-[10px] text-[#28071C]/40">{item.range || "—"}</span>
                   <span className="text-[11px] font-bold text-[#28071C]">{item.pct.toFixed(0)}%</span>
-                  {mid != null && <span className="text-[10px] text-[#28071C]/50">R${mid.toFixed(0)}</span>}
+                  {mid != null && (
+                    <span className={`text-[10px] ${histAvg != null ? "text-[#7598CF] font-semibold" : "text-[#28071C]/50"}`}>
+                      R${Math.round(mid)}
+                    </span>
+                  )}
                 </div>
               </div>
             );

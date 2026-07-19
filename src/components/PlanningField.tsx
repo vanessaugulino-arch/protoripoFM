@@ -1,8 +1,9 @@
 // src/components/PlanningField.tsx
-// v3 — 3 estados visuais (livre / cadeado laranja / calculado cinza)
-//      suporte a campos de orçamento separados (compra vs produção)
+// v4 — input com estado local (evita bloqueio na digitação de múltiplos dígitos)
+//      estado externo (free/locked/calculated) só é aplicado APÓS onBlur
 
-import { Lock, RotateCcw } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Lock } from 'lucide-react'
 import { FieldKey, FieldState } from '../engine/planningEngine'
 
 export type FieldFormat =
@@ -32,9 +33,9 @@ export function formatValue(value: number | null, format: FieldFormat = 'number'
   if (value === null || value === undefined) return '—'
   switch (format) {
     case 'currency':
-      return `R$ ${value.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+      return `R$ ${value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     case 'percent':
-      return `${value.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+      return `${value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
     case 'pieces':
       return `${Math.round(value).toLocaleString('pt-BR')} pç`
     case 'days':
@@ -46,12 +47,25 @@ export function formatValue(value: number | null, format: FieldFormat = 'number'
   }
 }
 
+// ─── Parseador de número no formato pt-BR ou en-US ───────────────────────
+function parseInputValue(str: string): number | null {
+  if (str.trim() === '') return null
+  // Substitui vírgula decimal por ponto (pt-BR → en)
+  // Remove separadores de milhar (ponto antes de 3 dígitos é milhar em pt-BR)
+  const normalized = str
+    .replace(/\./g, '')   // remove pontos (separador de milhar)
+    .replace(',', '.')    // troca vírgula decimal por ponto
+  const n = parseFloat(normalized)
+  return isNaN(n) ? null : n
+}
+
 // ─── Variação percentual em relação ao baseline ───────────────────────────
 function calcVariation(current: number | null, base: number | null): string | null {
   if (current === null || base === null || base === 0) return null
-  const pct = ((current - base) / Math.abs(base)) * 100
-  const sign = pct >= 0 ? '+' : ''
-  return `${sign}${pct.toFixed(1)}%`
+  const pct     = ((current - base) / Math.abs(base)) * 100
+  const sign    = pct >= 0 ? '+' : '-'
+  const abs     = Math.abs(pct).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  return `${sign}${abs}%`
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────
@@ -67,30 +81,96 @@ export function PlanningField({
   className = '',
   highlightCalc = false,
 }: PlanningFieldProps) {
+  // ── Estado local do input ─────────────────────────────────────────────
+  // Enquanto o usuário está digitando (hasFocus=true), exibimos localStr e
+  // NÃO chamamos onEdit. Isso evita que o engine trave o campo mid-digitação.
+  // Só chamamos onEdit no blur ou ao pressionar Enter/Tab E somente se o valor mudou.
+  const [localStr,   setLocalStr]   = useState<string>('')
+  const [hasFocus,   setHasFocus]   = useState(false)
+  const [hasChanged, setHasChanged] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Helper: converte número para string pt-BR sem separador de milhar (para edição)
+  const toEditStr = (n: number): string =>
+    n.toLocaleString('pt-BR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 6 })
+
+  // Sincroniza localStr quando value muda externamente (reset, loadScenario…)
+  // mas NUNCA enquanto o usuário está com foco no campo.
+  useEffect(() => {
+    if (!hasFocus) {
+      setLocalStr(value !== null ? toEditStr(value) : '')
+    }
+  }, [value, hasFocus])
+
+  const handleFocus = () => {
+    // Campos 'calculated' não são editáveis diretamente — ignorar foco
+    if (state === 'calculated') return
+    setHasFocus(true)
+    setHasChanged(false)
+    // Mostra o número em formato pt-BR sem separador de milhar (facilita edição)
+    setLocalStr(value !== null ? toEditStr(value) : '')
+    // Seleciona tudo para facilitar substituição
+    setTimeout(() => inputRef.current?.select(), 0)
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalStr(e.target.value)
+    setHasChanged(true)
+  }
+
+  const commitValue = () => {
+    const parsed = parseInputValue(localStr)
+    onEdit(fieldKey, parsed)
+  }
+
+  const handleBlur = () => {
+    setHasFocus(false)
+    // Só chama onEdit se o usuário realmente alterou algo (evita recálculos desnecessários)
+    if (hasChanged) {
+      commitValue()
+      setHasChanged(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      // Tab já vai causar blur; Enter commitamos e tiramos foco
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        if (hasChanged) commitValue()
+        setHasChanged(false)
+        inputRef.current?.blur()
+      }
+    } else if (e.key === 'Escape') {
+      // Cancela a edição e restaura o valor anterior
+      setLocalStr(value !== null ? toEditStr(value) : '')
+      setHasChanged(false)
+      inputRef.current?.blur()
+    }
+  }
+
   const isFree       = state === 'free'
   const isLocked     = state === 'locked'
   const isCalculated = state === 'calculated'
-
-  // Campo calculado selecionado como indicador chave: visual proeminente (branco)
   const isHighlight  = isCalculated && highlightCalc
 
-  const variation = calcVariation(value, baseValue ?? null)
+  // Campos 'calculated' nunca mostram input (não editáveis diretamente).
+  // Campos 'locked' e 'free' mostram input quando com foco (evita bloqueio mid-digitação).
+  const showInput = isFree || (hasFocus && !isCalculated)
 
-  // Cor da variação
-  const varColor = variation
-    ? variation.startsWith('+')
-      ? 'text-emerald-600'
-      : 'text-red-500'
+  const variation = calcVariation(value, baseValue ?? null)
+  const varColor  = variation
+    ? variation.startsWith('+') ? 'text-emerald-600' : 'text-red-500'
     : ''
 
   return (
     <div
       className={`
         relative rounded-xl p-3 border-2 transition-all duration-200
-        ${isFree       ? 'bg-white border-transparent shadow-sm'                  : ''}
-        ${isLocked     ? 'bg-amber-50 border-amber-400 shadow-amber-100'          : ''}
-        ${isHighlight  ? 'bg-white border-[#7598CF]/25 shadow-sm'                 : ''}
-        ${isCalculated && !isHighlight ? 'bg-[#F2F2F2] border-transparent'        : ''}
+        ${(isFree || hasFocus)   ? 'bg-white border-transparent shadow-sm'                  : ''}
+        ${isLocked && !hasFocus  ? 'bg-amber-50 border-amber-400 shadow-amber-100'          : ''}
+        ${isHighlight            ? 'bg-white border-[#7598CF]/25 shadow-sm'                 : ''}
+        ${isCalculated && !isHighlight && !hasFocus ? 'bg-[#F2F2F2] border-transparent'    : ''}
         ${className}
       `}
     >
@@ -99,14 +179,14 @@ export function PlanningField({
         <span
           className={`
             text-xs uppercase tracking-wide font-semibold leading-tight
-            ${isCalculated && !isHighlight ? 'text-[#28071C]/40' : 'text-[#28071C]/60'}
+            ${isCalculated && !isHighlight && !hasFocus ? 'text-[#28071C]/40' : 'text-[#28071C]/60'}
           `}
         >
           {label}
         </span>
 
         {/* Ícone de estado */}
-        {isLocked && (
+        {isLocked && !hasFocus && (
           <button
             onClick={() => onUnlock(fieldKey)}
             title="Bloqueio automático — clique para restaurar ao histórico"
@@ -115,39 +195,45 @@ export function PlanningField({
             <Lock className="w-4 h-4" />
           </button>
         )}
-        {isFree && (
+        {(isFree || hasFocus) && (
           <div className="flex-shrink-0 w-3 h-3 rounded-full border-2 border-[#28071C]/25" />
         )}
-        {isCalculated && (
+        {isCalculated && !hasFocus && (
           <div className={`flex-shrink-0 w-3 h-3 rounded-full ${isHighlight ? 'bg-[#7598CF]/40' : 'bg-[#28071C]/20'}`} />
         )}
       </div>
 
-      {/* Input (free) ou valor exibido (locked / calculated) */}
-      {isFree ? (
+      {/* Input ou valor formatado */}
+      {showInput ? (
         <input
-          type="number"
-          value={value ?? ''}
-          onChange={e =>
-            onEdit(fieldKey, e.target.value !== '' ? parseFloat(e.target.value) : null)
-          }
+          ref={inputRef}
+          type="text"
+          inputMode="decimal"
+          value={localStr}
+          placeholder="0"
+          onFocus={handleFocus}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
           className="
             w-full bg-transparent text-[#28071C] text-lg font-bold
             focus:outline-none focus:ring-0
             placeholder:text-[#28071C]/25
-            [appearance:textfield]
-            [&::-webkit-outer-spin-button]:appearance-none
-            [&::-webkit-inner-spin-button]:appearance-none
           "
-          placeholder="0"
         />
       ) : (
         <p
+          onClick={() => {
+            // Clicar num campo locked/calculated que esteja em modo "livre"
+            // após unlock exibe o input — só precisa de onUnlock.
+            // Para calculated puro: não editável via clique.
+            if (isLocked) onUnlock(fieldKey)
+          }}
           className={`
-            text-lg font-bold
-            ${isLocked                    ? 'text-amber-700'   : ''}
-            ${isHighlight                 ? 'text-[#28071C]/80': ''}
-            ${isCalculated && !isHighlight? 'text-[#28071C]/50': ''}
+            text-lg font-bold cursor-default
+            ${isLocked                     ? 'text-amber-700 cursor-pointer'   : ''}
+            ${isHighlight                  ? 'text-[#28071C]/80'               : ''}
+            ${isCalculated && !isHighlight ? 'text-[#28071C]/50'               : ''}
           `}
         >
           {formatValue(value, format)}
@@ -155,21 +241,21 @@ export function PlanningField({
       )}
 
       {/* Variação em relação ao histórico */}
-      {variation && (
+      {variation && !hasFocus && (
         <span className={`text-xs font-medium mt-1 block ${varColor}`}>
           {variation} vs histórico
         </span>
       )}
 
       {/* Valor histórico de referência (rodapé discreto) */}
-      {baseValue !== null && baseValue !== undefined && (
+      {baseValue !== null && baseValue !== undefined && !hasFocus && (
         <span className="text-xs text-[#28071C]/30 mt-0.5 block">
           Base: {formatValue(baseValue, format)}
         </span>
       )}
 
       {/* Badge "Bloqueio automático" no cadeado */}
-      {isLocked && (
+      {isLocked && !hasFocus && (
         <span className="mt-2 inline-flex items-center gap-1 text-xs text-amber-600 font-medium">
           <Lock className="w-3 h-3" />
           Bloqueio automático
