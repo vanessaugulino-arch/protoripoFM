@@ -38,7 +38,7 @@ import {
 import {
   MONTHS, DEFAULT_REGRA, computeMesFim,
 } from '../../services/temporadaService'
-import { saveRegraDefaultDb, upsertCanalRegraDefaultDb, autoGenerateForYearDb, listSeasonsDb } from '../../services/supabase/seasonService'
+import { saveRegraDefaultDb, upsertCanalRegraDefaultDb, autoGenerateForYearDb, listSeasonsDb, propagateRegraToSeasonsDb } from '../../services/supabase/seasonService'
 import { supabase } from '../../lib/supabase'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,10 +50,15 @@ function detectIsAdmin(): boolean {
     const raw = sessionStorage.getItem('currentUser')
     if (!raw) return true
     const user = JSON.parse(raw)
-    const role = String(user.role ?? user.perfil ?? user.user_role ?? '').toLowerCase()
-    // Roles de usuários convidados (não-admin)
-    if (['estrategico', 'tatico', 'operacional'].includes(role)) return false
-    return true // admin, gestor, support, owner ou desconhecido → mostra tudo
+    // Fonte canônica gravada no login: system_role + profile.
+    const systemRole = String(user.system_role ?? '').toLowerCase()
+    const profile    = String(user.profile ?? user.perfil ?? user.role ?? '').toLowerCase()
+    // Slides de configuração: exclusivos para admin (client_admin/support) OU
+    // perfil estratégico (CEO). Demais perfis (tático/operacional/convidado)
+    // veem apenas as telas de conceito.
+    if (systemRole === 'client_admin' || systemRole === 'support') return true
+    if (profile === 'ceo' || profile === 'estrategico') return true
+    return false
   } catch {
     return true
   }
@@ -484,29 +489,42 @@ export default function Onboarding() {
 
       // 3. Regra de temporadas e 4. períodos por canal — best-effort,
       //    não bloqueiam a conclusão (o perfil canônico já está salvo).
-      try {
-        await saveRegraDefaultDb(tenantId, {
-          verao:               { mesInicio: veraoInicio,   mesFim: veraoFim   },
-          inverno:             { mesInicio: invernoInicio, mesFim: invernoFim },
-          canalPeriodsUnified: canalVendaRegras.length === 0,
-        })
-        // Gera as temporadas do ano corrente e do próximo a partir da regra, para
-        // que apareçam JÁ no card de Temporadas (antes eram criadas só ao planejar).
-        // Só gera se o tenant ainda não tem NENHUMA temporada — evita duplicar em
-        // bases já configuradas.
-        const existentes = await listSeasonsDb(tenantId).catch(() => [])
-        if (existentes.length === 0) {
-          const anoAtual = new Date().getFullYear()
-          await autoGenerateForYearDb(tenantId, anoAtual).catch(() => null)
-          await autoGenerateForYearDb(tenantId, anoAtual + 1).catch(() => null)
+      //    SÓ o admin/CEO (que respondeu os slides de configuração) grava a regra
+      //    e propaga às temporadas — evita que um usuário de conceito sobrescreva
+      //    a configuração da empresa com os valores default.
+      if (showAdminConfig) {
+        try {
+          await saveRegraDefaultDb(tenantId, {
+            verao:               { mesInicio: veraoInicio,   mesFim: veraoFim   },
+            inverno:             { mesInicio: invernoInicio, mesFim: invernoFim },
+            canalPeriodsUnified: canalVendaRegras.length === 0,
+          })
+          // Gera as temporadas do ano corrente e do próximo a partir da regra, para
+          // que apareçam JÁ no card de Temporadas (antes eram criadas só ao planejar).
+          // Só gera se o tenant ainda não tem NENHUMA temporada — evita duplicar em
+          // bases já configuradas.
+          const regra = {
+            verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
+            inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
+          }
+          const existentes = await listSeasonsDb(tenantId).catch(() => [])
+          if (existentes.length === 0) {
+            const anoAtual = new Date().getFullYear()
+            await autoGenerateForYearDb(tenantId, anoAtual).catch(() => null)
+            await autoGenerateForYearDb(tenantId, anoAtual + 1).catch(() => null)
+          } else {
+            // Base já tinha temporadas (ex.: importadas) — cruza a resposta do gestor
+            // com o banco: cada temporada assume a janela da sua estação (nome do mês).
+            await propagateRegraToSeasonsDb(tenantId, regra).catch(() => null)
+          }
+        } catch (err) {
+          console.warn('Erro ao salvar/gerar temporadas:', err)
         }
-      } catch (err) {
-        console.warn('Erro ao salvar/gerar temporadas:', err)
-      }
 
-      for (const r of canalVendaRegras) {
-        upsertCanalRegraDefaultDb(tenantId, r.canal_id, r.tipo, r.mes_inicio, r.mes_fim)
-          .catch(err => console.warn('Erro ao salvar regra de canal:', err))
+        for (const r of canalVendaRegras) {
+          upsertCanalRegraDefaultDb(tenantId, r.canal_id, r.tipo, r.mes_inicio, r.mes_fim)
+            .catch(err => console.warn('Erro ao salvar regra de canal:', err))
+        }
       }
     } else {
       console.warn('activeTenantId ausente na conclusão do onboarding — perfil salvo apenas localmente')

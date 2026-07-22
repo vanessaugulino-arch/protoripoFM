@@ -13,6 +13,8 @@
 
 import { supabase } from "../lib/supabase";
 import { enrichProductColors } from "./supabase/colorBankService";
+import { getRegraDefaultDb } from "./supabase/seasonService";
+import { DEFAULT_REGRA } from "./temporadaService";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -1242,6 +1244,13 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
     }
 
     // 2. Extrair temporadas únicas
+    // Janela de cada temporada vem da REGRA do tenant (Calendário de Comunicação),
+    // gravada como NOME de mês e cruzada por tipo — não mais números hardcoded.
+    const regraImp = await getRegraDefaultDb(tenantId).catch(() => DEFAULT_REGRA);
+    const winFor = (tipo: "verao" | "inverno") =>
+      tipo === "verao"
+        ? { start: regraImp.verao.mesInicio,   end: regraImp.verao.mesFim   }
+        : { start: regraImp.inverno.mesInicio, end: regraImp.inverno.mesFim };
     const { data: seasRows } = await supabase
       .from("products")
       .select("season")
@@ -1258,8 +1267,8 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
             name: sName,
             fiscal_year: meta.fiscalYear,
             tipo: meta.tipo,
-            month_start: meta.tipo === "verao" ? "07" : "01",
-            month_end:   meta.tipo === "verao" ? "12" : "06",
+            month_start: winFor(meta.tipo).start,
+            month_end:   winFor(meta.tipo).end,
             auto_generated: false,
           },
           { onConflict: "tenant_id,name" }
@@ -1308,8 +1317,8 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
                 name: anchorName,
                 fiscal_year: meta.fiscalYear,
                 tipo: meta.tipo,
-                month_start: meta.tipo === "verao" ? "07" : "01",
-                month_end:   meta.tipo === "verao" ? "12" : "06",
+                month_start: winFor(meta.tipo).start,
+                month_end:   winFor(meta.tipo).end,
                 auto_generated: true,
               },
               { onConflict: "tenant_id,name" }

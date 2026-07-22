@@ -160,6 +160,36 @@ export async function saveRegraDefaultDb(
   if (error) throw error;
 }
 
+/**
+ * Propaga a regra (Verão/Inverno) para as temporadas concretas do tenant,
+ * cruzando pelo campo `tipo`. Cada temporada verão passa a usar a janela do
+ * Verão da regra; cada inverno, a do Inverno — sempre como NOME de mês
+ * (ex.: "Agosto"), formato usado por MONTHS e pelo restante do sistema.
+ *
+ * Só toca em temporadas que têm `tipo` definido; as demais ficam intactas.
+ * Não afeta curva mensal nem atribuição de vendas (essas usam colecao+sale_date,
+ * não a janela da temporada) — apenas alinha o grão de planejamento à resposta
+ * do gestor no onboarding / Calendário de Comunicação.
+ */
+export async function propagateRegraToSeasonsDb(
+  tenantId: string,
+  regra:    TemporadaRegraDefault,
+): Promise<void> {
+  const { error: eV } = await db
+    .from("seasons")
+    .update({ month_start: regra.verao.mesInicio, month_end: regra.verao.mesFim })
+    .eq("tenant_id", tenantId)
+    .eq("tipo", "verao");
+  if (eV) throw eV;
+
+  const { error: eI } = await db
+    .from("seasons")
+    .update({ month_start: regra.inverno.mesInicio, month_end: regra.inverno.mesFim })
+    .eq("tenant_id", tenantId)
+    .eq("tipo", "inverno");
+  if (eI) throw eI;
+}
+
 // ─── Canal × Temporada Config ─────────────────────────────────────────────────
 
 export interface CanalConfig {

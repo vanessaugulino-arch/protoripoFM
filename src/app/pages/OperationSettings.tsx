@@ -91,6 +91,7 @@ import {
   deleteSeasonDb,
   getRegraDefaultDb,
   saveRegraDefaultDb,
+  propagateRegraToSeasonsDb,
   listAllCanalConfigsDb,
   listCanalConfigDb,
   upsertCanalConfigDb,
@@ -205,6 +206,20 @@ interface FaixasImportEntry {
 // ─── Constants ────────────────────────────────────────────────────────────────
 // months re-exportado do serviço para uso nos formulários locais
 const months = MONTHS_SVC;
+
+/**
+ * Rótulo de mês para exibição: aceita nome ("Agosto") ou número ("08"/"8") e
+ * sempre devolve o NOME. Defensivo contra dados legados numéricos.
+ */
+function monthLabel(v: string | number | null | undefined): string {
+  if (v == null || String(v).trim() === "") return "—";
+  const s = String(v).trim();
+  const byName = months.find(m => m.toLowerCase() === s.toLowerCase());
+  if (byName) return byName;
+  const n = parseInt(s, 10);
+  if (!Number.isNaN(n) && n >= 1 && n <= 12) return months[n - 1];
+  return s;
+}
 const grupos               = ["Vestuário", "Acessórios", "Calçados", "Joias"];
 const categorias           = ["Blusas", "Vestidos", "Calças", "Saias", "Jaquetas"];
 const SUBCATEGORIAS_DEFAULT = ["Casual", "Formal", "Esportivo", "Festa"];
@@ -432,8 +447,8 @@ function monthInRange(testIdx: number, startIdx: number, endIdx: number): boolea
 function dateInTemporada(dateStr: string, t: Temporada): boolean {
   const d        = new Date(dateStr + "T00:00:00");
   const testIdx  = d.getMonth(); // 0–11
-  const startIdx = months.indexOf(t.mesInicio);
-  const endIdx   = months.indexOf(t.mesFim);
+  const startIdx = months.indexOf(monthLabel(t.mesInicio));
+  const endIdx   = months.indexOf(monthLabel(t.mesFim));
   return monthInRange(testIdx, startIdx, endIdx);
 }
 
@@ -852,11 +867,17 @@ export default function OperationSettings() {
     }
     setRegraSaving(true);
     try {
-      await saveRegraDefaultDb(user.tenant_id, {
+      const regra = {
         verao:               { mesInicio: veraoInicio,   mesFim: veraoFim   },
         inverno:             { mesInicio: invernoInicio, mesFim: invernoFim },
         canalPeriodsUnified: canalRegraDefaults.length === 0,
-      });
+      };
+      await saveRegraDefaultDb(user.tenant_id, regra);
+      // Cruza com o banco: cada temporada (por tipo) assume a janela da regra,
+      // gravada como nome do mês. Depois recarrega o card já corrigido.
+      await propagateRegraToSeasonsDb(user.tenant_id, regra);
+      const atualizadas = await listSeasonsDb(user.tenant_id).catch(() => null);
+      if (atualizadas) setTemporadas(atualizadas);
     } catch (err) {
       console.error("Erro ao salvar regra de temporadas:", err);
       alert("Erro ao salvar configuração. Tente novamente.");
@@ -1957,7 +1978,7 @@ export default function OperationSettings() {
                             {months.map(m => <option key={m} value={m}>{m}</option>)}
                           </select>
                         ) : (
-                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesInicio}</span>
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{monthLabel(t.mesInicio)}</span>
                         )}
                       </td>
 
@@ -1969,7 +1990,7 @@ export default function OperationSettings() {
                             {months.map(m => <option key={m} value={m}>{m}</option>)}
                           </select>
                         ) : (
-                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesFim}</span>
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{monthLabel(t.mesFim)}</span>
                         )}
                       </td>
 
@@ -2026,7 +2047,7 @@ export default function OperationSettings() {
                             {months.map(m => <option key={m} value={m}>{m}</option>)}
                           </select>
                         ) : (
-                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesInicio}</span>
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{monthLabel(t.mesInicio)}</span>
                         )}
                       </td>
 
@@ -2038,7 +2059,7 @@ export default function OperationSettings() {
                             {months.map(m => <option key={m} value={m}>{m}</option>)}
                           </select>
                         ) : (
-                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesFim}</span>
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{monthLabel(t.mesFim)}</span>
                         )}
                       </td>
 
