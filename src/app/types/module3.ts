@@ -162,7 +162,15 @@ export interface SeasonConsolidated {
     revenue: number;
     indicators: CommercialIndicators;
   }>;
-  
+
+  // Absolutos consolidados da temporada (primazia dos absolutos).
+  // Persistidos para o rollup bottom-up no grão mensal (Fase F) e a Fase 3.
+  totalPecas?:      number;
+  totalLucroBruto?: number;
+  totalEstMedioRS?: number;
+  totalMarkdownRS?: number;
+  totalOrcamento?:  number;
+
   // Cenários salvos
   scenarios: Module3Scenario[];
 }

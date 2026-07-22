@@ -16,6 +16,7 @@ import {
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
 import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
+import { recomputeOfficialMacro, advanceDetailLevel } from "../../services/supabase/officialPlanService";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -51,6 +52,10 @@ import {
 } from "../../services/supabase/channelScenarioService";
 import type { ChannelScenario } from "../../services/supabase/channelScenarioService";
 import { exportChannelScenarios } from "../../services/channelScenarioService";
+import {
+  getHistoricalProfiles,
+  normalizeChannelPcts,
+} from "../../services/supabase/historicalProfileService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -325,6 +330,11 @@ export default function ChannelPlanning() {
 
       // Carregar cenários, anos revisados e pedidos de aprovação do Supabase
       if (tid) {
+        // Carrega perfis históricos para inicializar proporções reais de canal
+        getHistoricalProfiles(tid)
+          .then(hp => setHistChannelProfiles(hp.channels))
+          .catch(() => {});
+
         dbListChannelScenarios(tid, defaultYear)
           .then(rows => setSavedScenarios(rows))
           .catch(() => {/* fallback to localStorage state */});
@@ -355,8 +365,9 @@ export default function ChannelPlanning() {
   const profile      = getStoredProfile();
   const plannedYears = getPlannedYears();
   const defaultYear  = plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1;
-  const [selectedYear, setSelectedYear]   = useState<number>(defaultYear);
-  const [reviewedYears, setReviewedYears] = useState<number[]>([]);
+  const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
+  const [reviewedYears, setReviewedYears]       = useState<number[]>([]);
+  const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
 
   const planCycle    = getPlanCycle(selectedYear);
   const macroValues: Record<string, unknown> | null = planCycle?.versions?.[0]?.values ?? null;
@@ -465,8 +476,24 @@ export default function ChannelPlanning() {
         const last = rows.length > 0 ? rows[rows.length - 1] : null;
 
         if (!last) {
-          // Sem cenário salvo → inicializa com taxas uniformes do M1
-          setChannelData(initChannelData(newMacroR, newRates));
+          // Sem cenário salvo → inicializa com proporções históricas reais (fallback: iguais)
+          const channels = visibleChannels.length > 0 ? visibleChannels : (["atacado", "varejo", "ecommerce"] as ChannelId[]);
+          const histPcts = normalizeChannelPcts(histChannelProfiles, channels);
+          const initPcts = { atacado: 0, varejo: 0, ecommerce: 0, ...histPcts };
+          setPercents(prev => ({ ...prev, ...initPcts }));
+          const data: Record<ChannelId, ChannelData> = {} as any;
+          for (const ch of channels) {
+            const pct = initPcts[ch] ?? 0;
+            data[ch]  = buildChannel(Math.round(newMacroR * pct / 100), {
+              ...(newRates as any),
+              ...(CHANNEL_FALLBACK_RATES[ch]),
+              // sobrescreve drivers do M1 onde disponíveis
+              margemBruta: newRates.margemBruta ?? CHANNEL_FALLBACK_RATES[ch].margemBruta,
+              pmv:         newRates.pmv         ?? CHANNEL_FALLBACK_RATES[ch].pmv,
+              custoMedio:  newRates.custoMedio  ?? CHANNEL_FALLBACK_RATES[ch].custoMedio,
+            });
+          }
+          setChannelData(data);
           return;
         }
 
@@ -583,11 +610,20 @@ export default function ChannelPlanning() {
     setIsExportingPDF(false);
   };
 
-  const handleApplyMetas = () => {
+  const handleApplyMetas = async () => {
     if (!tenantId) return;
     const last = savedScenarios[savedScenarios.length - 1];
     if (last) {
-      applyChannelScenario(tenantId, selectedYear, last.id).catch(() => {});
+      // Aguarda a aplicação para então recalcular o macro oficial (bottom-up).
+      try {
+        await applyChannelScenario(tenantId, selectedYear, last.id);
+        // Plano Oficial: recalcula o macro a partir do canal aplicado (primazia
+        // dos absolutos, na função Postgres) e avança o nível de detalhe para 2.
+        await recomputeOfficialMacro(tenantId, selectedYear);
+        await advanceDetailLevel(tenantId, selectedYear, 2);
+      } catch {
+        // Falha no recompute não bloqueia a aplicação do cenário de canal.
+      }
     }
     setReviewedYears(prev => prev.includes(selectedYear) ? prev : [...prev, selectedYear]);
     showToast(`Metas do ciclo ${selectedYear} aplicadas.`);

@@ -28,11 +28,22 @@ export interface Temporada {
   autoGerada?: boolean;
   /** Tipo canônico — permite re-sincronizar com a regra padrão. */
   tipo?: "verao" | "inverno";
+  /**
+   * true (padrão) = todos os canais vendem no mesmo período da temporada.
+   * false = cada canal tem mesInicio/mesFim próprio em canal_temporada_config.
+   */
+  canalPeriodsUnified?: boolean;
 }
 
 export interface TemporadaRegraDefault {
   verao:   { mesInicio: string; mesFim: string };
   inverno: { mesInicio: string; mesFim: string };
+  /**
+   * true (padrão) = todos os canais vendem no mesmo período da temporada.
+   * false = cada canal tem seu próprio período em canal_temporada_config.
+   * Aplica-se à regra padrão — herdada pelas instâncias ao serem geradas.
+   */
+  canalPeriodsUnified?: boolean;
 }
 
 // ─── Regra padrão ─────────────────────────────────────────────────────────────

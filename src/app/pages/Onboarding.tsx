@@ -38,7 +38,7 @@ import {
 import {
   MONTHS, DEFAULT_REGRA, computeMesFim,
 } from '../../services/temporadaService'
-import { saveRegraDefaultDb } from '../../services/supabase/seasonService'
+import { saveRegraDefaultDb, upsertCanalRegraDefaultDb, autoGenerateForYearDb, listSeasonsDb } from '../../services/supabase/seasonService'
 import { supabase } from '../../lib/supabase'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,6 +68,18 @@ const ALL_SEGMENTS: SegmentId[] = [
   'under_fem',    'under_masc',    'under_inf',
   'fitness_fem',  'fitness_masc',  'fitness_inf',
   'praia_fem',    'praia_masc',    'praia_inf',
+]
+
+// Canais disponíveis para configuração de período de venda
+const TODOS_CANAIS_VENDA: { id: string; name: string }[] = [
+  { id: "varejo",          name: "Varejo Físico"          },
+  { id: "ecommerce",       name: "E-commerce"             },
+  { id: "atacado",         name: "Atacado / Distribuidor" },
+  { id: "multimarca",      name: "Multimarca"             },
+  { id: "franquia",        name: "Franquia"               },
+  { id: "popup",           name: "Pop-up"                 },
+  { id: "marketplace",     name: "Marketplace"            },
+  { id: "social_commerce", name: "Social Commerce"        },
 ]
 
 const ORIGENS: OrigemPecas[] = [
@@ -208,13 +220,9 @@ export default function Onboarding() {
   const navigate  = useNavigate()
   const isAdmin   = detectIsAdmin()
 
-  // Dev: limpa flags de UI
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      localStorage.removeItem(ONBOARDING_DONE_KEY)
-      localStorage.removeItem(ONBOARDING_PROFILE_KEY)
-    }
-  }, [])
+  // Nota: não limpamos localStorage em DEV — o Login já sincroniza do DB.
+  // Para forçar um novo onboarding em dev, use o botão "Reiniciar configuração"
+  // disponível no painel quando configExists === true.
 
   // ── Detecção de configuração existente ────────────────────────────────────
   const [configExists,       setConfigExists]       = useState<boolean | null>(null)
@@ -330,9 +338,7 @@ export default function Onboarding() {
     hasExport !== null
 
   // ── Etapa: Canais ─────────────────────────────────────────────────────────
-  const [selectedChannels, setSelectedChannels] = useState<SalesChannelId[]>(
-    SALES_CHANNELS.filter(c => c.erpFound).map(c => c.id)
-  )
+  const [selectedChannels, setSelectedChannels] = useState<SalesChannelId[]>([])
   function toggleChannel(id: SalesChannelId) {
     setSelectedChannels(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id])
   }
@@ -342,8 +348,14 @@ export default function Onboarding() {
   const [veraoFim,      setVeraoFim]      = useState(DEFAULT_REGRA.verao.mesFim)
   const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
   const [invernoFim,    setInvernoFim]    = useState(DEFAULT_REGRA.inverno.mesFim)
-  useEffect(() => { setInvernoFim(computeMesFim(veraoInicio))   }, [veraoInicio])
-  useEffect(() => { setVeraoFim(computeMesFim(invernoInicio))   }, [invernoInicio])
+  // Períodos de venda por canal (ciclo financeiro/logístico — distinto do calendário de comunicação)
+  const [canalVendaRegras, setCanalVendaRegras] = useState<{ canal_id: string; tipo: "verao" | "inverno"; mes_inicio: string; mes_fim: string }[]>([])
+  const [addCanalIds,      setAddCanalIds]      = useState<Set<string>>(new Set())
+  const [addCanalTipo,     setAddCanalTipo]     = useState<"verao" | "inverno">("verao")
+  const [addCanalInicio,   setAddCanalInicio]   = useState(MONTHS[0])
+  const [addCanalFim,      setAddCanalFim]      = useState(MONTHS[0])
+  useEffect(() => { setInvernoFim(computeMesFim(veraoInicio))  }, [veraoInicio])
+  useEffect(() => { setVeraoFim(computeMesFim(invernoInicio))  }, [invernoInicio])
 
   // ── Balão hier_concept — aparece após 2s e habilita o botão Avançar ───────
   useEffect(() => {
@@ -430,7 +442,7 @@ export default function Onboarding() {
   }
 
   // ── Conclusão ─────────────────────────────────────────────────────────────
-  function complete() {
+  async function complete() {
     const validInvites = teamInvites.filter(inv => inv.email.trim() && inv.name.trim())
     const profile: OnboardingProfile = {
       segments,
@@ -455,15 +467,49 @@ export default function Onboarding() {
 
     const tenantId = sessionStorage.getItem('activeTenantId') ?? ''
     if (tenantId) {
-      // 2. Persiste no Supabase (onboarding_profiles — fonte canônica)
-      saveOnboardingProfileDb(tenantId, profile)
-        .catch(err => console.warn('Erro ao salvar perfil de onboarding:', err))
+      // 2. Persiste no Supabase (onboarding_profiles — fonte canônica).
+      //    AGUARDA a gravação antes de navegar: sem o await, a navegação para o
+      //    dashboard cancela a requisição em voo e o perfil não persiste — é o
+      //    que fazia o onboarding reaparecer a cada login / troca de navegador.
+      try {
+        await saveOnboardingProfileDb(tenantId, profile)
+      } catch (err) {
+        console.error('Erro ao salvar perfil de onboarding:', err)
+        alert(
+          'Não foi possível salvar sua configuração no servidor. ' +
+          'Verifique sua conexão e clique em Concluir novamente.'
+        )
+        return // não navega — evita "concluir" sem persistir no banco
+      }
 
-      // 3. Salva regra de temporadas padrão
-      saveRegraDefaultDb(tenantId, {
-        verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
-        inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
-      }).catch(err => console.warn('Erro ao salvar regra padrão:', err))
+      // 3. Regra de temporadas e 4. períodos por canal — best-effort,
+      //    não bloqueiam a conclusão (o perfil canônico já está salvo).
+      try {
+        await saveRegraDefaultDb(tenantId, {
+          verao:               { mesInicio: veraoInicio,   mesFim: veraoFim   },
+          inverno:             { mesInicio: invernoInicio, mesFim: invernoFim },
+          canalPeriodsUnified: canalVendaRegras.length === 0,
+        })
+        // Gera as temporadas do ano corrente e do próximo a partir da regra, para
+        // que apareçam JÁ no card de Temporadas (antes eram criadas só ao planejar).
+        // Só gera se o tenant ainda não tem NENHUMA temporada — evita duplicar em
+        // bases já configuradas.
+        const existentes = await listSeasonsDb(tenantId).catch(() => [])
+        if (existentes.length === 0) {
+          const anoAtual = new Date().getFullYear()
+          await autoGenerateForYearDb(tenantId, anoAtual).catch(() => null)
+          await autoGenerateForYearDb(tenantId, anoAtual + 1).catch(() => null)
+        }
+      } catch (err) {
+        console.warn('Erro ao salvar/gerar temporadas:', err)
+      }
+
+      for (const r of canalVendaRegras) {
+        upsertCanalRegraDefaultDb(tenantId, r.canal_id, r.tipo, r.mes_inicio, r.mes_fim)
+          .catch(err => console.warn('Erro ao salvar regra de canal:', err))
+      }
+    } else {
+      console.warn('activeTenantId ausente na conclusão do onboarding — perfil salvo apenas localmente')
     }
 
     navigate('/dashboard')
@@ -1114,60 +1160,223 @@ export default function Onboarding() {
 
           {/* ── TELA 10: Configure o Calendário de Coleções ───────────── */}
           {currentStepId === 'seasons' && (
-            <div className="flex gap-8 items-start">
-              <div className="flex gap-6">
-                {/* Verão */}
-                <div className="w-60 bg-white rounded-2xl border-2 border-[#7598CF]/25 p-5">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-xl">☀️</span>
-                    <span className="text-[#28071C] font-bold">Verão</span>
+            <div className="flex gap-5 h-full">
+
+              {/* ── COLUNA ESQUERDA: Calendário de Comunicação ─────────── */}
+              <div className="flex-1 flex flex-col gap-3 min-w-0">
+                <div>
+                  <p className="text-[10px] font-bold text-[#28071C]/50 uppercase tracking-widest mb-0.5">
+                    Calendário de Comunicação
+                  </p>
+                  <p className="text-[11px] text-[#28071C]/45 leading-relaxed">
+                    Período em que a temporada é lançada ao mercado — base do calendário criativo e de marketing.
+                  </p>
+                </div>
+
+                {/* Cards Verão + Inverno compactos */}
+                <div className="flex gap-3">
+                  {/* Verão */}
+                  <div className="w-[168px] bg-white rounded-xl border-2 border-[#7598CF]/25 p-3.5 flex-shrink-0">
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <span className="text-base">☀️</span>
+                      <span className="text-[#28071C] font-bold text-sm">Verão</span>
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        { l: 'Início', v: veraoInicio, fn: setVeraoInicio },
+                        { l: 'Fim (liquidação)', v: veraoFim, fn: setVeraoFim },
+                      ].map(s => (
+                        <div key={s.l}>
+                          <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">{s.l}</label>
+                          <select value={s.v} onChange={e => s.fn(e.target.value)}
+                            className="w-full px-2 py-1.5 border border-[#7598CF]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                            {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="space-y-3">
-                    {[{ l: 'Início', v: veraoInicio, fn: setVeraoInicio }, { l: 'Fim (incl. liquidação)', v: veraoFim, fn: setVeraoFim }].map(s => (
-                      <div key={s.l}>
-                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">{s.l}</label>
-                        <select value={s.v} onChange={e => s.fn(e.target.value)}
-                          className="w-full px-3 py-2.5 border-2 border-[#7598CF]/20 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white">
-                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                      </div>
-                    ))}
+                  {/* Inverno */}
+                  <div className="w-[168px] bg-white rounded-xl border-2 border-[#9B8CD8]/25 p-3.5 flex-shrink-0">
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <span className="text-base">❄️</span>
+                      <span className="text-[#28071C] font-bold text-sm">Inverno</span>
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        { l: 'Início', v: invernoInicio, fn: setInvernoInicio },
+                        { l: 'Fim (liquidação)', v: invernoFim, fn: setInvernoFim },
+                      ].map(s => (
+                        <div key={s.l}>
+                          <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">{s.l}</label>
+                          <select value={s.v} onChange={e => s.fn(e.target.value)}
+                            className="w-full px-2 py-1.5 border border-[#9B8CD8]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
+                            {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
-                {/* Inverno */}
-                <div className="w-60 bg-white rounded-2xl border-2 border-[#9B8CD8]/25 p-5">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-xl">❄️</span>
-                    <span className="text-[#28071C] font-bold">Inverno</span>
+
+                {/* Nota sobre nomes das temporadas */}
+                <div className="flex items-start gap-2 bg-white border border-[#28071C]/8 rounded-lg px-3 py-2.5">
+                  <Info className="w-3.5 h-3.5 text-[#28071C]/35 flex-shrink-0 mt-0.5" />
+                  <p className="text-[#28071C]/50 text-[11px] leading-relaxed">
+                    Os nomes (ex.: <em>Verão 2026</em>) são gerados automaticamente. Você pode renomear cada temporada depois em <strong className="text-[#28071C]/70">Configurações → Operação</strong>.
+                  </p>
+                </div>
+
+                {/* Avisos */}
+                {veraoInicio === invernoInicio && (
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                    <p className="text-amber-800 text-[11px]">Verão e Inverno não podem ter o mesmo mês de início.</p>
                   </div>
-                  <div className="space-y-3">
-                    {[{ l: 'Início', v: invernoInicio, fn: setInvernoInicio }, { l: 'Fim (incl. liquidação)', v: invernoFim, fn: setInvernoFim }].map(s => (
-                      <div key={s.l}>
-                        <label className="block text-[10px] text-[#28071C]/40 font-semibold uppercase tracking-widest mb-1">{s.l}</label>
-                        <select value={s.v} onChange={e => s.fn(e.target.value)}
-                          className="w-full px-3 py-2.5 border-2 border-[#9B8CD8]/20 rounded-lg text-sm text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white">
-                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                      </div>
-                    ))}
-                  </div>
+                )}
+                <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-lg px-3 py-2.5">
+                  <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
+                  <p className="text-[#28071C]/60 text-[11px] leading-relaxed">
+                    Os meses permanecem os mesmos a cada ano. Instâncias anuais (Verão 2026 etc.) são geradas automaticamente ao salvar um Planejamento.
+                  </p>
                 </div>
               </div>
 
-              <div className="flex-1 flex flex-col gap-3">
-                {veraoInicio === invernoInicio && (
-                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-                    <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                    <p className="text-amber-800 text-xs">Início do Verão e do Inverno não podem ser o mesmo mês.</p>
-                  </div>
-                )}
-                <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-3">
-                  <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
-                  <p className="text-[#28071C]/65 text-xs leading-relaxed">
-                    As temporadas serão ajustadas ano a ano no módulo de Sazonalidade, onde você também distribui as metas mensalmente.
-                    Aqui, configure o calendário padrão da sua empresa.
+              {/* Divisor vertical */}
+              <div className="w-px bg-[#28071C]/10 self-stretch flex-shrink-0" />
+
+              {/* ── COLUNA DIREITA: Período de Venda por Canal ─────────── */}
+              <div className="flex-1 flex flex-col gap-3 min-w-0">
+                <div>
+                  <p className="text-[10px] font-bold text-[#28071C]/50 uppercase tracking-widest mb-0.5">
+                    Período de Venda por Canal
+                  </p>
+                  <p className="text-[11px] text-[#28071C]/45 leading-relaxed">
+                    Ciclo financeiro e logístico de cada canal. Atacado fatura antes do lançamento; varejo e e-commerce vendem durante a temporada.
                   </p>
                 </div>
+
+                {/* Lista de canais configurados */}
+                {canalVendaRegras.length > 0 && (
+                  <div className="bg-white border border-[#28071C]/10 rounded-xl overflow-hidden max-h-[200px] overflow-y-auto">
+                    <div className="grid gap-2 px-3 py-1.5 bg-[#28071C]/3 border-b border-[#28071C]/6"
+                      style={{ gridTemplateColumns: '68px 1fr 90px 90px 24px' }}>
+                      <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Temporada</span>
+                      <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Canal</span>
+                      <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Início</span>
+                      <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Fim</span>
+                      <span />
+                    </div>
+                    {canalVendaRegras.map(r => {
+                      const canal = TODOS_CANAIS_VENDA.find(c => c.id === r.canal_id)
+                      return (
+                        <div key={`${r.canal_id}-${r.tipo}`}
+                          className="grid gap-2 items-center px-3 py-2 border-b border-[#28071C]/6 last:border-b-0 hover:bg-[#28071C]/2 transition-colors"
+                          style={{ gridTemplateColumns: '68px 1fr 90px 90px 24px' }}>
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full w-fit ${
+                            r.tipo === "verao"
+                              ? "bg-[#F6F3AA]/80 text-[#28071C]/70"
+                              : "bg-[#7598CF]/15 text-[#7598CF]"
+                          }`}>
+                            {r.tipo === "verao" ? "Verão" : "Inverno"}
+                          </span>
+                          <span className="text-xs font-semibold text-[#28071C]/70 truncate">{canal?.name ?? r.canal_id}</span>
+                          <span className="text-xs text-[#28071C]">{r.mes_inicio}</span>
+                          <span className="text-xs text-[#28071C]">{r.mes_fim}</span>
+                          <button
+                            onClick={() => setCanalVendaRegras(prev => prev.filter(x => !(x.canal_id === r.canal_id && x.tipo === r.tipo)))}
+                            className="text-[#28071C]/25 hover:text-red-500 transition-colors flex items-center justify-center">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Formulário de adição inline */}
+                {TODOS_CANAIS_VENDA.some(c => !canalVendaRegras.find(r => r.canal_id === c.id && r.tipo === addCanalTipo)) && (
+                  <div className="bg-[#7598CF]/5 border border-[#7598CF]/20 rounded-xl p-3">
+                    <p className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest mb-2">Adicionar canal</p>
+                    <div className="flex items-end gap-2 flex-wrap">
+                      <div className="w-[100px]">
+                        <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Temporada</label>
+                        <select value={addCanalTipo} onChange={e => { setAddCanalTipo(e.target.value as "verao" | "inverno"); setAddCanalIds(new Set()) }}
+                          className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                          <option value="verao">Verão</option>
+                          <option value="inverno">Inverno</option>
+                        </select>
+                      </div>
+                      <div className="flex-1 min-w-[160px]">
+                        <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">
+                          Canais
+                          {addCanalIds.size > 0 && (
+                            <span className="ml-1 text-[#7598CF]">({addCanalIds.size} selecionado{addCanalIds.size > 1 ? 's' : ''})</span>
+                          )}
+                        </label>
+                        <div className="mt-0.5 border border-[#7598CF]/20 rounded-lg bg-white overflow-y-auto max-h-[74px]">
+                          {TODOS_CANAIS_VENDA
+                            .filter(c => !canalVendaRegras.find(r => r.canal_id === c.id && r.tipo === addCanalTipo))
+                            .map((c, i, arr) => (
+                              <label
+                                key={c.id}
+                                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs text-[#28071C] hover:bg-[#7598CF]/5 transition-colors${i < arr.length - 1 ? ' border-b border-[#7598CF]/10' : ''}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={addCanalIds.has(c.id)}
+                                  onChange={() => setAddCanalIds(prev => {
+                                    const next = new Set(prev)
+                                    next.has(c.id) ? next.delete(c.id) : next.add(c.id)
+                                    return next
+                                  })}
+                                  className="accent-[#7598CF] cursor-pointer"
+                                />
+                                {c.name}
+                              </label>
+                            ))}
+                        </div>
+                      </div>
+                      <div className="w-24">
+                        <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Início</label>
+                        <select value={addCanalInicio} onChange={e => setAddCanalInicio(e.target.value)}
+                          className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div className="w-24">
+                        <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Fim</label>
+                        <select value={addCanalFim} onChange={e => setAddCanalFim(e.target.value)}
+                          className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                          {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <button
+                        disabled={addCanalIds.size === 0}
+                        onClick={() => {
+                          if (addCanalIds.size === 0) return
+                          setCanalVendaRegras(prev => {
+                            const filtered = prev.filter(r => !(addCanalIds.has(r.canal_id) && r.tipo === addCanalTipo))
+                            const newEntries = Array.from(addCanalIds).map(cid => ({
+                              canal_id: cid, tipo: addCanalTipo,
+                              mes_inicio: addCanalInicio, mes_fim: addCanalFim,
+                            }))
+                            return [...filtered, ...newEntries]
+                          })
+                          setAddCanalIds(new Set())
+                        }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-[#7598CF] text-white rounded-lg text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0">
+                        <Plus className="w-3 h-3" /> Adicionar
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {canalVendaRegras.length === 0 && (
+                  <p className="text-[11px] text-[#28071C]/40 italic leading-relaxed">
+                    Se todos os seus canais vendem no mesmo período da temporada, não é necessário adicionar entradas aqui.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -1715,11 +1924,13 @@ export default function Onboarding() {
             </button>
 
             <div className="flex items-center gap-4">
-              {/* Skip para etapas opcionais */}
-              {STEP_META[step]?.optional && (
+              {/* Skip para todas as etapas de config admin */}
+              {!isConceptStep && (
                 <button onClick={skipStep}
                   className="text-sm text-[#28071C]/40 hover:text-[#28071C]/70 transition-colors underline">
-                  {currentStepId === 'data' ? 'Importar depois' : 'Convidar depois'}
+                  {currentStepId === 'data'   ? 'Importar depois'   :
+                   currentStepId === 'team'   ? 'Convidar depois'   :
+                   'Configurar depois'}
                 </button>
               )}
               <button onClick={goNext}

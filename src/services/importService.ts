@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { supabase } from "../lib/supabase";
+import { enrichProductColors } from "./supabase/colorBankService";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,9 @@ export type ImportDataType =
   | "sales"
   | "orders"
   | "inventory"
-  | "hierarchy";
+  | "hierarchy"
+  | "color_enrichment"
+  | "production_enrichment";
 
 export type FieldValueType =
   | "text"
@@ -283,9 +286,9 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       {
         key: "name",
         label: "Descrição / Nome",
-        description: "Nome completo do produto",
-        required: true,
-        valueType: "text",
+        description: "Nome completo do produto. Se sua planilha não tiver uma coluna de descrição, deixe sem mapear — o sistema monta o nome a partir de categoria, modelo e cor.",
+        required: false,
+        valueType: "optional_text",
         sampleValue: "Camiseta Básica Gola V",
       },
       {
@@ -320,6 +323,22 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         required: false,
         valueType: "optional_text",
         sampleValue: "Camisetas",
+      },
+      {
+        key: "linha",
+        label: "Linha / Grupo",
+        description: "Nível adicional da hierarquia do ERP. Ex: Comprida, Midi, Curta",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "Midi",
+      },
+      {
+        key: "data_ultima_entrada",
+        label: "Data da Última Entrada",
+        description: "Data da última entrada do produto no estoque. Formatos: AAAA-MM-DD ou DD/MM/AAAA",
+        required: false,
+        valueType: "optional_date",
+        sampleValue: "2026-03-15",
       },
       // Preços
       {
@@ -646,9 +665,25 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         sampleValue: "45",
       },
       {
+        key: "unit_cost",
+        label: "Custo Unitário (R$)",
+        description: "Custo de compra por unidade. O sistema calcula Valor ao Custo = Custo Unitário × Quantidade. Informe este campo OU o Valor ao Custo — não os dois.",
+        required: false,
+        valueType: "optional_number",
+        sampleValue: "32.00",
+      },
+      {
+        key: "unit_price",
+        label: "Preço de Venda Unitário (R$)",
+        description: "Preço de tabela por unidade. O sistema calcula Valor a Preço de Venda = Preço Unitário × Quantidade. Informe este campo OU o Valor a Preço de Venda — não os dois.",
+        required: false,
+        valueType: "optional_number",
+        sampleValue: "89.90",
+      },
+      {
         key: "value_cost",
         label: "Valor ao Custo (R$)",
-        description: "Estoque avaliado pelo custo total. Use ponto decimal.",
+        description: "Estoque avaliado pelo custo total (Custo Unitário × Quantidade). Use ponto decimal. Alternativa ao campo Custo Unitário.",
         required: false,
         valueType: "optional_number",
         sampleValue: "1440.00",
@@ -656,7 +691,7 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       {
         key: "value_sale",
         label: "Valor a Preço de Venda (R$)",
-        description: "Estoque avaliado pelo preço de venda total. Use ponto decimal.",
+        description: "Estoque avaliado pelo preço de venda total. Use ponto decimal. Alternativa ao campo Preço de Venda Unitário.",
         required: false,
         valueType: "optional_number",
         sampleValue: "4045.50",
@@ -721,6 +756,78 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
       },
     ],
   },
+
+  // ── Enriquecimento de Cor → public.products (update por SKU) ─────────────
+  // Tipicamente exportado do PLM ou classificado manualmente pelo cliente.
+  color_enrichment: {
+    label: "Enriquecimento de Cor",
+    description:
+      "Atualiza família e intensidade de cor nos produtos por SKU (join por SKU). Também registra no banco global de cores. Exportar do PLM ou preencher com base no banco de cores do sistema.",
+    icon: "🎨",
+    fields: [
+      {
+        key: "sku",
+        label: "Código (SKU) — chave de join",
+        description: "Deve ser idêntico ao código no cadastro de produtos",
+        required: true,
+        valueType: "text",
+        sampleValue: "SKU001",
+      },
+      {
+        key: "color",
+        label: "Cor (nome do fornecedor)",
+        description: "Nome da cor como registrada no ERP/PLM. Ex: Telha, Off-White",
+        required: true,
+        valueType: "text",
+        sampleValue: "Telha",
+      },
+      {
+        key: "color_family",
+        label: "Família de Cor",
+        description: "Grupo principal de cor. Ex: Marrom, Azul, Verde, Branco, Preto",
+        required: true,
+        valueType: "text",
+        sampleValue: "Marrom",
+      },
+      {
+        key: "color_intensity",
+        label: "Intensidade / Tom",
+        description: "Variação dentro da família. Ex: Médio, Claro, Escuro, Royal, Terracota",
+        required: true,
+        valueType: "text",
+        sampleValue: "Médio",
+      },
+    ],
+  },
+
+  // ── Enriquecimento de Tipo de Produção → public.products (update por SKU) ─
+  // Exportado do PLM do cliente. Impacta lead time padrão e análise de risco.
+  production_enrichment: {
+    label: "Tipo de Produção",
+    description:
+      "Atualiza o tipo de produção de cada SKU (join por SKU). Exportar do PLM. Impacta lead time padrão e análise de risco de abastecimento no Módulo 4.",
+    icon: "🏭",
+    fields: [
+      {
+        key: "sku",
+        label: "Código (SKU) — chave de join",
+        description: "Deve ser idêntico ao código no cadastro de produtos",
+        required: true,
+        valueType: "text",
+        sampleValue: "SKU001",
+      },
+      {
+        key: "production_type",
+        label: "Tipo de Produção",
+        description:
+          "propria = unidade fabril/ateliê próprio · faccao = terceiro produz sob design da marca (private label / cut & sew) · importado = produto acabado comprado no exterior · licenciado = produto com IP de terceiro",
+        required: true,
+        valueType: "enum",
+        sampleValue: "faccao",
+        enumValues: ["propria", "faccao", "importado", "licenciado"],
+      },
+    ],
+  },
 };
 
 // ─── Geração de template CSV ───────────────────────────────────────────────────
@@ -779,7 +886,15 @@ function parseCSVLine(line: string): string[] {
   return cells;
 }
 
-export async function parseFile(file: File): Promise<ParsedFile> {
+// ── Cache de buffer XLSX: evita ler o mesmo arquivo duas vezes do disco ────────
+// Preenchido quando detectamos múltiplas abas; limpo após parsear a aba selecionada.
+let _xlsxBufferCache: { key: string; data: Uint8Array } | null = null;
+
+function xlsxCacheKey(file: File) {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
+export async function parseFile(file: File, sheetName?: string): Promise<ParsedFile> {
   const name = file.name.toLowerCase();
 
   if (name.endsWith(".csv")) {
@@ -796,21 +911,51 @@ export async function parseFile(file: File): Promise<ParsedFile> {
           resolve({ headers, rows, totalRows: rows.length });
         } catch (err) { reject(err); }
       };
-      reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+      reader.onerror = () => reject(new Error("Falha ao ler arquivo CSV. Verifique se o arquivo não está corrompido."));
       reader.readAsText(file, "utf-8");
     });
   }
 
-  // XLSX / XLS
+  // ── XLSX / XLS ───────────────────────────────────────────────────────────────
+  // Estratégia:
+  //   1ª chamada (sem sheetName): lê o arquivo e extrai nomes de abas.
+  //      · Se houver apenas 1 aba, parseia diretamente.
+  //      · Se houver > 1 aba, guarda o buffer em cache e rejeita com MULTIPLE_SHEETS.
+  //   2ª chamada (com sheetName, via handleSheetSelect): reutiliza o buffer em cache
+  //      para parsear apenas a aba escolhida — evita reler 173 MB do disco.
+
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
+    const cacheKey = xlsxCacheKey(file);
+
+    const processBuffer = async (data: Uint8Array) => {
       try {
-        const XLSX     = await import("xlsx");
-        const data     = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array", cellDates: true });
-        const sheet    = workbook.Sheets[workbook.SheetNames[0]];
-        const raw      = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
+        const XLSX = await import("xlsx");
+
+        if (!sheetName) {
+          // ── Fase 1: detectar abas sem parsear dados (bookSheets: true) ────────
+          // bookSheets popula SheetNames mas deixa Sheets vazio — não acessamos Sheets aqui.
+          const meta = XLSX.read(data, { type: "array", bookSheets: true });
+          const sheetNames = meta.SheetNames ?? [];
+
+          if (sheetNames.length > 1) {
+            // Guarda buffer para reutilizar na 2ª chamada
+            _xlsxBufferCache = { key: cacheKey, data };
+            const err = new Error("MULTIPLE_SHEETS") as Error & { sheets: string[] };
+            err.sheets = sheetNames;
+            reject(err);
+            return;
+          }
+
+          // Aba única: parseia agora
+          sheetName = sheetNames[0];
+        }
+
+        // ── Fase 2: parsear apenas a aba selecionada ──────────────────────────
+        const workbook = XLSX.read(data, { type: "array", cellDates: true, sheets: [sheetName] });
+        const sheet = workbook.Sheets[sheetName];
+        if (!sheet) { reject(new Error(`Aba "${sheetName}" não encontrada`)); return; }
+
+        const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
         if (!raw.length) { reject(new Error("Planilha vazia")); return; }
         const headers = (raw[0] as unknown[]).map(h => String(h ?? "").trim());
         const rows    = raw.slice(1).map(row =>
@@ -819,10 +964,58 @@ export async function parseFile(file: File): Promise<ParsedFile> {
             return String(cell ?? "").trim();
           })
         );
+
+        // Limpa cache após uso
+        _xlsxBufferCache = null;
         resolve({ headers, rows, totalRows: rows.length });
-      } catch (err) { reject(err); }
+      } catch (err) {
+        _xlsxBufferCache = null;
+        reject(err);
+      }
     };
-    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+
+    // Reutiliza buffer em cache se disponível (mesma chamada de arquivo)
+    if (_xlsxBufferCache?.key === cacheKey) {
+      processBuffer(_xlsxBufferCache.data);
+      return;
+    }
+
+    // Leitura do disco
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result;
+      if (!result || !(result instanceof ArrayBuffer)) {
+        reject(new Error("Leitura retornou resultado vazio — tente selecionar o arquivo novamente."));
+        return;
+      }
+      processBuffer(new Uint8Array(result)).catch(reject);
+    };
+
+    reader.onerror = (evt) => {
+      const domErr = (evt.target as FileReader | null)?.error;
+      const name   = domErr?.name   ?? "Unknown";
+      const msg    = domErr?.message ?? "";
+      console.error("[parseFile] FileReader error:", name, msg,
+        "| file:", file.name, `(${(file.size/1024/1024).toFixed(1)} MB)`);
+
+      let hint = "";
+      if (name === "NotReadableError") {
+        hint =
+          ". Se o arquivo estiver no iCloud Drive, certifique-se de que foi " +
+          "baixado para o Mac (ícone de nuvem no Finder = ainda não baixado). " +
+          "Clique com o botão direito no arquivo no Finder → 'Baixar agora'.";
+      } else if (name === "NotFoundError") {
+        hint = ". Arquivo não encontrado — pode ter sido movido ou excluído após ser selecionado.";
+      } else if (name === "SecurityError") {
+        hint = ". Restrição de segurança do navegador. Tente arrastar o arquivo direto para a área de upload.";
+      } else if (file.size > 200 * 1024 * 1024) {
+        hint = ". O arquivo é muito grande — exporte apenas a aba necessária como um novo XLSX ou CSV.";
+      } else {
+        hint = `. Verifique se não está corrompido ou protegido por senha. [${name}: ${msg}]`;
+      }
+      reject(new Error(`Falha ao ler o arquivo${hint}`));
+    };
+
     reader.readAsArrayBuffer(file);
   });
 }
@@ -929,6 +1122,46 @@ function getCellValue(
 // ─── Persistência no Supabase ──────────────────────────────────────────────────
 
 // ─── Sincronizar hierarquia/temporadas/coleções após import de catálogo ─────────
+/**
+ * Interpreta o nome de uma temporada e devolve tipo + ano fiscal.
+ * Reconhece tanto nomes por extenso ("Verão 2026", "Inverno 25") quanto os
+ * códigos de mercado usados pelos ERPs de moda:
+ *   PV / SS / P-V  → Primavera-Verão  (verao)
+ *   OI / AW / FW   → Outono-Inverno   (inverno)
+ * O ano pode vir com 4 dígitos (2026) ou 2 (26 → 2026).
+ */
+export function parseSeasonName(name: string): { tipo: "verao" | "inverno"; fiscalYear: number } {
+  const s = (name ?? "").trim();
+  const upper = s.toUpperCase();
+
+  // ── Tipo ──────────────────────────────────────────────────────────────────
+  let tipo: "verao" | "inverno";
+  if (/VER[ÃA]O|PRIMAVERA/i.test(s) || /\b(PV|SS)\b|^(PV|SS)\s*\d/.test(upper) || /^(PV|SS)\d/.test(upper)) {
+    tipo = "verao";
+  } else if (/INVERNO|OUTONO/i.test(s) || /\b(OI|AW|FW)\b/.test(upper) || /^(OI|AW|FW)\d/.test(upper)) {
+    tipo = "inverno";
+  } else {
+    tipo = "inverno"; // fallback conservador
+  }
+
+  // ── Ano ───────────────────────────────────────────────────────────────────
+  const currentYear = new Date().getFullYear();
+  const y4 = s.match(/\d{4}/);
+  let fiscalYear: number;
+  if (y4) {
+    fiscalYear = parseInt(y4[0], 10);
+  } else {
+    const y2 = s.match(/\d{2}(?!\d)/);
+    fiscalYear = y2
+      ? 2000 + parseInt(y2[0], 10)
+      : currentYear;
+  }
+  // Sanidade: descarta anos absurdos vindos de nomes atípicos
+  if (fiscalYear < 2000 || fiscalYear > currentYear + 10) fiscalYear = currentYear;
+
+  return { tipo, fiscalYear };
+}
+
 async function syncFromCatalogImport(tenantId: string): Promise<void> {
   try {
     // 1. Extrair hierarquia única de produtos
@@ -976,6 +1209,36 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
         },
         { onConflict: "tenant_id" }
       );
+
+      // Espelha a hierarquia na tabela dedicada (hierarquia_produtos), que é a
+      // fonte lida pelo card de Hierarquia de Produtos em Configurações.
+      // subcategoria é NOT NULL DEFAULT '' — usar '' em vez de null mantém o
+      // índice único (tenant, divisao, categoria, subcategoria) funcional.
+      const hierRows: { tenant_id: string; divisao: string; categoria: string; subcategoria: string; ordem: number; ativo: boolean }[] = [];
+      let ordem = 0;
+      for (const [div, cats] of divMap.entries()) {
+        for (const [cat, subs] of cats.entries()) {
+          if (subs.size === 0) {
+            hierRows.push({ tenant_id: tenantId, divisao: div, categoria: cat, subcategoria: "", ordem: ordem++, ativo: true });
+          } else {
+            for (const sub of subs) {
+              hierRows.push({ tenant_id: tenantId, divisao: div, categoria: cat, subcategoria: sub, ordem: ordem++, ativo: true });
+            }
+          }
+        }
+      }
+      if (hierRows.length > 0) {
+        // Substitui a hierarquia derivada anterior para não acumular órfãos.
+        // hierarquia_produtos não está nos tipos gerados do Supabase — mesmo
+        // padrão de cast usado nas demais tabelas fora do schema tipado.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sb = supabase as any;
+        await sb.from("hierarquia_produtos").delete().eq("tenant_id", tenantId);
+        const HB = 200;
+        for (let i = 0; i < hierRows.length; i += HB) {
+          await sb.from("hierarquia_produtos").insert(hierRows.slice(i, i + HB));
+        }
+      }
     }
 
     // 2. Extrair temporadas únicas
@@ -988,18 +1251,15 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
     if (seasRows && seasRows.length > 0) {
       const uniqueSeasons = [...new Set((seasRows as any[]).map(r => r.season as string).filter(Boolean))];
       for (const sName of uniqueSeasons) {
-        // Tenta extrair ano do nome da temporada
-        const yearMatch = sName.match(/\d{4}/);
-        const fiscalYear = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
-        const isVerao = /ver[ãa]o/i.test(sName);
+        const meta = parseSeasonName(sName);
         await (supabase as any).from("seasons").upsert(
           {
             tenant_id: tenantId,
             name: sName,
-            fiscal_year: fiscalYear,
-            tipo: isVerao ? "verao" : "inverno",
-            month_start: isVerao ? "07" : "01",
-            month_end: isVerao ? "12" : "06",
+            fiscal_year: meta.fiscalYear,
+            tipo: meta.tipo,
+            month_start: meta.tipo === "verao" ? "07" : "01",
+            month_end:   meta.tipo === "verao" ? "12" : "06",
             auto_generated: false,
           },
           { onConflict: "tenant_id,name" }
@@ -1023,22 +1283,53 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
 
       for (const c of uniqueColls) {
         // Busca o id da temporada pelo nome
-        const { data: seasData } = await (supabase as any)
-          .from("seasons")
-          .select("id")
-          .eq("tenant_id", tenantId)
-          .eq("name", c.season)
-          .maybeSingle();
+        let seasonId: string | null = null;
+        if (c.season) {
+          const { data: seasData } = await (supabase as any)
+            .from("seasons")
+            .select("id")
+            .eq("tenant_id", tenantId)
+            .eq("name", c.season)
+            .maybeSingle();
+          seasonId = seasData?.id ?? null;
+        }
 
-        if (!seasData?.id) continue;
+        // Sem temporada correspondente: cria uma temporada-âncora a partir do
+        // próprio nome da coleção, para que ela apareça na tela mesmo sem data
+        // definida. O usuário ajusta período e vínculo depois em Configurações.
+        if (!seasonId) {
+          const meta = parseSeasonName(c.collection_name);
+          const anchorName = c.season || c.collection_name;
+          const { data: created } = await (supabase as any)
+            .from("seasons")
+            .upsert(
+              {
+                tenant_id: tenantId,
+                name: anchorName,
+                fiscal_year: meta.fiscalYear,
+                tipo: meta.tipo,
+                month_start: meta.tipo === "verao" ? "07" : "01",
+                month_end:   meta.tipo === "verao" ? "12" : "06",
+                auto_generated: true,
+              },
+              { onConflict: "tenant_id,name" }
+            )
+            .select("id")
+            .maybeSingle();
+          seasonId = created?.id ?? null;
+        }
 
-        // Datas placeholder — o usuário ajusta em OperationSettings
-        const placeholderStart = `${new Date().getFullYear()}-01-01`;
-        const placeholderEnd   = `${new Date().getFullYear()}-12-31`;
+        if (!seasonId) continue;
+
+        // Datas placeholder derivadas do ano fiscal da temporada — o usuário
+        // ajusta em Configurações de Operação.
+        const meta = parseSeasonName(c.season || c.collection_name);
+        const placeholderStart = `${meta.fiscalYear}-01-01`;
+        const placeholderEnd   = `${meta.fiscalYear}-12-31`;
         await supabase.from("collections").upsert(
           {
             tenant_id: tenantId,
-            season_id: seasData.id,
+            season_id: seasonId,
             name: c.collection_name,
             start_date: placeholderStart,
             end_date:   placeholderEnd,
@@ -1051,6 +1342,32 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
   } catch (e) {
     console.warn("[syncFromCatalogImport] erro não crítico:", e);
   }
+}
+
+/**
+ * Normaliza o nível de risco para os códigos aceitos pela constraint
+ * products_risk_level_check (basico | motor_giro | sustentador | icone).
+ * Aceita tanto os códigos internos quanto os rótulos de exibição e variações
+ * comuns de ERP; qualquer valor não reconhecido vira null (a coluna aceita NULL).
+ */
+function normRiskLevel(v: string): string | null {
+  const s = (v ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (["basico", "motor_giro", "sustentador", "icone"].includes(s)) return s;
+  if (s.includes("bás") || s.includes("bas")) return "basico";
+  if (s.includes("giro") || s.includes("motor")) return "motor_giro";
+  if (s.includes("sustent") || s.includes("margem")) return "sustentador";
+  if (s.includes("ícone") || s.includes("icone") || s.includes("marca")) return "icone";
+  return null; // taxonomia desviante → não grava (evita violar a constraint)
+}
+
+/**
+ * Normaliza a faixa de preço para P1/P2/P3 (constraint products_price_tier_check).
+ * Qualquer outro valor vira null.
+ */
+function normPriceTier(v: string): string | null {
+  const s = (v ?? "").trim().toUpperCase();
+  return ["P1", "P2", "P3"].includes(s) ? s : null;
 }
 
 export async function persistImport(
@@ -1075,45 +1392,102 @@ export async function persistImport(
 
   // ── Cadastro de Produtos ─────────────────────────────────────────────────
   if (dataType === "catalog") {
-    const records = dataRows
-      .map(row => {
-        const rawColor = get(row, "color");
-        return {
-          tenant_id:       tenantId,
-          sku:             get(row, "sku"),
-          name:            get(row, "name"),
-          model:           get(row, "model")           || null,
-          division:        get(row, "division")        || null,
-          category:        get(row, "category")        || null,
-          subcategory:     get(row, "subcategory")     || null,
-          price_sale:      parseNum(get(row, "price_sale")),
-          price_cost:      parseNum(get(row, "price_cost")),
-          season:          get(row, "season")          || null,
-          collection_name: get(row, "collection_name") || null,
-          risk_level:      get(row, "risk_level")      || null,
-          price_tier:      get(row, "price_tier")      || null,
-          color:           rawColor                    || null,
-          color_group:     rawColor ? (mapColorGroup(rawColor) || null) : null,
-          material:        get(row, "material")        || null,
-          source:          "import",
-          attributes:      {},
-          updated_at:      new Date().toISOString(),
-        };
-      })
-      .filter(r => r.sku && r.name);
+    const mapped = dataRows.map(row => {
+      const rawColor = get(row, "color");
+      const sku      = get(row, "sku");
+      // Nome: usa a coluna mapeada; se ausente, deriva de categoria/modelo/cor;
+      // em último caso usa o próprio SKU. Nunca descarta a linha por falta de nome.
+      const derived  = [get(row, "category"), get(row, "model"), rawColor]
+        .filter(Boolean).join(" ").trim();
+      const name     = get(row, "name") || derived || sku;
+      return {
+        tenant_id:       tenantId,
+        sku,
+        name,
+        model:           get(row, "model")           || null,
+        division:        get(row, "division")        || null,
+        category:        get(row, "category")        || null,
+        subcategory:     get(row, "subcategory")     || null,
+        linha:           get(row, "linha")           || null,
+        data_ultima_entrada: parseDateStr(get(row, "data_ultima_entrada")) || null,
+        price_sale:      parseNum(get(row, "price_sale")),
+        price_cost:      parseNum(get(row, "price_cost")),
+        season:          get(row, "season")          || null,
+        collection_name: get(row, "collection_name") || null,
+        risk_level:      normRiskLevel(get(row, "risk_level")),
+        price_tier:      normPriceTier(get(row, "price_tier")),
+        color:           rawColor                    || null,
+        color_group:     rawColor ? (mapColorGroup(rawColor) || null) : null,
+        material:        get(row, "material")        || null,
+        source:          "planilha", // constraint products_source_check: manual|planilha|erp
+        attributes:      {},
+        updated_at:      new Date().toISOString(),
+      };
+    });
 
-    const BATCH = 200;
-    for (let i = 0; i < records.length; i += BATCH) {
-      const { error } = await supabase
-        .from("products")
-        .upsert(records.slice(i, i + BATCH), { onConflict: "tenant_id,sku" });
-      if (error) errors += Math.min(BATCH, records.length - i);
-      else importedRows  += Math.min(BATCH, records.length - i);
+    // Descarta linhas sem SKU (chave de upsert — sem ela não há o que gravar)
+    const withSku = mapped.filter(r => r.sku);
+    const semSku  = mapped.length - withSku.length;
+
+    // Deduplica por SKU mantendo a ÚLTIMA ocorrência. Um mesmo SKU repetido no
+    // arquivo faz o upsert em lote falhar inteiro ("ON CONFLICT DO UPDATE command
+    // cannot affect row a second time"), derrubando 200 linhas boas junto. Colapsar
+    // para 1 registro por SKU elimina essa falha. Arquivos "com cores" às vezes
+    // repetem o SKU-base entre variações — aqui fica 1 produto por SKU.
+    const bySku = new Map<string, typeof withSku[number]>();
+    for (const r of withSku) bySku.set(r.sku, r);
+    const records    = [...bySku.values()];
+    const duplicados = withSku.length - records.length;
+
+    if (records.length === 0) {
+      throw new Error(
+        `Nenhuma linha pôde ser importada: ${mapped.length} linha(s) sem código de produto (SKU). ` +
+        `Verifique se a coluna "Código (SKU)" foi mapeada corretamente.`
+      );
     }
 
-    // Sincronizar hierarquia + temporadas + coleções com base nos produtos importados
-    if (importedRows > 0) {
+    const BATCH = 200;
+    let lastError: string | null = null;
+    for (let i = 0; i < records.length; i += BATCH) {
+      const chunk = records.slice(i, i + BATCH);
+      const { error } = await supabase
+        .from("products")
+        .upsert(chunk, { onConflict: "tenant_id,sku" });
+
+      if (!error) { importedRows += chunk.length; continue; }
+
+      // Lote falhou por causa de UMA linha ruim: tenta linha a linha para salvar
+      // o que der e capturar a mensagem exata do banco (não perde as 199 boas).
+      lastError = error.message;
+      for (const rec of chunk) {
+        const { error: e1 } = await supabase
+          .from("products")
+          .upsert(rec, { onConflict: "tenant_id,sku" });
+        if (e1) { errors++; lastError = e1.message; }
+        else    { importedRows++; }
+      }
+    }
+
+    // Se absolutamente nada entrou, o erro do banco precisa chegar ao usuário
+    if (importedRows === 0 && lastError) {
+      throw new Error(`Falha ao gravar produtos: ${lastError}`);
+    }
+    if (semSku > 0)     console.warn(`[catalog] ${semSku} linha(s) ignorada(s) por falta de SKU.`);
+    if (duplicados > 0) console.warn(`[catalog] ${duplicados} linha(s) com SKU repetido colapsadas (1 produto por SKU).`);
+    if (errors > 0 && lastError) console.warn(`[catalog] ${errors} linha(s) rejeitada(s). Último erro: ${lastError}`);
+
+    // Sincroniza hierarquia + temporadas + coleções.
+    // Roda sempre que houver produtos no tenant — não apenas quando esta importação
+    // gravou linhas novas (um reimport idêntico ainda precisa ressincronizar).
+    const { count: prodCount } = await supabase
+      .from("products")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId);
+    if ((prodCount ?? 0) > 0) {
       await syncFromCatalogImport(tenantId);
+      // Enriquece color_group cruzando as cores dos produtos com o banco de cores global.
+      // Erros são silenciosos — o usuário pode classificar manualmente depois.
+      enrichProductColors(tenantId).catch(() => null);
     }
 
   // ── Histórico de Vendas ──────────────────────────────────────────────────
@@ -1202,15 +1576,25 @@ export async function persistImport(
   // ── Estoque Histórico ────────────────────────────────────────────────────
   } else if (dataType === "inventory") {
     const records = dataRows
-      .map(row => ({
-        tenant_id:     tenantId,
-        sku:           get(row, "sku"),
-        snapshot_date: parseDateStr(get(row, "snapshot_date")) ?? get(row, "snapshot_date"),
-        quantity:      parseNum(get(row, "quantity"))          ?? 0,
-        value_cost:    parseNum(get(row, "value_cost")),
-        value_sale:    parseNum(get(row, "value_sale")),
-        location:      get(row, "location")                    || null,
-      }))
+      .map(row => {
+        const qty        = parseNum(get(row, "quantity")) ?? 0;
+        const unitCost   = parseNum(get(row, "unit_cost"));
+        const unitPrice  = parseNum(get(row, "unit_price"));
+        // Prefere o total explícito; se não vier, calcula a partir do unitário × qtd
+        const valueCost  = parseNum(get(row, "value_cost"))
+                        ?? (unitCost != null ? unitCost * qty : null);
+        const valueSale  = parseNum(get(row, "value_sale"))
+                        ?? (unitPrice != null ? unitPrice * qty : null);
+        return {
+          tenant_id:     tenantId,
+          sku:           get(row, "sku"),
+          snapshot_date: parseDateStr(get(row, "snapshot_date")) ?? get(row, "snapshot_date"),
+          quantity:      qty,
+          value_cost:    valueCost,
+          value_sale:    valueSale,
+          location:      get(row, "location") || null,
+        };
+      })
       .filter(r => r.sku && r.snapshot_date);
 
     const BATCH = 200;
@@ -1244,6 +1628,69 @@ export async function persistImport(
           category:    r.category,
           subcategory: r.subcategory,
           updated_at:  new Date().toISOString(),
+        })
+        .eq("tenant_id", tenantId)
+        .eq("sku", r.sku);
+      if (error) errors++;
+      else importedRows++;
+    }
+
+  // ── Enriquecimento de Cor (color_family + color_intensity por SKU) ───────
+  } else if (dataType === "color_enrichment") {
+    const { normalizeCor, addToColorBank } = await import("./supabase/colorBankService");
+
+    const records = dataRows
+      .map(row => ({
+        sku:             get(row, "sku"),
+        color:           get(row, "color")           || null,
+        color_family:    get(row, "color_family")    || null,
+        color_intensity: get(row, "color_intensity") || null,
+      }))
+      .filter(r => r.sku && r.color_family && r.color_intensity);
+
+    for (const r of records) {
+      // 1. Registra no banco global de cores (sem propagação via RPC — evita N chamadas pesadas)
+      if (r.color) {
+        await addToColorBank({
+          cor_display: r.color,
+          familia:     r.color_family!,
+          intensidade: r.color_intensity!,
+        }).catch(() => null);
+      }
+
+      // 2. Atualiza o produto diretamente
+      const colorGroup = `${r.color_family} ${r.color_intensity}`;
+      const { error } = await (supabase as any)
+        .from("products")
+        .update({
+          color_family:    r.color_family,
+          color_intensity: r.color_intensity,
+          color_group:     colorGroup,
+          updated_at:      new Date().toISOString(),
+        })
+        .eq("tenant_id", tenantId)
+        .eq("sku", r.sku);
+      if (error) errors++;
+      else importedRows++;
+    }
+
+  // ── Enriquecimento de Tipo de Produção (production_type por SKU) ─────────
+  } else if (dataType === "production_enrichment") {
+    const VALID_TYPES = new Set(["propria", "faccao", "importado", "licenciado"]);
+
+    const records = dataRows
+      .map(row => ({
+        sku:             get(row, "sku"),
+        production_type: (get(row, "production_type") || "").toLowerCase().trim(),
+      }))
+      .filter(r => r.sku && VALID_TYPES.has(r.production_type));
+
+    for (const r of records) {
+      const { error } = await (supabase as any)
+        .from("products")
+        .update({
+          production_type: r.production_type,
+          updated_at:      new Date().toISOString(),
         })
         .eq("tenant_id", tenantId)
         .eq("sku", r.sku);

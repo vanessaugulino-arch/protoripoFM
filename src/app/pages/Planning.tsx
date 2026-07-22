@@ -17,6 +17,8 @@ import {
   type ImpactedIndicator,
 } from '../../services/supabase/planApprovalService';
 import { applyChannelScenario as dbApplyChannelScenario } from '../../services/supabase/channelScenarioService';
+import { applyDivisionScenarioById } from '../../services/supabase/divisionScenarioService';
+import { recomputeOfficialMacro, recomputeMacroFromDivisions } from '../../services/supabase/officialPlanService';
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 import { exportToPDF } from '../../utils/exportPDF';
@@ -593,9 +595,19 @@ export default function Planning() {
     setIsResolvingApproval(true)
     try {
       await resolveApproval(req.id, decision, user.email)
-      // Se aprovado, aplica o cenário do módulo 2 que estava pendente
+      // Se aprovado, aplica o cenário do módulo SOLICITANTE e sobrescreve o macro
+      // oficial pela realidade granular (upward ripple). Ramifica pelo from_module:
+      //   M2 (canal)   → aplica cenário de canal + recompute do canal
+      //   M3 (divisão) → aplica cenário de divisão + recompute divisão→mês→macro
+      // Correção do bug B2: antes aplicava SEMPRE cenário de canal, quebrando M3→M1.
       if (decision === 'approved' && req.scenario_id && tenantId) {
-        await dbApplyChannelScenario(tenantId, req.year, req.scenario_id)
+        if (req.from_module === 3) {
+          await applyDivisionScenarioById(tenantId, req.scenario_id)
+          await recomputeMacroFromDivisions(tenantId, req.year)
+        } else {
+          await dbApplyChannelScenario(tenantId, req.year, req.scenario_id)
+          await recomputeOfficialMacro(tenantId, req.year)
+        }
       }
       const remaining = incomingApprovals.filter(r => r.id !== req.id)
       setIncomingApprovals(remaining)

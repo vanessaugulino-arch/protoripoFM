@@ -97,9 +97,11 @@ def si(v):
     except: return 0
 
 # Mapeamento de colunas (índice 0-based no Excel):
-# 0=Data venda  1=Tipo  2=SKU  3=Quantidade
-# 4=Valor Bruto  5=Desconto  6=Valor c/Desconto  7=Imposto  8=Venda Líquida
-# 9=Canal  10=Temporada Ativa (→ colecao)  16=Categoria
+#  0=Data venda   1=Tipo         2=SKU           3=Quantidade
+#  4=Valor Bruto  5=Desconto     6=Valor c/Desc  7=Imposto   8=Venda Líquida
+#  9=Canal       10=Coleção     11=Temporada
+# 12=Forma pgto  13=Parcelas    14=Mês          15=Ano
+# 16=Divisão    17=Categoria
 
 def row_to_record(r):
     def g(i): return r[i] if i < len(r) else None
@@ -109,15 +111,20 @@ def row_to_record(r):
     qty   = si(g(3));  gross = sf(g(4))
     disc  = sf(g(5));  net   = sf(g(6))
     tax   = sf(g(7));  npt   = sf(g(8))
-    ch    = g(9);      col   = g(10);  cat = g(16)
+    ch    = g(9);      col   = g(10);  cat = g(17)
     typ   = (g(1) or "venda").lower()
     pr    = round(net / qty, 4) if qty > 0 else None
+    pm    = str(g(12)).strip() if g(12) else None
+    inst  = si(g(13)) if g(13) else None
+    mes   = str(g(14)).strip() if g(14) else None
+    ano   = si(g(15)) if g(15) else None
     return {
         "tenant_id": TENANT_ID, "sku": sku, "sale_date": sd,
         "quantity": qty, "revenue_gross": gross, "revenue_net": net,
         "channel": ch, "discount_value": disc, "price_realized": pr,
         "type": typ, "category": cat, "tax_value": tax,
         "revenue_net_post_tax": npt, "colecao": col, "temporada": None,
+        "payment_method": pm, "installments": inst, "mes": mes, "ano": ano,
     }
 
 # ── Supabase RPC ──────────────────────────────────────────────────────────────

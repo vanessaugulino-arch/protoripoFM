@@ -212,7 +212,8 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
 //            Hierarquia: PMV > Receita > Peças
 //   4.  T3 — Margem% ↔ CustoMédio ↔ MKD%
 //            Hierarquia: Custo > Margem > MKD% (MKD absorve por padrão)
-//            Selection-aware: activeKeys determina qual combinação está ativa
+//            Markdown corrói a margem: Margem% = (RL − Custo×Peças − MKD R$)/RL
+//            INDEPENDENTE DO FOCO — activeKeys não influencia o cluster
 //   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura
 //            Hierarquia: Giro > Cobertura > EstMed
 //   6.  T4 — Orçamento ↔ ComprasPeças  [BIDIRECIONAL]
@@ -330,104 +331,108 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   }
 
   // ── PASSO 4: CLUSTER T3 — Margem% ↔ CustoMédio ↔ MKD% ──────────────────
-  // Hierarquia: CustoMédio > Margem% > MKD%  (MKD absorve por padrão)
-  // Margem% = ((RL - CustoMédio × Peças) / RL) × 100
+  // CONCEITO (confirmado): o markdown corrói a margem.
+  //   MKD R$      = ReceitaBruta × MKD%
+  //   CPV_total   = CustoMédio × Peças + MKD R$
+  //   Margem%     = (RL − CPV_total) / RL × 100
+  //
+  // Hierarquia: CustoMédio > Margem% > MKD%  (MKD absorve por padrão).
+  // REGRA INDEPENDENTE DO FOCO — activeKeys NÃO influencia mais o cluster.
   //
   // Editar Margem%:
-  //   nenhum tocado → MKD% absorve (remarcação reduz/aumenta para fechar)
-  //   MKD% tocado   → CustoMédio absorve (Custo = RL×(1-Margem%)/Peças)
-  //   Custo tocado  → MKD% absorve (Custo protegido)
-  //   ambos tocados → MKD% absorve (Custo tem prioridade máxima)
-  //
+  //   MKD tocado & Custo não  → CustoMédio absorve
+  //   caso contrário          → MKD% absorve   (Custo protegido/soberano)
   // Editar MKD%:
-  //   nenhum tocado  → Margem% ajusta (reflexo direto)
-  //   Margem% tocada → CustoMédio absorve (margem protegida)
-  //   Custo tocado   → Margem% absorve
-  //   ambos tocados  → Margem% absorve (Custo máxima prioridade)
-  //
+  //   Margem tocada & Custo não → CustoMédio absorve (mantém margem)
+  //   caso contrário            → Margem% absorve   (markdown reflete na margem)
   // Editar CustoMédio:
-  //   nenhum tocado  → Margem% absorve (Custo↑ → Margem espreme; MKD mantido)
-  //   Margem% tocada → MKD% absorve (MKD compensa para manter margem)
-  //   MKD% tocado    → Margem% absorve
-  //   ambos tocados  → MKD% absorve (Margem protegida sobre MKD)
-  //
-  // Selection-aware (activeKeys):
-  //   • mkdPct E custoMedio ambos ativos → editar Margem: trava custo, deriva mkdPct
-  //   • mkdPct editado E custoMedio ativo → mantém margem, recalcula custoMedio
+  //   nenhum outro tocado / MKD tocado → Margem% absorve
+  // Margem + Custo tocados (sem RL)     → força Receita (engenharia reversa)
   {
     const hasRL    = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasMarg  = touched.has('margemBruta')
     const hasCusto = touched.has('custoMedio')
     const hasMkd   = touched.has('mkdPct')
-    const t3       = [hasRL, hasMarg, hasCusto].filter(Boolean).length
 
-    const rl  = v.receitaLiquida ?? v.receitaBruta  // fallback
-    const pec = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
+    const rl    = v.receitaLiquida ?? v.receitaBruta
+    const pec   = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
+    const canT3 = !!rl && rl > 0 && !!pec && pec > 0
+    // Markdown em R$ corrente. MKD R$ = ReceitaBruta × MKD% é identidade — deriva
+    // sempre do mkdPct atual (fonte da entrada do usuário); só cai no v.mkdRS
+    // armazenado quando não há mkdPct/receita para derivar.
+    const mkdRS = (v.receitaBruta && v.mkdPct != null)
+      ? v.receitaBruta * (v.mkdPct / 100)
+      : (v.mkdRS ?? 0)
 
-    const hasMkdSelected   = activeKeys?.includes('mkdPct')    ?? false
-    const hasCustoSelected = activeKeys?.includes('custoMedio') ?? false
-    const ambosAtivos      = hasMkdSelected && hasCustoSelected
-
-    // Helper: deriva mkdPct mantendo custo fixo
-    const applyMkdFromMargem = () => {
-      if (v.margemBruta === null || v.custoMedio === null || !rl || !pec || pec <= 0) return
-      const targetCPV  = rl * (1 - v.margemBruta / 100)
-      const currentCPV = v.custoMedio * pec
-      const cpvDelta   = targetCPV - currentCPV
-      const curMkdRS   = v.mkdRS ?? (v.receitaBruta ? v.receitaBruta * (v.mkdPct ?? 0) / 100 : 0)
-      const newMkdRS   = Math.max(0, curMkdRS + cpvDelta)
-      if (v.receitaBruta && v.receitaBruta > 0) {
-        v.mkdPct = (newMkdRS / v.receitaBruta) * 100
-        s.mkdPct = 'calculated'
-        v.mkdRS  = newMkdRS
-        s.mkdRS  = 'calculated'
-      }
+    // MKD% absorve para fechar a margem, mantendo o custo fixo.
+    //   MKD R$ = RL − Custo×Peças − RL×Margem%
+    const mkdAbsorve = () => {
+      if (v.margemBruta === null || v.custoMedio === null || !canT3 || !v.receitaBruta) return
+      const novoMkdRS = Math.max(0, rl! - v.custoMedio * pec! - rl! * (v.margemBruta / 100))
+      v.mkdRS  = novoMkdRS
+      v.mkdPct = (novoMkdRS / v.receitaBruta) * 100
+      s.mkdRS  = 'calculated'
+      s.mkdPct = 'calculated'
       s.margemBruta = 'locked'
     }
+    // CustoMédio absorve para fechar a margem, mantendo o markdown fixo.
+    //   Custo = (RL×(1−Margem%) − MKD R$) / Peças
+    const custoAbsorve = () => {
+      if (v.margemBruta === null || !canT3) return
+      const cpvTotal = rl! * (1 - v.margemBruta / 100)
+      v.custoMedio   = Math.max(0, (cpvTotal - mkdRS) / pec!)
+      s.custoMedio   = 'locked'
+      s.margemBruta  = 'locked'
+    }
+    // Margem% absorve (derivada de custo + markdown).
+    const margemAbsorve = () => {
+      if (v.custoMedio === null || !canT3) return
+      v.margemBruta = ((rl! - v.custoMedio * pec! - mkdRS) / rl!) * 100
+      s.margemBruta = 'calculated'
+    }
 
-    if (t3 >= 2 && rl && pec && pec > 0) {
-      if (hasMarg && hasCusto && v.margemBruta !== null && v.custoMedio) {
-        // Margem + Custo → força Receita
-        const cpv        = v.custoMedio * pec
-        v.receitaLiquida = cpv / (1 - v.margemBruta / 100)
+    if (canT3) {
+      if (hasMarg && hasCusto && !hasRL && v.margemBruta !== null && v.custoMedio) {
+        // Margem + Custo tocados → força Receita (CPV_total inclui markdown)
+        const cpvTotal   = v.custoMedio * pec! + mkdRS
+        v.receitaLiquida = cpvTotal / (1 - v.margemBruta / 100)
         v.receitaBruta   = v.receitaLiquida + (v.devolucoes ?? 0)
         s.receitaLiquida = 'calculated'
         s.receitaBruta   = 'calculated'
         s.margemBruta    = 'locked'
-      } else if (hasRL && hasMarg && v.margemBruta !== null) {
-        // RL + Margem → CustoMédio absorve (mkdPct só absorve se custoMedio TAMBÉM foi tocado)
-        const cpv    = rl * (1 - v.margemBruta / 100)
-        if (pec && pec > 0) { v.custoMedio = cpv / pec; s.custoMedio = 'locked' }
-        s.margemBruta = 'locked'
-      } else if (hasRL && hasCusto && v.custoMedio) {
-        // RL + CustoMédio → Margem% absorve (derivada).
-        // CustoMédio NÃO trava: hierarquia T3 é Custo > Margem > MKD%.
-        // CustoMédio é sempre soberano — nunca deve ser bloqueado quando editado.
-        const cpv     = v.custoMedio * pec
-        v.margemBruta = ((rl - cpv) / rl) * 100
-        s.margemBruta = 'calculated'
-        // s.custoMedio permanece 'free' — editável após este passo
+      } else if (hasMarg) {
+        // Editou Margem → MKD% absorve por padrão; Custo absorve se MKD tocado e Custo não
+        if (hasMkd && !hasCusto) custoAbsorve()
+        else                     mkdAbsorve()
+      } else if (hasMkd) {
+        // Editou MKD → Margem% absorve (o markdown reflete diretamente na margem)
+        margemAbsorve()
+      } else if (hasCusto) {
+        // Editou Custo → Margem% absorve
+        margemAbsorve()
       }
-    } else if (hasMarg && !hasCusto && !hasRL && v.margemBruta !== null && rl && pec && pec > 0) {
-      // Só Margem tocada → CustoMédio absorve (mkdPct mantém-se livre)
-      // mkdPct só vira 'calculated' quando usuário toca custo E remarcação juntos
-      const cpv    = rl * (1 - v.margemBruta / 100)
-      v.custoMedio = cpv / pec
-      s.custoMedio = 'locked'
-    } else if (hasCusto && !hasMarg && !hasRL && v.custoMedio && rl && pec && pec > 0) {
-      const cpv     = v.custoMedio * pec
-      v.margemBruta = ((rl - cpv) / rl) * 100
-      s.margemBruta = 'calculated'
     }
+  }
 
-    // mkdPct editado + custoMedio ativo → recalcula custo para manter margem
-    if (hasMkd && !hasMarg && !hasCusto && hasCustoSelected && rl && pec && pec > 0) {
-      const margem = v.margemBruta
-      if (margem !== null) {
-        const targetCPV = rl * (1 - margem / 100)
-        v.custoMedio = Math.max(0, targetCPV / pec)
-        s.custoMedio = 'locked'
+  // ── PASSO 4.9: GMROI como driver (ponte T2 ↔ T3) ──────────────────────────
+  // GMROI = LucroBruto / EstoqueMédio, com LucroBruto = RL × Margem%.
+  // Hierarquia: GMROI é KPI estratégico (protegido, como o Giro); o Estoque
+  // Médio é o absorvedor flexível. Editar GMROI (lucro fixo) → EstMédio absorve;
+  // em seguida o T2 (Giro/Cobertura) segue do novo estoque. Quando o GMROI NÃO
+  // é tocado, ele permanece DERIVADO (Passo 10).
+  if (touched.has('gmroi') && v.gmroi && v.gmroi > 0) {
+    const rlG = v.receitaLiquida ?? v.receitaBruta
+    if (rlG && rlG > 0 && v.margemBruta !== null) {
+      const lucroBruto = rlG * (v.margemBruta / 100)
+      v.estoqueMediao  = lucroBruto / v.gmroi
+      s.estoqueMediao  = 'calculated'
+      if (v.estoqueMediao > 0) {
+        v.giro      = rlG / v.estoqueMediao
+        v.cobertura = (v.estoqueMediao / rlG) * 365
+        s.giro      = 'calculated'
+        s.cobertura = 'calculated'
       }
+      s.gmroi = 'locked'
     }
   }
 
@@ -593,8 +598,10 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     s.mkdRS = 'calculated'
   }
 
-  // ── PASSO 10: GMROI ───────────────────────────────────────────────────────
-  if (v.receitaLiquida && v.margemBruta !== null && v.estoqueMediao && v.estoqueMediao > 0) {
+  // ── PASSO 10: GMROI (derivado) ────────────────────────────────────────────
+  // Só deriva quando o GMROI NÃO foi editado — se foi tocado, ele é o driver
+  // (Passo 4.9) e o Estoque Médio é que absorveu.
+  if (!touched.has('gmroi') && v.receitaLiquida && v.margemBruta !== null && v.estoqueMediao && v.estoqueMediao > 0) {
     const lucroBruto = v.receitaLiquida * (v.margemBruta / 100)
     v.gmroi          = lucroBruto / v.estoqueMediao
     s.gmroi          = 'calculated'

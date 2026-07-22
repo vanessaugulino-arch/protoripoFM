@@ -5,6 +5,7 @@
  */
 
 import { Module3Scenario, BusinessDivisionId, DivisionPlanBlock } from "../app/types/module3";
+import { consolidateCells, type MacroCell } from "../engine/cellConsolidation";
 import {
   listDivisionScenarios,
   saveDivisionScenario,
@@ -184,16 +185,21 @@ export function calculateScenarioConsolidated(
   avgGiro: number;
   avgCobertura: number;
   meetsAllTargets: boolean;
+  // Absolutos completos por temporada — persistidos para o rollup bottom-up
+  // (grão mensal) e a Fase 3. Primazia dos absolutos: taxas derivam destes.
+  totalPecas:      number;
+  totalLucroBruto: number;
+  totalEstMedioRS: number;
+  totalMarkdownRS: number;
+  totalOrcamento:  number;
 } {
   const divisionIds = Object.keys(divisions) as BusinessDivisionId[];
   let meetsAllTargets = true;
 
-  let totalRevenue    = 0;
-  let totalLucroBruto = 0;
-  let totalEstMedio   = 0;
-  let totalSTNum      = 0;
-  let totalPmvNum     = 0;
-  let totalMkdNum     = 0;
+  // Cada divisão vira uma CÉLULA de absolutos. A matemática de consolidação vive
+  // em consolidateCells (motor único) — inclusive o PMV = Σreceita ÷ Σpeças.
+  const cells: MacroCell[] = [];
+  let totalSTNum = 0; // sell-through consolidado = ponderado por receita
 
   for (const divId of divisionIds) {
     const block = divisions[divId];
@@ -211,30 +217,45 @@ export function calculateScenarioConsolidated(
 
     const lucroBrutoDiv = revDiv * (margin / 100);
     const estMedioDiv   = gmroi > 0 ? lucroBrutoDiv / gmroi : 0;
+    const markdownDiv   = revDiv * (mkd / 100);
+    const pecasDiv      = avgPrice > 0 ? revDiv / avgPrice : 0;
+    // Orçamento da divisão: usa o do bloco de volume se houver, senão o CPV
+    // (receita − lucro − markdown) como proxy do custo de compra.
+    const orcamentoDiv  = block.volumeCoverage?.orcamento
+      ?? Math.max(0, revDiv - lucroBrutoDiv - markdownDiv);
 
-    totalRevenue    += revDiv;
-    totalLucroBruto += lucroBrutoDiv;
-    totalEstMedio   += estMedioDiv;
-    totalSTNum      += revDiv * sellThrough;
-    totalPmvNum     += revDiv * avgPrice;
-    totalMkdNum     += revDiv * mkd;
+    cells.push({
+      receita:        revDiv,
+      pecas:          pecasDiv,
+      lucroBruto:     lucroBrutoDiv,
+      estoqueMedioRS: estMedioDiv,
+      markdownRS:     markdownDiv,
+      orcamento:      orcamentoDiv,
+      dimension:      divId,
+    });
+    totalSTNum += revDiv * sellThrough;
 
     if (!block.meetsTarget) meetsAllTargets = false;
   }
 
-  const avgGiro      = totalEstMedio > 0 ? totalRevenue / totalEstMedio : 0;
-  const avgCobertura = totalRevenue  > 0 ? (totalEstMedio / totalRevenue) * 365 : 0;
+  const macro = consolidateCells(cells);
+  const totalRevenue = macro?.receitaBruta ?? 0;
 
   return {
     totalRevenue,
-    avgMargin:      totalRevenue > 0 ? (totalLucroBruto / totalRevenue) * 100 : 0,
+    avgMargin:      macro?.margemBruta ?? 0,
     avgSellThrough: totalRevenue > 0 ? totalSTNum / totalRevenue : 0,
-    avgGmroi:       totalEstMedio > 0 ? totalLucroBruto / totalEstMedio : 0,
-    avgPmv:         totalRevenue > 0 ? totalPmvNum / totalRevenue : 0,
-    avgMkd:         totalRevenue > 0 ? totalMkdNum / totalRevenue : 0,
-    avgGiro,
-    avgCobertura,
+    avgGmroi:       macro?.gmroi ?? 0,
+    avgPmv:         macro?.pmv ?? 0,          // ✳ corrigido: Σreceita ÷ Σpeças
+    avgMkd:         macro?.mkdPct ?? 0,
+    avgGiro:        macro?.giro ?? 0,
+    avgCobertura:   macro?.cobertura ?? 0,
     meetsAllTargets,
+    totalPecas:      macro?.pecasVendidas ?? 0,
+    totalLucroBruto: totalRevenue > 0 ? (macro!.margemBruta / 100) * totalRevenue : 0,
+    totalEstMedioRS: macro?.estoqueMediao ?? 0,
+    totalMarkdownRS: macro?.mkdRS ?? 0,
+    totalOrcamento:  macro?.orcamento ?? 0,
   };
 }
 

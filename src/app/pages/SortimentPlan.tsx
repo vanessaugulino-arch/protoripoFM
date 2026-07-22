@@ -67,6 +67,10 @@ import {
   savePlanScenario,
   deletePlanScenario,
 } from "../../services/supabase/sortimentPlanService";
+import {
+  listDivisionScenarios,
+  type DivisionScenarioRow,
+} from "../../services/supabase/divisionScenarioService";
 import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
@@ -326,6 +330,77 @@ function monthLabel(ym: string) {
   return `${months[m]}/${ym.slice(2, 4)}`;
 }
 
+// ─── M3 → M5 Bridge ──────────────────────────────────────────────────────────
+
+const DIVISION_NAMES: Record<string, string> = {
+  feminino: "Feminino",
+  masculino: "Masculino",
+  acessorios: "Acessórios",
+  infantil: "Infantil",
+};
+
+/** Converte faixa de preço "119-169" em preço médio */
+function midpointPrice(range: string, fallback: number): number {
+  if (!range) return fallback;
+  const parts = range.split("-").map(p => parseFloat(p.trim())).filter(v => !isNaN(v));
+  if (parts.length === 2) return Math.round((parts[0] + parts[1]) / 2);
+  if (parts.length === 1) return parts[0];
+  return fallback;
+}
+
+/**
+ * Constrói o array inicial de Division[] para o M5 a partir do cenário ativo do M3.
+ * @param m3Row   Linha ativa do division_scenarios (is_applied = true)
+ * @param macroRec  Receita total da coleção (do M1, em R$) para calcular revenueTarget
+ */
+function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Division[] {
+  const divMap = (m3Row.divisions ?? {}) as Record<string, any>;
+  const divIds = Object.keys(divMap);
+  if (!divIds.length) return [];
+
+  return divIds
+    .map(divId => {
+      const block = divMap[divId] as any;
+      if (!block) return null;
+
+      const participation: number = block.participation ?? 0;
+      const indicators = block.indicators ?? {};
+      const priceRange = block.priceRange ?? {};
+      const riskMatrix = block.riskMatrix ?? {};
+
+      // Receita alvo da divisão = participação % × receita total da coleção
+      const revenueTarget = macroRec > 0 ? Math.round(macroRec * participation / 100) : 0;
+
+      // Preços médios por faixa (P1=entry, P2=middle, P3=premium)
+      const avgPriceP1 = midpointPrice(priceRange.entry ?? "", 120);
+      const avgPriceP2 = midpointPrice(priceRange.middle ?? "", 180);
+      const avgPriceP3 = midpointPrice(priceRange.premium ?? "", 280);
+
+      // Pirâmide de preços: entryPercent/middlePercent/premiumPercent (%)
+      const p1 = priceRange.entryPercent   ?? 40;
+      const p2 = priceRange.middlePercent  ?? 40;
+      const p3 = priceRange.premiumPercent ?? 20;
+
+      // Margem alvo
+      const targetMarginPct = indicators.margin ?? 60;
+
+      return {
+        id: divId,
+        name: DIVISION_NAMES[divId] ?? divId.charAt(0).toUpperCase() + divId.slice(1),
+        revenueTarget,
+        participationPct: participation,
+        targetMarginPct,
+        pricePyramid: { p1, p2, p3 },
+        avgPriceP1,
+        avgPriceP2,
+        avgPriceP3,
+        collections: [],
+      } as Division;
+    })
+    .filter((d): d is Division => d !== null)
+    .sort((a, b) => b.revenueTarget - a.revenueTarget);
+}
+
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 
 export default function SortimentPlan() {
@@ -342,6 +417,8 @@ export default function SortimentPlan() {
   });
 
   const [divisions, setDivisions] = useState<Division[]>(INITIAL_DIVISIONS);
+  /** Dados do cenário ativo do M3 aguardando temporadas para calcular revenueTarget */
+  const [m3InitPending, setM3InitPending] = useState<DivisionScenarioRow | null>(null);
 
   // Troca de temporada: persiste a atual no Supabase e carrega a nova
   const selectSeason = (id: string) => {
@@ -358,6 +435,7 @@ export default function SortimentPlan() {
     setScenarios([]);
     setActiveDivId(INITIAL_DIVISIONS[0]?.id ?? "");
     setActiveMixColId(null);
+    setM3InitPending(null);
   };
 
   const [activeDivId, setActiveDivId] = useState<string>(divisions[0]?.id ?? "");
@@ -496,9 +574,27 @@ export default function SortimentPlan() {
   useEffect(() => {
     if (!seasonId || !user?.tenant_id) return;
     const tid = user.tenant_id;
-    getWorkingPlan(tid, seasonId).then(saved => {
-      if (saved && saved.length > 0) setDivisions(saved as unknown as Division[]);
+
+    // Carrega working plan e cenários M3 em paralelo
+    Promise.all([
+      getWorkingPlan(tid, seasonId),
+      listDivisionScenarios(tid, seasonId),
+    ]).then(([saved, m3Rows]) => {
+      if (saved && saved.length > 0) {
+        // Plano de trabalho existente — usa ele diretamente
+        setDivisions(saved as unknown as Division[]);
+        setM3InitPending(null);
+      } else {
+        // Sem working plan: tenta inicializar a partir do cenário M3 ativo
+        const activeM3 = m3Rows.find(r => r.is_applied) ?? m3Rows[0] ?? null;
+        if (activeM3 && Object.keys(activeM3.divisions ?? {}).length > 0) {
+          // Guarda para processar quando temporadas carregarem (macroReceita depende de anoFiscal)
+          setM3InitPending(activeM3);
+        }
+        // Caso contrário mantém INITIAL_DIVISIONS (fallback)
+      }
     }).catch(() => {});
+
     listPlanScenarios(tid, seasonId).then(rows => {
       setScenarios(rows.map(r => ({ ...r, data: r.data as unknown as Division[] })));
     }).catch(() => {});
@@ -515,6 +611,35 @@ export default function SortimentPlan() {
       setMacroPlan(null);
     }
   }, [seasonId, temporadas]);
+
+  // Processa init pendente do M3 quando temporadas e macroPlan estiverem disponíveis
+  useEffect(() => {
+    if (!m3InitPending || !seasonId || temporadas.length === 0) return;
+
+    const season = temporadas.find(t => t.id === seasonId);
+    const anoFiscal = season?.anoFiscal;
+    if (!anoFiscal) return;
+
+    const macro = getPlanCycle(anoFiscal);
+    const vals = (macro as any)?.versions?.[0]?.values ?? {};
+    const macroRec = (vals["receitaBruta"] as number) ?? 0;
+
+    const builtDivs = buildDivisionsFromM3(m3InitPending, macroRec);
+    if (builtDivs.length > 0) {
+      setDivisions(builtDivs);
+      setActiveDivId(builtDivs[0].id);
+      // Persiste como working plan para não reprocessar na próxima sessão
+      if (user?.tenant_id) {
+        saveWorkingPlan(
+          user.tenant_id,
+          seasonId,
+          builtDivs as unknown as Record<string, unknown>[],
+        ).catch(() => { /* silent */ });
+      }
+    }
+    setM3InitPending(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [m3InitPending, temporadas, seasonId]);
 
   const activeDivision = divisions.find(d => d.id === activeDivId) ?? divisions[0];
 

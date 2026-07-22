@@ -3,6 +3,10 @@ import { useNavigate } from "react-router";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
 import { signIn, getUserProfile } from "../../services/supabase/authService";
 import type { SystemRole } from "../../services/supabase/adminService";
+import {
+  isOnboardingCompleteDb,
+  loadOnboardingProfileFromDb,
+} from "../../services/supabase/onboardingService";
 import { initPlanCycles } from "../types/planCycle";
 
 export interface CurrentUser {
@@ -74,13 +78,20 @@ export default function Login() {
       if (currentUser.system_role === "client_admin") {
         sessionStorage.setItem("activeTenantId", currentUser.tenant_id);
         sessionStorage.setItem("activeTenantName", currentUser.tenant_name);
-        // Mesmo fluxo do usuário convidado: apresentação → onboarding → dashboard
+
+        // ── Sincroniza localStorage com o DB (resolve perda de cache entre devices) ──
+        const dbDone = await isOnboardingCompleteDb(currentUser.tenant_id).catch(() => false);
+        if (dbDone) {
+          // Hidrata localStorage a partir do DB para que módulos síncronos funcionem
+          await loadOnboardingProfileFromDb(currentUser.tenant_id).catch(() => null);
+        }
+
         const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
         if (!presentationSeen) {
           navigate("/presentation");
         } else {
-          const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
-          if (onboardingDone === "true") navigate("/dashboard");
+          const onboardingDone = dbDone || localStorage.getItem("fashionmind_onboarding_complete") === "true";
+          if (onboardingDone) navigate("/dashboard");
           else navigate("/onboarding");
         }
         return;
@@ -91,8 +102,15 @@ export default function Login() {
       if (!presentationSeen) {
         navigate("/presentation");
       } else {
-        const onboardingDone = localStorage.getItem("fashionmind_onboarding_complete");
-        if (onboardingDone === "true") {
+        const tid = currentUser.tenant_id;
+        const dbDoneInv = tid
+          ? await isOnboardingCompleteDb(tid).catch(() => false)
+          : false;
+        if (dbDoneInv) {
+          await loadOnboardingProfileFromDb(tid).catch(() => null);
+        }
+        const onboardingDone = dbDoneInv || localStorage.getItem("fashionmind_onboarding_complete") === "true";
+        if (onboardingDone) {
           navigate("/dashboard");
         } else {
           navigate("/onboarding");

@@ -124,6 +124,79 @@ export async function deleteFromColorBank(id: string): Promise<void> {
   if (error) throw error
 }
 
+// ─── Enriquecimento automático pós-import ─────────────────────────────────────
+// Lê o color_bank e cruza com os produtos do tenant que têm `color` preenchido.
+// Para cada cor que tiver correspondência no banco, escreve `color_group` no produto.
+// Cores sem correspondência são retornadas em `unmatched` para classificação manual.
+
+export interface EnrichResult {
+  enriched:  number      // total de SKUs que receberam color_group
+  unmatched: string[]    // cores brutas sem match no banco global
+}
+
+export async function enrichProductColors(tenantId: string): Promise<EnrichResult> {
+  // 1. Banco de cores completo → Map cor_norm → color_group
+  const bank = await getColorBank()
+  if (bank.length === 0) return { enriched: 0, unmatched: [] }
+
+  const bankMap = new Map<string, string>()
+  for (const entry of bank) {
+    bankMap.set(entry.cor_norm, `${entry.familia} ${entry.intensidade}`)
+  }
+
+  // 2. Produtos do tenant com color preenchido
+  const { data: products, error } = await supabase
+    .from('products')
+    .select('id, color')
+    .eq('tenant_id', tenantId)
+    .not('color', 'is', null)
+
+  if (error || !products?.length) return { enriched: 0, unmatched: [] }
+
+  // 3. Particiona por cor: matched (cor → color_group) e unmatched
+  const matchedColors  = new Map<string, string>()   // originalColor → color_group
+  const unmatchedSet   = new Set<string>()
+
+  for (const p of products) {
+    const raw = ((p as any).color as string).trim()
+    if (matchedColors.has(raw) || unmatchedSet.has(raw)) continue
+    const norm = normalizeCor(raw)
+    const cg   = bankMap.get(norm)
+    if (cg) matchedColors.set(raw, cg)
+    else    unmatchedSet.add(raw)
+  }
+
+  // 4. Atualiza em batch (uma query por cor distinta para aproveitar índice)
+  //    Escreve color_group (combinado), color_family e color_intensity separados
+  const bankFull = new Map<string, { familia: string; intensidade: string }>()
+  for (const entry of bank) {
+    bankFull.set(entry.cor_norm, { familia: entry.familia, intensidade: entry.intensidade })
+  }
+
+  let enriched = 0
+  for (const [originalColor, colorGroup] of matchedColors.entries()) {
+    const norm   = normalizeCor(originalColor)
+    const detail = bankFull.get(norm)
+    const { error: upErr } = await (supabase as any)
+      .from('products')
+      .update({
+        color_group:     colorGroup,
+        color_family:    detail?.familia    ?? null,
+        color_intensity: detail?.intensidade ?? null,
+        updated_at:      new Date().toISOString(),
+      })
+      .eq('tenant_id', tenantId)
+      .eq('color', originalColor)
+    if (!upErr) {
+      enriched += products.filter(
+        p => ((p as any).color as string).trim() === originalColor
+      ).length
+    }
+  }
+
+  return { enriched, unmatched: [...unmatchedSet] }
+}
+
 // ─── Classificar + propagar para produtos do tenant ───────────────────────────
 // Chama a função SQL que faz upsert no banco global E atualiza products.color_group
 

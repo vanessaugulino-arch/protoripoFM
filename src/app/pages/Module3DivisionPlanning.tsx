@@ -16,6 +16,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+// Helper único de meses da temporada (aceita número "07" ou nome "Agosto" e
+// trata a temporada que cruza o ano). Substitui as funções locais que só
+// entendiam nomes de mês — a tabela seasons guarda números.
+import {
+  seasonMonthCount as countSeasonMonths,
+  seasonFiscalLabel,
+} from "../../engine/seasonMonths";
 import {
   ArrowLeft,
   LogOut,
@@ -104,7 +111,9 @@ import {
   listDivisionScenarios,
   saveDivisionScenario,
   deleteDivisionScenario,
+  applyDivisionScenario,
 } from "../../services/supabase/divisionScenarioService";
+import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
 import { useModule3 } from "../../hooks/useModule3";
 import {
   fetchHistoricalTierAvgs,
@@ -112,6 +121,10 @@ import {
   type TierHistoricalAvg,
   type TierRange,
 } from "../../services/supabase/pricePyramidService";
+import {
+  getHistoricalProfiles,
+  normalizeDivisionPcts,
+} from "../../services/supabase/historicalProfileService";
 import type { PriceTierId } from "../types/pricePyramid";
 
 // Fallback hardcoded — usado quando operation_settings ainda não tem faixas configuradas
@@ -193,29 +206,6 @@ function getM3ConsolidatedValue(key: string, c: import("../types/module3").Seaso
 }
 
 // ─── Utilitário: derivar meta macro da temporada a partir do Módulo 1 ─────────
-
-const MONTHS_PT = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
-
-const MONTHS_SHORT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-
-function countSeasonMonths(mesInicio: string, mesFim: string): number {
-  const startIdx = MONTHS_PT.indexOf(mesInicio);
-  const endIdx = MONTHS_PT.indexOf(mesFim);
-  if (startIdx < 0 || endIdx < 0) return 6;
-  return endIdx >= startIdx ? endIdx - startIdx + 1 : (12 - startIdx) + endIdx + 1;
-}
-
-function seasonFiscalLabel(mesInicio: string, mesFim: string): string {
-  const si = MONTHS_PT.indexOf(mesInicio);
-  const ei = MONTHS_PT.indexOf(mesFim);
-  const months = countSeasonMonths(mesInicio, mesFim);
-  const start = si >= 0 ? MONTHS_SHORT[si] : mesInicio;
-  const end = ei >= 0 ? MONTHS_SHORT[ei] : mesFim;
-  return `${start} → ${end} · ${months} meses fiscais`;
-}
 
 function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
   const monthCount = countSeasonMonths(temporada.mesInicio, temporada.mesFim);
@@ -388,12 +378,29 @@ export default function Module3DivisionPlanning() {
 
   const meetsTarget = validateAgainstMacro();
 
-  // Carrega cenários do Supabase para o cache em memória quando temporada/tenant mudam
+  // Carrega cenários do Supabase para o cache em memória quando temporada/tenant mudam.
+  // Se não houver cenários salvos, inicializa participações com proporções históricas reais.
   useEffect(() => {
     if (!tenantId || !selectedSeasonId) return;
-    initModule3Scenarios(tenantId, selectedSeasonId).then(() => {
+
+    Promise.all([
+      initModule3Scenarios(tenantId, selectedSeasonId),
+      getHistoricalProfiles(tenantId),
+    ]).then(([_, profiles]) => {
       reloadScenarios();
       setScenarioListVersion(v => v + 1);
+
+      // Aplica proporções históricas somente quando não há cenário salvo para a temporada
+      const existingScenarios = listModule3Scenarios(selectedSeasonId);
+      if (existingScenarios.length === 0 && profiles.hasData) {
+        const validDivisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
+        const histPcts = normalizeDivisionPcts(profiles.divisions, validDivisions);
+        validDivisions.forEach(divId => {
+          if ((histPcts[divId] ?? 0) > 0) {
+            updateDivisionParticipation(divId, histPcts[divId]);
+          }
+        });
+      }
     }).catch(() => {});
   }, [tenantId, selectedSeasonId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -513,14 +520,23 @@ export default function Module3DivisionPlanning() {
     }
   };
 
-  const handleApplyMetas = () => {
-    const active = scenarios.find(s => s.isActive);
-    if (active) {
-      applyModule3Scenario(selectedSeasonId, active.id);
+  const handleApplyMetas = async () => {
+    const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
+    if (chosen) {
+      applyModule3Scenario(selectedSeasonId, chosen.id);
       setScenarioListVersion(v => v + 1);
-    } else if (scenarios.length > 0) {
-      applyModule3Scenario(selectedSeasonId, scenarios[0].id);
-      setScenarioListVersion(v => v + 1);
+      // Plano Oficial: aguarda a gravação do is_applied e recalcula o macro
+      // bottom-up (divisão → mês → ano fiscal), avançando o nível para 3.
+      const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
+      if (tenantId) {
+        try {
+          await applyDivisionScenario(tenantId, selectedSeasonId, chosen.id);
+          await recomputeMacroFromDivisions(tenantId, year);
+          await advanceDetailLevel(tenantId, year, 3);
+        } catch {
+          // recompute não bloqueia a aplicação do cenário
+        }
+      }
     }
     setApplySuccess(true);
     setTimeout(() => setApplySuccess(false), 2500);

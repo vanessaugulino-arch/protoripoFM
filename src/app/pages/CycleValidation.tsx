@@ -1,131 +1,178 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
+import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import {
   listSupplyFornecedores, calcBudgetProjection, aggregateReceita,
   type SupplyFornecedor, type TipoFornecedorV2,
 } from "../../services/supabase/supplyService";
+import {
+  getDivisionSeasonality,
+  buildDivisionMonthRevenue,
+  applyBiproportional,
+  type DivisionMonthProfile,
+} from "../../services/supabase/divisionSeasonalityService";
+import {
+  listModule3Scenarios,
+  initModule3Scenarios,
+} from "../../services/module3ScenarioService";
+import {
+  listSeasonsDb,
+  listCanalConfigDb,
+  type CanalConfig,
+} from "../../services/supabase/seasonService";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
-  AlertTriangle, TrendingUp, TrendingDown, X, Info,
-  ChevronRight, BarChart3, HelpCircle, ArrowRight, SendHorizonal, CheckCircle,
+  X, HelpCircle, ArrowRight, SendHorizonal, CheckCircle, Loader2,
 } from "lucide-react";
 import {
   createApprovalRequest,
   hasPendingRequest,
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
+import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
+import { exportToPDF } from "../../utils/exportPDF";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
+  Legend, ResponsiveContainer, ReferenceLine, ComposedChart,
+} from "recharts";
+import { Badge } from "../components/ui/badge";
 
+// ── Tour steps ─────────────────────────────────────────────────────────────────
 const CYCLE_VALIDATION_TOUR: TourStep[] = [
   {
     targetId: "tour-cv-header",
     title: "Sazonalidade — Módulo 4",
-    content: "Aqui você valida o ritmo mensal da coleção: distribua a receita mês a mês por canal e calibre a curva de entrada de mercadoria para evitar ruptura ou excesso de estoque.",
+    content: "Valide o ritmo mensal da coleção por canal. A curva de entrada é calculada automaticamente para garantir a cobertura de estoque que você definir.",
   },
   {
     targetId: "tour-cv-indicators",
-    title: "Indicadores Base do Ciclo",
-    content: "Esses números vêm do planejamento macro aprovado. Use-os como referência ao distribuir a receita — o total planejado deve se aproximar da meta de receita do ciclo.",
+    title: "Indicadores do Ciclo",
+    content: "Referências do plano macro. Use a meta de receita para calibrar a distribuição mensal.",
   },
   {
     targetId: "tour-cv-revenue",
-    title: "Curva de Receita por Mês",
-    content: "Ajuste quanto cada mês e canal vão vender. Clique nos valores da tabela para editar. O gráfico atualiza em tempo real mostrando a distribuição vs. ano anterior.",
+    title: "Curva de Receita por Canal",
+    content: "Edite a receita mês a mês por canal. O sistema calcula quantas peças precisam entrar no estoque para garantir a cobertura definida.",
   },
   {
     targetId: "tour-cv-entry",
-    title: "Curva de Entrada de Mercadoria",
-    content: "Define a quantidade de peças que entra em cada mês. Garante que o estoque suporte a receita planejada — o sistema aponta divergências entre o que você planeja vender e o que está programado para entrar.",
+    title: "Curva de Entrada (calculada)",
+    content: "Resultado automático do motor bottom-up: receita ÷ PMV → peças → cobertura → entrada necessária. Você não edita a entrada — edita a cobertura meta.",
   },
 ];
-import { exportToPDF } from "../../utils/exportPDF";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
-  Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Line
-} from "recharts";
-import { Badge } from "../components/ui/badge";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-interface CurrentUser { name: string; email: string; profile: string; }
+// ── Month constants ─────────────────────────────────────────────────────────────
+const MONTHS_FULL = [
+  "Janeiro","Fevereiro","Março","Abril","Maio","Junho",
+  "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro",
+];
 
-interface MonthRevenue {
-  month: string;
-  atacado: number;
-  varejo: number;
-  ecommerce: number;
+const SHORT_MONTH: Record<string, string> = {
+  Janeiro:"Jan", Fevereiro:"Fev", Março:"Mar", Abril:"Abr",
+  Maio:"Mai", Junho:"Jun", Julho:"Jul", Agosto:"Ago",
+  Setembro:"Set", Outubro:"Out", Novembro:"Nov", Dezembro:"Dez",
+};
+
+// ── Canal definitions ───────────────────────────────────────────────────────────
+const TODOS_CANAIS: { id: string; name: string; color: string; prevColor: string }[] = [
+  { id: "varejo",          name: "Varejo Físico",   color: "#9B8CD8", prevColor: "#9B8CD855" },
+  { id: "ecommerce",       name: "E-commerce",      color: "#F0C040", prevColor: "#F0C04055" },
+  { id: "atacado",         name: "Atacado",         color: "#7598CF", prevColor: "#7598CF55" },
+  { id: "multimarca",      name: "Multimarca",      color: "#6BAE75", prevColor: "#6BAE7555" },
+  { id: "franquia",        name: "Franquia",        color: "#E07B54", prevColor: "#E07B5455" },
+  { id: "popup",           name: "Pop-up",          color: "#C86DD7", prevColor: "#C86DD755" },
+  { id: "marketplace",     name: "Marketplace",     color: "#5BB8C4", prevColor: "#5BB8C455" },
+  { id: "social_commerce", name: "Social Commerce", color: "#E8A0BF", prevColor: "#E8A0BF55" },
+];
+
+const ONBOARDING_TO_CANAL_ID: Record<string, string> = {
+  varejo_fisico: "varejo", ecommerce_proprio: "ecommerce",
+  marketplace: "marketplace", atacado: "atacado",
+  franquia: "franquia", multimarca_canal: "multimarca",
+  popup: "popup", social_commerce: "social_commerce",
+};
+
+// ── Helper functions ────────────────────────────────────────────────────────────
+function generateMonthRange(mesInicio: string, mesFim: string): string[] {
+  const start = MONTHS_FULL.indexOf(mesInicio);
+  const end   = MONTHS_FULL.indexOf(mesFim);
+  if (start < 0 || end < 0) return [];
+  const result: string[] = [];
+  let i = start, safety = 0;
+  while (safety < 24) {
+    result.push(MONTHS_FULL[i]);
+    if (i === end) break;
+    i = (i + 1) % 12;
+    safety++;
+  }
+  return result;
 }
 
-interface EntryCurveRow {
-  month: string;
-  planned: number;
-  original: number;
+function matchChannelToCanal(channel: string): string {
+  const ch = (channel || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (ch.includes("varejo") || ch.includes("fisico") || ch.includes("loja")) return "varejo";
+  if (ch.includes("ecommerce") || ch.includes("online") || ch.includes("site")) return "ecommerce";
+  if (ch.includes("atacado") || ch.includes("distrib")) return "atacado";
+  if (ch.includes("franquia")) return "franquia";
+  if (ch.includes("multimarca") || ch.includes("revend")) return "multimarca";
+  if (ch.includes("marketplace")) return "marketplace";
+  if (ch.includes("popup") || ch.includes("evento")) return "popup";
+  if (ch.includes("social")) return "social_commerce";
+  return ch;
+}
+
+function getSeasonDateRange(season: Temporada): { start: string; end: string } {
+  const si  = MONTHS_FULL.indexOf(season.mesInicio);
+  const ei  = MONTHS_FULL.indexOf(season.mesFim);
+  const ano = season.anoFiscal ?? new Date().getFullYear();
+  const crossYear = si > ei || season.tipo === "verao";
+  const startYear = crossYear ? ano - 1 : ano;
+  const endYear   = ano;
+  const startDate = `${startYear}-${String(si + 1).padStart(2,"0")}-01`;
+  const endDays   = new Date(endYear, ei + 1, 0).getDate();
+  const endDate   = `${endYear}-${String(ei + 1).padStart(2,"0")}-${endDays}`;
+  return { start: startDate, end: endDate };
+}
+
+// ── Types ───────────────────────────────────────────────────────────────────────
+interface CurrentUser { name: string; email: string; profile: string; }
+
+interface CanalMonthCalc {
+  month: string; shortMonth: string;
+  receita: number; prevReceita: number;
+  pecasVender: number;
+  coberturaTarget: number;
+  pecasCobertura: number;
+  estoqueInicio: number;
+  entrada: number;
+  estoqueFim: number;
+  coberturaReal: number;
+  custoEntrada: number;
+}
+
+interface CanalCalcResult {
+  canalId: string; canalName: string; color: string; prevColor: string;
+  months: CanalMonthCalc[];
+  totalReceita: number; totalEntrada: number; totalCustoEntrada: number;
+  pmv: number;
 }
 
 interface Scenario {
-  id: string;
-  name: string;
-  timestamp: string;
-  plannedRevenue: MonthRevenue[];
-  entryCurve: EntryCurveRow[];
-  totalPlanned: number;
-  coverageDays: number;
+  id: string; name: string; timestamp: string;
+  seasonId: string;
+  plannedRevenue: Record<string, Record<string, number>>;
+  coverageTarget: Record<string, number>;
+  estoqueColeçãoPassada: number;
+  totalPlanned: number; avgCoverage: number;
+  /** Plano mensal por divisão — Tab 3 do M4 */
+  divisionMonthPlan?: Record<string, Record<string, number>>;
 }
 
-type ChannelKey = "atacado" | "varejo" | "ecommerce";
-type ChannelView = "Todos" | "Atacado" | "Varejo" | "E-commerce";
-
-// ── Constants ──────────────────────────────────────────────────────────────────
-const CYCLE_MONTHS = ["Ago", "Set", "Out", "Nov", "Dez", "Jan", "Fev"];
-
-const CHANNELS: { key: ChannelKey; label: string; color: string; prevColor: string }[] = [
-  { key: "atacado",  label: "Atacado",    color: "#7598CF", prevColor: "#7598CF55" },
-  { key: "varejo",   label: "Varejo",     color: "#9B8CD8", prevColor: "#9B8CD855" },
-  { key: "ecommerce",label: "E-commerce", color: "#F0C040", prevColor: "#F0C04055" },
-];
-
-const PREV_YEAR: MonthRevenue[] = [
-  { month: "Ago", atacado: 280000, varejo: 200000, ecommerce: 130000 },
-  { month: "Set", atacado: 290000, varejo: 210000, ecommerce: 120000 },
-  { month: "Out", atacado: 310000, varejo: 220000, ecommerce: 130000 },
-  { month: "Nov", atacado: 270000, varejo: 200000, ecommerce: 140000 },
-  { month: "Dez", atacado: 230000, varejo: 190000, ecommerce: 150000 },
-  { month: "Jan", atacado: 0,      varejo: 180000, ecommerce: 120000 },
-  { month: "Fev", atacado: 0,      varejo: 120000, ecommerce: 90000  },
-];
-
-const INITIAL_PLANNED: MonthRevenue[] = [
-  { month: "Ago", atacado: 295000, varejo: 210000, ecommerce: 135000 },
-  { month: "Set", atacado: 305000, varejo: 220000, ecommerce: 125000 },
-  { month: "Out", atacado: 325000, varejo: 230000, ecommerce: 135000 },
-  { month: "Nov", atacado: 285000, varejo: 210000, ecommerce: 145000 },
-  { month: "Dez", atacado: 242000, varejo: 200000, ecommerce: 155000 },
-  { month: "Jan", atacado: 0,      varejo: 188000, ecommerce: 125000 },
-  { month: "Fev", atacado: 0,      varejo: 125000, ecommerce: 95000  },
-];
-
-const INITIAL_ENTRY: EntryCurveRow[] = [
-  { month: "Ago", planned: 3000, original: 3000 },
-  { month: "Set", planned: 3150, original: 3150 },
-  { month: "Out", planned: 3300, original: 3300 },
-  { month: "Nov", planned: 3000, original: 3000 },
-  { month: "Dez", planned: 2880, original: 2880 },
-  { month: "Jan", planned: 2700, original: 2700 },
-  { month: "Fev", planned: 1800, original: 1800 },
-];
-
-const BASE = {
-  metaReceita:    3120000,
-  margemMeta:     45.2,
-  estoqueInicio:  2850,
-  orcamento:      1140000,
-  volumeProducao: 17830,
-  avgPrice:       65,
-};
-
-// ── Formatters ─────────────────────────────────────────────────────────────────
+// ── Formatters ──────────────────────────────────────────────────────────────────
 const fmtR = (v: number) =>
   v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(2)}M`
   : v >= 1_000   ? `R$ ${(v / 1_000).toFixed(0)}k`
@@ -133,7 +180,6 @@ const fmtR = (v: number) =>
 
 const fmtN = (v: number) => v.toLocaleString("pt-BR");
 
-// ── Custom Tooltip ─────────────────────────────────────────────────────────────
 const ChartTooltip = ({ active, payload, label, money = true }: any) => {
   if (!active || !payload?.length) return null;
   return (
@@ -148,57 +194,135 @@ const ChartTooltip = ({ active, payload, label, money = true }: any) => {
   );
 };
 
-// ── Main Component ─────────────────────────────────────────────────────────────
+// ── Bottom-up engine ────────────────────────────────────────────────────────────
+function computeCanalCalc(
+  months: string[],
+  plannedRevenue: Record<string, number>,
+  prevYearRevenue: Record<string, number>,
+  pmv: number,
+  avgCost: number,
+  coverageTarget: Record<string, number>,
+  estoqueInicial: number,
+): CanalMonthCalc[] {
+  if (months.length === 0) return [];
+  const effectivePmv = pmv > 0 ? pmv : 65;
+
+  const pecasVenderArr = months.map(m => {
+    const rev = plannedRevenue[m] || 0;
+    return effectivePmv > 0 ? rev / effectivePmv : 0;
+  });
+
+  const result: CanalMonthCalc[] = [];
+  let prevEstoqueInicio = estoqueInicial;
+  let prevEntrada = 0;
+  let prevPecasVender = 0;
+
+  for (let i = 0; i < months.length; i++) {
+    const month = months[i];
+    const receita = plannedRevenue[month] || 0;
+    const pv = pecasVenderArr[i];
+
+    const estoqueInicio = i === 0
+      ? estoqueInicial
+      : Math.max(0, prevEstoqueInicio + prevEntrada - prevPecasVender);
+
+    const covDays = coverageTarget[month] ?? 90;
+    const covMonths = Math.ceil(covDays / 30);
+
+    let pecasCobertura = 0;
+    for (let j = i; j < Math.min(i + covMonths, months.length); j++) {
+      pecasCobertura += pecasVenderArr[j];
+    }
+
+    const entrada = Math.max(0, pecasCobertura - estoqueInicio);
+    const estoqueFim = Math.max(0, estoqueInicio + entrada - pv);
+    const avgDailyPv = pv / 30;
+    const coberturaReal = avgDailyPv > 0 ? Math.round((estoqueInicio + entrada) / avgDailyPv) : 0;
+
+    result.push({
+      month,
+      shortMonth: SHORT_MONTH[month] || month.slice(0, 3),
+      receita,
+      prevReceita: prevYearRevenue[month] || 0,
+      pecasVender: Math.round(pv),
+      coberturaTarget: covDays,
+      pecasCobertura: Math.round(pecasCobertura),
+      estoqueInicio: Math.round(estoqueInicio),
+      entrada: Math.round(entrada),
+      estoqueFim: Math.round(estoqueFim),
+      coberturaReal,
+      custoEntrada: Math.round(entrada * (avgCost > 0 ? avgCost : 30)),
+    });
+
+    prevEstoqueInicio = estoqueInicio;
+    prevEntrada = entrada;
+    prevPecasVender = pv;
+  }
+  return result;
+}
+
+// ── Main Component ──────────────────────────────────────────────────────────────
 export default function CycleValidation() {
   const navigate = useNavigate();
   const tour = useTour("cycle-validation");
 
-  // Auth
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [user, setUser]           = useState<CurrentUser | null>(null);
+  const [tenantId, setTenantId]   = useState<string>("");
 
-  const [tenantId, setTenantId] = useState<string>("");
+  // Seasons
+  const [seasons, setSeasons]                     = useState<Temporada[]>([]);
+  const [selectedSeasonId, setSelectedSeasonId]   = useState("");
+  const [canalConfigs, setCanalConfigs]             = useState<CanalConfig[]>([]);
+  const [tenantCanalIds, setTenantCanalIds]         = useState<string[]>([]);
+  const [isLoadingData, setIsLoadingData]           = useState(false);
 
-  // Cycle selector
-  const [selectedCycle, setSelectedCycle] = useState("");
+  // Metrics from DB
+  const [avgPmv, setAvgPmv]   = useState<Record<string, number>>({});
+  const [avgCost, setAvgCost] = useState<number>(30);
+  const [prevYearRevenue, setPrevYearRevenue] = useState<Record<string, Record<string, number>>>({});
 
-  // Module view: curva de receita | orçamento de abastecimento
-  const [activeModuleView, setActiveModuleView] = useState<"curva" | "orcamento">("curva");
+  // Planning inputs
+  const [plannedRevenue, setPlannedRevenue]                   = useState<Record<string, Record<string, number>>>({});
+  const [coverageTarget, setCoverageTarget]                   = useState<Record<string, number>>({});
+  const [estoqueColeçãoPassada, setEstoqueColeçãoPassada]     = useState<number>(500);
 
-  // Channel view
-  const [channelView, setChannelView] = useState<ChannelView>("Todos");
-  const [showConsolidated, setShowConsolidated] = useState(false);
+  // Macro reference
+  const [macroMeta, setMacroMeta] = useState({ metaReceita: 0, margemMeta: 45, orcamento: 0 });
 
-  // Supply — para tela de orçamento de abastecimento
+  // Module view
+  const [activeModuleView, setActiveModuleView] = useState<"curva" | "orcamento" | "divisao">("curva");
+  const [channelView, setChannelView]           = useState<string>("Consolidado");
+  const [showDetails, setShowDetails]           = useState(false);
+
+  // ── Tab 3: Plano por Divisão ──────────────────────────────────────────────
+  const [divSeasonality, setDivSeasonality]         = useState<DivisionMonthProfile[]>([]);
+  const [divRevenue, setDivRevenue]                 = useState<Record<string, Record<string, number>>>({});
+  const [divPmv, setDivPmv]                         = useState<Record<string, number>>({});
+  const [divM3Pcts, setDivM3Pcts]                   = useState<Record<string, number>>({});
+  const [divLoadingSeasonality, setDivLoadingSeasonality] = useState(false);
+  const [divInitializedFor, setDivInitializedFor]   = useState<string>(""); // seasonId que já foi inicializado
+
+  // Supply
   const [supplyFornecedores, setSupplyFornecedores] = useState<SupplyFornecedor[]>([]);
-  const [margemOrc, setMargemOrc] = useState(BASE.margemMeta);
-
-  // Entry curve
-  const [clientProduces, setClientProduces] = useState(true);
-
-  // Data
-  const [plannedRevenue, setPlannedRevenue] = useState<MonthRevenue[]>(
-    INITIAL_PLANNED.map(r => ({ ...r }))
-  );
-  const [entryCurve, setEntryCurve] = useState<EntryCurveRow[]>(
-    INITIAL_ENTRY.map(r => ({ ...r }))
-  );
+  const [margemOrc, setMargemOrc]                   = useState(45);
 
   // Scenarios
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [scenarios, setScenarios]                 = useState<Scenario[]>([]);
   const [appliedScenarioId, setAppliedScenarioId] = useState<string | null>(null);
-  const [compareModal, setCompareModal] = useState(false);
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
-  const [compareIds, setCompareIds] = useState<[string, string] | null>(null);
-  const [savingName, setSavingName] = useState("");
-  const [showSaveForm, setShowSaveForm] = useState(false);
+  const [compareModal, setCompareModal]           = useState(false);
+  const [compareIds, setCompareIds]               = useState<[string, string] | null>(null);
+  const [savingName, setSavingName]               = useState("");
+  const [showSaveForm, setShowSaveForm]           = useState(false);
+  const [isExportingPDF, setIsExportingPDF]       = useState(false);
 
-  // Approval flow M4→M2
+  // Approval
   const [showPostApplyModal, setShowPostApplyModal]             = useState(false);
   const [showSubmitApprovalDialog, setShowSubmitApprovalDialog] = useState(false);
-  const [approvalJustification, setApprovalJustification]      = useState("");
-  const [isSubmittingApproval, setIsSubmittingApproval]        = useState(false);
-  const [alreadyPending, setAlreadyPending]                    = useState(false);
+  const [approvalJustification, setApprovalJustification]       = useState("");
+  const [isSubmittingApproval, setIsSubmittingApproval]         = useState(false);
+  const [alreadyPending, setAlreadyPending]                     = useState(false);
 
+  // ── Initial load ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
     if (!stored) { navigate("/"); return; }
@@ -206,221 +330,495 @@ export default function CycleValidation() {
     setUser(userData);
     const tid = sessionStorage.getItem("activeTenantId") ?? userData.tenant_id ?? "";
     setTenantId(tid);
-
     if (!tid) return;
 
-    // Verifica se já existe pedido de aprovação pendente do M4→M2
+    const db = supabase as any;
+
+    hasPendingRequest(tid, 4, new Date().getFullYear())
+      .then(has => setAlreadyPending(has)).catch(() => {});
+
+    listSupplyFornecedores(tid).then(setSupplyFornecedores).catch(() => {});
+
+    listSeasonsDb(tid).then(setSeasons).catch(() => {});
+
+    // Tenant channels from onboarding_profiles
+    db.from("onboarding_profiles")
+      .select("sales_channels")
+      .eq("tenant_id", tid)
+      .maybeSingle()
+      .then(({ data }: any) => {
+        if (data?.sales_channels?.length) {
+          const canalIds = (data.sales_channels as string[])
+            .map((sc: string) => ONBOARDING_TO_CANAL_ID[sc] ?? sc)
+            .filter(Boolean);
+          setTenantCanalIds(canalIds);
+        } else {
+          setTenantCanalIds(["varejo", "ecommerce", "atacado"]);
+        }
+      }).catch(() => setTenantCanalIds(["varejo", "ecommerce", "atacado"]));
+
+    // Avg PMV per channel from sales_history
+    db.from("sales_history")
+      .select("channel, price_realized")
+      .eq("tenant_id", tid)
+      .not("price_realized", "is", null)
+      .gt("price_realized", 0)
+      .limit(5000)
+      .then(({ data: rows }: any) => {
+        const map: Record<string, { sum: number; count: number }> = {};
+        for (const r of rows ?? []) {
+          const cid = matchChannelToCanal(r.channel);
+          if (!map[cid]) map[cid] = { sum: 0, count: 0 };
+          map[cid].sum += r.price_realized;
+          map[cid].count++;
+        }
+        const pmvResult: Record<string, number> = {};
+        for (const [ch, { sum, count }] of Object.entries(map)) {
+          pmvResult[ch] = count > 0 ? Math.round(sum / count) : 0;
+        }
+        if (Object.keys(pmvResult).length) setAvgPmv(pmvResult);
+      }).catch(() => {});
+
+    // Custo médio — prioridade: (1) Módulo 1 planejado, (2) média do catálogo importado
     const year = new Date().getFullYear();
-    hasPendingRequest(tid, 4, year).then(has => setAlreadyPending(has)).catch(() => {});
+    const plannedYears = getPlannedYears();
+    const cycleYear = plannedYears.length > 0 ? Math.max(...plannedYears) : year;
+    const m1Cycle = getPlanCycle(cycleYear);
+    const m1Values = (m1Cycle?.versions?.[0]?.values ?? {}) as Record<string, number | null>;
+    const m1CustoMedio = m1Values.custoMedio;
+    const m1Pmv        = m1Values.pmv;
 
-    // Carrega fornecedores da matriz de abastecimento
-    listSupplyFornecedores(tid)
-      .then(list => setSupplyFornecedores(list))
-      .catch(() => {/* sem dados de abastecimento */});
+    if (m1CustoMedio && m1CustoMedio > 0) {
+      // M1 tem custo médio planejado → usa diretamente
+      setAvgCost(Math.round(m1CustoMedio));
+    } else {
+      // Fallback: média simples do catálogo importado
+      db.from("products")
+        .select("price_cost")
+        .eq("tenant_id", tid)
+        .not("price_cost", "is", null)
+        .gt("price_cost", 0)
+        .limit(1000)
+        .then(({ data: rows }: any) => {
+          const vals = (rows ?? []).map((r: any) => r.price_cost as number);
+          if (vals.length) setAvgCost(Math.round(vals.reduce((a: number, b: number) => a + b, 0) / vals.length));
+        }).catch(() => {});
+    }
 
-    // Carrega cenários de validação do Supabase (planning_scenarios para o ano atual)
-    getCycle(tid, year)
-      .then((cycle) => {
-        if (!cycle) return;
-        return dbListScenarios(tid, year).then((rows) => {
-          if (!rows.length) return;
-          const mapped: Scenario[] = rows.map((r) => {
-            const vals = r.values as any;
-            return {
-              id: r.id,
-              name: r.name,
-              timestamp: new Date(r.created_at).toLocaleString("pt-BR"),
-              plannedRevenue: (vals?.plannedRevenue as MonthRevenue[]) ?? INITIAL_PLANNED.map(x => ({ ...x })),
-              entryCurve: (vals?.entryCurve as EntryCurveRow[]) ?? INITIAL_ENTRY.map(x => ({ ...x })),
-              totalPlanned: vals?.totalPlanned ?? 0,
-              coverageDays: vals?.coverageDays ?? 0,
-            };
-          });
-          setScenarios(mapped);
-          // Se houver cenário aplicado, carrega seus dados
-          const applied = rows.find((r) => r.is_applied);
-          if (applied) {
-            setAppliedScenarioId(applied.id);
-            const vals = applied.values as any;
-            if (vals?.plannedRevenue) setPlannedRevenue(vals.plannedRevenue);
-            if (vals?.entryCurve) setEntryCurve(vals.entryCurve);
-          }
+    // PMV global do M1 usado como fallback para canais sem histórico
+    if (m1Pmv && m1Pmv > 0) {
+      setAvgPmv(prev => {
+        // Só preenche canais que ainda não têm PMV histórico
+        const updated = { ...prev };
+        if (!updated["varejo"])    updated["varejo"]    = Math.round(m1Pmv);
+        if (!updated["ecommerce"]) updated["ecommerce"] = Math.round(m1Pmv);
+        if (!updated["atacado"])   updated["atacado"]   = Math.round(m1Pmv * 0.65); // atacado pratica ~65% do PMV varejo
+        return updated;
+      });
+    }
+
+    // Macro meta do M1 → alimenta macroMeta state (receita, margem, orçamento)
+    if (m1Values) {
+      setMacroMeta({
+        metaReceita: (m1Values.receitaBruta ?? 0) as number,
+        margemMeta:  (m1Values.margemBruta  ?? 45) as number,
+        orcamento:   (m1Values.orcamento    ?? 0)  as number,
+      });
+    }
+
+    // Scenarios
+    getCycle(tid, cycleYear).then(cycle => {
+      if (!cycle) return;
+      return dbListScenarios(tid, cycleYear).then(rows => {
+        if (!rows.length) return;
+        const mapped: Scenario[] = rows.map(r => {
+          const v = r.values as any;
+          return {
+            id: r.id, name: r.name,
+            timestamp: new Date(r.created_at).toLocaleString("pt-BR"),
+            seasonId: v?.seasonId ?? "",
+            plannedRevenue: v?.plannedRevenue ?? {},
+            coverageTarget: v?.coverageTarget ?? {},
+            estoqueColeçãoPassada: v?.estoqueColeçãoPassada ?? 500,
+            totalPlanned: v?.totalPlanned ?? 0,
+            avgCoverage: v?.avgCoverage ?? 0,
+            divisionMonthPlan: v?.divisionMonthPlan ?? undefined,
+          };
         });
-      })
-      .catch(() => {/* usa defaults */});
+        setScenarios(mapped);
+        const applied = rows.find(r => r.is_applied);
+        if (applied) {
+          setAppliedScenarioId(applied.id);
+          const v = applied.values as any;
+          if (v?.plannedRevenue) setPlannedRevenue(v.plannedRevenue);
+          if (v?.coverageTarget) setCoverageTarget(v.coverageTarget);
+          if (v?.estoqueColeçãoPassada) setEstoqueColeçãoPassada(v.estoqueColeçãoPassada);
+          if (v?.seasonId) setSelectedSeasonId(v.seasonId);
+          // Restaura o plano mensal por divisão do M4 Tab 3
+          if (v?.divisionMonthPlan && Object.keys(v.divisionMonthPlan).length > 0) {
+            setDivRevenue(v.divisionMonthPlan);
+            // Marca como já inicializado para não sobrescrever com cálculo histórico
+            if (v?.seasonId) setDivInitializedFor(v.seasonId);
+          }
+        }
+      });
+    }).catch(() => {});
   }, [navigate]);
 
-  // ── Derived / computed ────────────────────────────────────────────────────────
-  const totalPlanned = useMemo(() =>
-    plannedRevenue.reduce((s, m) => s + m.atacado + m.varejo + m.ecommerce, 0),
-    [plannedRevenue]);
+  // ── Carrega perfil histórico de sazonalidade por divisão ─────────────────────
+  useEffect(() => {
+    if (!tenantId) return;
+    setDivLoadingSeasonality(true);
+    getDivisionSeasonality(tenantId)
+      .then(res => { if (res.hasData) setDivSeasonality(res.consolidated); })
+      .catch(() => {})
+      .finally(() => setDivLoadingSeasonality(false));
+  }, [tenantId]);
 
-  const divergence = totalPlanned - BASE.metaReceita;
-  const divergencePct = (divergence / BASE.metaReceita) * 100;
-  const hasDivergence = Math.abs(divergence) > 500;
+  // ── Load canal configs + prev year when season changes ──────────────────────
+  useEffect(() => {
+    if (!tenantId || !selectedSeasonId) return;
+    setIsLoadingData(true);
 
-  const totalEntryPlanned = useMemo(() =>
-    entryCurve.reduce((s, r) => s + r.planned, 0), [entryCurve]);
+    const db = supabase as any;
+    const season = seasons.find(s => s.id === selectedSeasonId);
 
-  const totalEntryOriginal = useMemo(() =>
-    entryCurve.reduce((s, r) => s + r.original, 0), [entryCurve]);
+    listCanalConfigDb(tenantId, selectedSeasonId)
+      .then(configs => {
+        if (configs.length > 0) {
+          setCanalConfigs(configs);
+        } else if (season) {
+          // Fallback: unified period for all tenant canals
+          const fallback: CanalConfig[] = tenantCanalIds.map(cid => ({
+            id: `fallback-${cid}`, canal_id: cid,
+            mes_inicio: season.mesInicio, mes_fim: season.mesFim,
+          }));
+          setCanalConfigs(fallback);
+        }
+      }).catch(() => {});
 
-  const entryDistortionPct = totalEntryOriginal > 0
-    ? ((totalEntryPlanned - totalEntryOriginal) / totalEntryOriginal) * 100
-    : 0;
+    // Prev year revenue
+    if (season) {
+      const { start, end } = getSeasonDateRange(season);
+      const prevStart = new Date(start); prevStart.setFullYear(prevStart.getFullYear() - 1);
+      const prevEnd   = new Date(end);   prevEnd.setFullYear(prevEnd.getFullYear() - 1);
 
-  // Consumo do Orçamento
-  const entryValueTotal = clientProduces
-    ? totalEntryPlanned * BASE.avgPrice
-    : totalEntryPlanned;
+      db.from("sales_history")
+        .select("channel, sale_date, revenue_net")
+        .eq("tenant_id", tenantId)
+        .gte("sale_date", prevStart.toISOString().split("T")[0])
+        .lte("sale_date", prevEnd.toISOString().split("T")[0])
+        .limit(100000)
+        .then(({ data: rows }: any) => {
+          const map: Record<string, Record<string, number>> = {};
+          for (const r of rows ?? []) {
+            const cid   = matchChannelToCanal(r.channel);
+            const month = MONTHS_FULL[new Date(r.sale_date + "T00:00:00").getMonth()];
+            if (!map[cid]) map[cid] = {};
+            map[cid][month] = (map[cid][month] || 0) + (r.revenue_net || 0);
+          }
+          setPrevYearRevenue(map);
+        }).catch(() => {})
+        .finally(() => setIsLoadingData(false));
+    } else {
+      setIsLoadingData(false);
+    }
+  }, [tenantId, selectedSeasonId, seasons, tenantCanalIds]);
 
-  const orcamentoRestante = BASE.orcamento - entryValueTotal;
-  const orcamentoUsoPct = (entryValueTotal / BASE.orcamento) * 100;
+  // ── Derived: active canals with months ─────────────────────────────────────
+  const selectedSeason = useMemo(
+    () => seasons.find(s => s.id === selectedSeasonId) ?? null,
+    [seasons, selectedSeasonId],
+  );
 
-  // Coverage (days) = (starting stock value + total entry value) / avg daily revenue
-  const coverageDays = useMemo(() => {
-    const stockValue = BASE.estoqueInicio * BASE.avgPrice;
-    const totalValue = clientProduces
-      ? totalEntryPlanned * BASE.avgPrice
-      : totalEntryPlanned;
-    const avgDailyRevenue = totalPlanned / (CYCLE_MONTHS.length * 30);
-    if (avgDailyRevenue === 0) return 0;
-    return (stockValue + totalValue) / avgDailyRevenue;
-  }, [totalEntryPlanned, totalPlanned, clientProduces]);
+  const activeCanals = useMemo(() => {
+    const activeCids = new Set(tenantCanalIds);
+    return canalConfigs
+      .filter(cc => activeCids.has(cc.canal_id))
+      .map(cc => {
+        const def    = TODOS_CANAIS.find(c => c.id === cc.canal_id);
+        const mesFim = cc.mes_fim ?? selectedSeason?.mesFim ?? "";
+        const months = generateMonthRange(cc.mes_inicio, mesFim);
+        return {
+          id: cc.canal_id,
+          name: def?.name ?? cc.canal_id,
+          color: def?.color ?? "#7598CF",
+          prevColor: def?.prevColor ?? "#7598CF55",
+          months,
+        };
+      });
+  }, [canalConfigs, tenantCanalIds, selectedSeason]);
 
-  // Per-month coverage in days
-  const monthlyCoverage = useMemo(() => {
-    let cumStock = BASE.estoqueInicio * BASE.avgPrice;
-    return CYCLE_MONTHS.map((month, i) => {
-      const entryRow = entryCurve[i];
-      const entryVal = clientProduces
-        ? (entryRow?.planned ?? 0) * BASE.avgPrice
-        : (entryRow?.planned ?? 0);
-      cumStock += entryVal;
-      const rev = plannedRevenue[i];
-      const monthRev = rev ? rev.atacado + rev.varejo + rev.ecommerce : 1;
-      const avgDailyRev = (monthRev || 1) / 30;
-      const covDays = cumStock / avgDailyRev;
-      return { month, coverage: parseFloat(covDays.toFixed(0)) };
+  const consolidatedMonths = useMemo(() => {
+    if (!activeCanals.length) return [];
+    const allMonths = new Set(activeCanals.flatMap(c => c.months));
+    const anchor    = activeCanals[0].months[0] ?? "Janeiro";
+    const startIdx  = MONTHS_FULL.indexOf(anchor);
+    const ordered   = [
+      ...MONTHS_FULL.slice(startIdx),
+      ...MONTHS_FULL.slice(0, startIdx),
+    ];
+    return ordered.filter(m => allMonths.has(m));
+  }, [activeCanals]);
+
+  // ── Inicializa matrix Divisão × Mês quando temporada ou dados históricos mudam ──
+  // Roda somente uma vez por temporada (divInitializedFor garante idempotência).
+  useEffect(() => {
+    if (!tenantId || !selectedSeasonId || !consolidatedMonths.length) return;
+    if (divInitializedFor === selectedSeasonId) return; // já inicializado para esta temporada
+
+    initModule3Scenarios(tenantId, selectedSeasonId)
+      .then(() => {
+        const m3Scenarios = listModule3Scenarios(selectedSeasonId);
+        const active = m3Scenarios.find(s => s.isActive) ?? m3Scenarios[0] ?? null;
+
+        // Participações M3 por divisão
+        const pcts: Record<string, number> = {};
+        const pmvByDiv: Record<string, number> = {};
+        if (active?.divisions) {
+          for (const [divId, block] of Object.entries(active.divisions)) {
+            pcts[divId]    = (block as any).participation ?? 0;
+            pmvByDiv[divId] = (block as any).indicators?.avgPrice ?? 0;
+          }
+        }
+
+        // Fallback: proporções históricas se M3 não configurado
+        if (!Object.keys(pcts).length && divSeasonality.length) {
+          const totalHist = divSeasonality.reduce((s, d) => s + d.totalRevenue, 0);
+          for (const d of divSeasonality) {
+            pcts[d.division]    = totalHist > 0 ? (d.totalRevenue / totalHist) * 100 : 0;
+            pmvByDiv[d.division] = d.pmv;
+          }
+        }
+
+        if (!Object.keys(pcts).length) return; // sem dados — aguarda M3
+
+        // Total de referência: M1 ou soma do plano Tab 1
+        const totalRef = macroMeta.metaReceita > 0
+          ? macroMeta.metaReceita
+          : activeCanals.reduce((s, c) =>
+              s + consolidatedMonths.reduce((ms, m) => ms + ((plannedRevenue[c.id] ?? {})[m] ?? 0), 0), 0);
+
+        // Receita mensal consolidada (de Tab 1) como base de distribuição
+        const consolidatedMRev: Record<string, number> = {};
+        for (const month of consolidatedMonths) {
+          consolidatedMRev[month] = activeCanals.reduce((s, c) =>
+            s + ((plannedRevenue[c.id] ?? {})[month] ?? 0), 0);
+        }
+
+        // Se não há plano mensal ainda, distribui igualmente
+        const sumMRev = Object.values(consolidatedMRev).reduce((s, v) => s + v, 0);
+        if (sumMRev === 0) {
+          const each = totalRef / Math.max(consolidatedMonths.length, 1);
+          for (const m of consolidatedMonths) consolidatedMRev[m] = each;
+        }
+
+        setDivM3Pcts(pcts);
+        setDivPmv(pmvByDiv);
+
+        const matrix = buildDivisionMonthRevenue(
+          consolidatedMRev,
+          divSeasonality.length ? divSeasonality : [],
+          pcts,
+          consolidatedMonths,
+        );
+        setDivRevenue(matrix);
+        setDivInitializedFor(selectedSeasonId);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, selectedSeasonId, consolidatedMonths, divSeasonality, macroMeta.metaReceita]);
+
+  // ── Initialize planned revenue when canal config loads ─────────────────────
+  useEffect(() => {
+    if (!activeCanals.length) return;
+    setPlannedRevenue(prev => {
+      const next = { ...prev };
+      for (const c of activeCanals) {
+        if (!next[c.id]) next[c.id] = {};
+        for (const m of c.months) {
+          if (next[c.id][m] === undefined) next[c.id][m] = 0;
+        }
+      }
+      return next;
     });
-  }, [entryCurve, plannedRevenue, clientProduces]);
+    setCoverageTarget(prev => {
+      const next = { ...prev };
+      for (const m of consolidatedMonths) {
+        if (next[m] === undefined) next[m] = 90;
+      }
+      return next;
+    });
+  }, [activeCanals, consolidatedMonths]);
 
-  // Chart data for "Todos" planned view
-  const todosChartData = useMemo(() =>
-    plannedRevenue.map(r => ({
-      month: r.month,
-      Atacado: r.atacado,
-      Varejo: r.varejo,
-      "E-commerce": r.ecommerce,
-    })), [plannedRevenue]);
-
-  // Chart data for "Todos" consolidated (planned + prev year)
-  const consolidatedChartData = useMemo(() =>
-    plannedRevenue.map((r, i) => {
-      const p = PREV_YEAR[i];
+  // ── Bottom-up engine ────────────────────────────────────────────────────────
+  const canalCalcResults = useMemo((): CanalCalcResult[] => {
+    return activeCanals.map(canal => {
+      const pmv     = avgPmv[canal.id] || 65;
+      const cRevMap = plannedRevenue[canal.id] || {};
+      const prevMap = prevYearRevenue[canal.id] || {};
+      const months  = computeCanalCalc(
+        canal.months, cRevMap, prevMap,
+        pmv, avgCost, coverageTarget, estoqueColeçãoPassada,
+      );
       return {
-        month: r.month,
-        "Planejado Atacado": r.atacado,
-        "Planejado Varejo": r.varejo,
-        "Planejado E-commerce": r.ecommerce,
-        "Ano Ant. Atacado": p.atacado,
-        "Ano Ant. Varejo": p.varejo,
-        "Ano Ant. E-commerce": p.ecommerce,
+        canalId: canal.id, canalName: canal.name,
+        color: canal.color, prevColor: canal.prevColor,
+        months, pmv,
+        totalReceita:      months.reduce((s, m) => s + m.receita, 0),
+        totalEntrada:      months.reduce((s, m) => s + m.entrada, 0),
+        totalCustoEntrada: months.reduce((s, m) => s + m.custoEntrada, 0),
       };
-    }), [plannedRevenue]);
+    });
+  }, [activeCanals, plannedRevenue, prevYearRevenue, avgPmv, avgCost, coverageTarget, estoqueColeçãoPassada]);
 
-  // Individual channel data
-  const channelChartData = useCallback((chKey: ChannelKey) =>
-    plannedRevenue.map((r, i) => ({
-      month: r.month,
-      Planejado: r[chKey],
-      "Ano Anterior": PREV_YEAR[i][chKey],
-      percentPlanned: totalPlanned > 0
-        ? parseFloat(((r[chKey] / totalPlanned) * 100).toFixed(1))
-        : 0,
-    })), [plannedRevenue, totalPlanned]);
+  const totalPlanned = useMemo(
+    () => canalCalcResults.reduce((s, c) => s + c.totalReceita, 0),
+    [canalCalcResults],
+  );
+  const totalEntradaGeral = useMemo(
+    () => canalCalcResults.reduce((s, c) => s + c.totalEntrada, 0),
+    [canalCalcResults],
+  );
+  const totalCustoGeral = useMemo(
+    () => canalCalcResults.reduce((s, c) => s + c.totalCustoEntrada, 0),
+    [canalCalcResults],
+  );
 
-  // Entry curve chart data
-  const entryChartData = useMemo(() =>
-    entryCurve.map(r => ({
-      month: r.month,
-      Planejado: r.planned,
-      Original: r.original,
-    })), [entryCurve]);
+  const divergence    = totalPlanned - macroMeta.metaReceita;
+  const divergencePct = macroMeta.metaReceita > 0 ? (divergence / macroMeta.metaReceita) * 100 : 0;
+  const hasDivergence = macroMeta.metaReceita > 0 && Math.abs(divergence) > 500;
 
-  // ── Handlers ──────────────────────────────────────────────────────────────────
-  const handleRevenueChange = (month: string, chKey: ChannelKey, raw: string) => {
+  const avgCoverage = useMemo(() => {
+    const all = canalCalcResults.flatMap(c => c.months.map(m => m.coberturaReal)).filter(v => v > 0);
+    return all.length ? Math.round(all.reduce((s, v) => s + v, 0) / all.length) : 0;
+  }, [canalCalcResults]);
+
+  const consolidatedChartData = useMemo(() =>
+    consolidatedMonths.map(month => {
+      const row: any = { month: SHORT_MONTH[month] || month.slice(0,3) };
+      for (const c of canalCalcResults) {
+        const m = c.months.find(x => x.month === month);
+        row[c.canalName] = m?.receita ?? 0;
+      }
+      return row;
+    }),
+    [consolidatedMonths, canalCalcResults],
+  );
+
+  const activeCanalResult = useMemo(
+    () => canalCalcResults.find(c => c.canalId === channelView) ?? null,
+    [canalCalcResults, channelView],
+  );
+
+  // ── Tab 3: peças por divisão × mês ───────────────────────────────────────────
+  const divPieces = useMemo<Record<string, Record<string, number>>>(() => {
+    const result: Record<string, Record<string, number>> = {};
+    for (const [divId, monthMap] of Object.entries(divRevenue)) {
+      result[divId] = {};
+      const pmv = divPmv[divId] ?? 0;
+      for (const [month, rev] of Object.entries(monthMap)) {
+        result[divId][month] = pmv > 0 ? Math.round(rev / pmv) : 0;
+      }
+    }
+    return result;
+  }, [divRevenue, divPmv]);
+
+  // Totais por divisão (soma de todos os meses)
+  const divTotals = useMemo<Record<string, { revenue: number; pieces: number }>>(() => {
+    const result: Record<string, { revenue: number; pieces: number }> = {};
+    for (const divId of Object.keys(divRevenue)) {
+      const rev = Object.values(divRevenue[divId] ?? {}).reduce((s, v) => s + v, 0);
+      const pcs = Object.values(divPieces[divId] ?? {}).reduce((s, v) => s + v, 0);
+      result[divId] = { revenue: rev, pieces: pcs };
+    }
+    return result;
+  }, [divRevenue, divPieces]);
+
+  // Handler de edição bi-proporcional: mantém total da divisão inalterado
+  const handleDivRevenueChange = useCallback((divId: string, month: string, raw: string) => {
+    const newValue = Math.max(0, parseFloat(raw.replace(/[^\d.]/g, "")) || 0);
+    const profile  = divSeasonality.find(p => p.division === divId);
+    const histWeights = profile?.monthlyPcts ?? {};
+    setDivRevenue(prev => applyBiproportional(prev, divId, month, newValue, histWeights));
+  }, [divSeasonality]);
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
+  const handleRevenueChange = useCallback((canalId: string, month: string, raw: string) => {
     const val = parseFloat(raw.replace(/[^\d.]/g, "")) || 0;
-    setPlannedRevenue(prev => prev.map(r =>
-      r.month === month ? { ...r, [chKey]: val } : r
-    ));
-  };
+    setPlannedRevenue(prev => ({
+      ...prev,
+      [canalId]: { ...(prev[canalId] ?? {}), [month]: val },
+    }));
+  }, []);
 
-  const handleEntryChange = (month: string, raw: string) => {
-    const val = parseFloat(raw.replace(/[^\d.]/g, "")) || 0;
-    setEntryCurve(prev => prev.map(r =>
-      r.month === month ? { ...r, planned: val } : r
-    ));
-  };
+  const handleCoverageChange = useCallback((month: string, raw: string) => {
+    const val = Math.max(1, parseInt(raw.replace(/[^\d]/g, "")) || 90);
+    setCoverageTarget(prev => ({ ...prev, [month]: val }));
+  }, []);
 
   const handleSaveScenario = () => {
     if (!savingName.trim()) return;
     const localId = `s-${Date.now()}`;
     const s: Scenario = {
-      id: localId,
-      name: savingName.trim(),
+      id: localId, name: savingName.trim(),
       timestamp: new Date().toLocaleString("pt-BR"),
-      plannedRevenue: plannedRevenue.map(r => ({ ...r })),
-      entryCurve: entryCurve.map(r => ({ ...r })),
+      seasonId: selectedSeasonId,
+      plannedRevenue: JSON.parse(JSON.stringify(plannedRevenue)),
+      coverageTarget: { ...coverageTarget },
+      estoqueColeçãoPassada,
       totalPlanned,
-      coverageDays,
+      avgCoverage,
+      divisionMonthPlan: Object.keys(divRevenue).length > 0
+        ? JSON.parse(JSON.stringify(divRevenue))
+        : undefined,
     };
     setScenarios(prev => [...prev, s]);
-    setSavingName("");
-    setShowSaveForm(false);
+    setSavingName(""); setShowSaveForm(false);
 
-    // Write-through para Supabase
     if (tenantId) {
       const year = new Date().getFullYear();
-      getCycle(tenantId, year)
-        .then((cycle) => {
-          if (!cycle) return;
-          return supabase
-            .from("planning_scenarios")
-            .insert({
-              tenant_id: tenantId,
-              cycle_id: cycle.id,
-              name: s.name,
-              version: scenarios.length + 1,
-              values: {
-                plannedRevenue: s.plannedRevenue,
-                entryCurve: s.entryCurve,
-                totalPlanned: s.totalPlanned,
-                coverageDays: s.coverageDays,
-              } as unknown as import("../../lib/database.types").Json,
-              is_applied: false,
-            })
-            .select()
-            .single()
-            .then(({ data }) => {
-              if (data?.id) {
-                // Atualiza id local com o id do banco
-                setScenarios(prev => prev.map(sc =>
-                  sc.id === localId ? { ...sc, id: data.id } : sc
-                ));
-              }
-            });
-        })
-        .catch(() => {/* fire-and-forget */});
+      getCycle(tenantId, year).then(cycle => {
+        if (!cycle) return;
+        return (supabase as any)
+          .from("planning_scenarios")
+          .insert({
+            tenant_id: tenantId, cycle_id: cycle.id,
+            name: s.name, version: scenarios.length + 1,
+            values: {
+              seasonId: s.seasonId,
+              plannedRevenue: s.plannedRevenue,
+              coverageTarget: s.coverageTarget,
+              estoqueColeçãoPassada: s.estoqueColeçãoPassada,
+              totalPlanned: s.totalPlanned,
+              avgCoverage: s.avgCoverage,
+              divisionMonthPlan: s.divisionMonthPlan ?? null,
+            },
+            is_applied: false,
+          })
+          .select().single()
+          .then(({ data }: any) => {
+            if (data?.id) {
+              setScenarios(prev => prev.map(sc => sc.id === localId ? { ...sc, id: data.id } : sc));
+            }
+          });
+      }).catch(() => {});
     }
   };
 
   const handleApplyScenario = (id: string) => {
     const s = scenarios.find(sc => sc.id === id);
     if (!s) return;
-    setPlannedRevenue(s.plannedRevenue.map(r => ({ ...r })));
-    setEntryCurve(s.entryCurve.map(r => ({ ...r })));
+    setPlannedRevenue(JSON.parse(JSON.stringify(s.plannedRevenue)));
+    setCoverageTarget({ ...s.coverageTarget });
+    setEstoqueColeçãoPassada(s.estoqueColeçãoPassada);
+    if (s.seasonId) setSelectedSeasonId(s.seasonId);
     setAppliedScenarioId(id);
+    // Restaura plano de divisão mensal do M4 Tab 3 (se existir no cenário)
+    if (s.divisionMonthPlan && Object.keys(s.divisionMonthPlan).length > 0) {
+      setDivRevenue(s.divisionMonthPlan);
+      if (s.seasonId) setDivInitializedFor(s.seasonId);
+    }
   };
 
   const handleCompare = () => {
@@ -431,46 +829,24 @@ export default function CycleValidation() {
 
   const handleExportPDF = async () => {
     setIsExportingPDF(true);
-    await exportToPDF({
-      elementId: "cycle-scenarios-pdf",
-      fileName:  "cenarios_validacao_ciclo",
-      title:     "Comparação de Cenários — Sazonalidade",
-    });
+    await exportToPDF({ elementId: "cycle-scenarios-pdf", fileName: "cenarios_validacao_ciclo", title: "Cenários — Sazonalidade" });
     setIsExportingPDF(false);
   };
 
   const handleApplyMetas = () => {
-    if (appliedScenarioId) return; // já aplicado
+    if (appliedScenarioId) return;
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
     setShowPostApplyModal(true);
   };
 
-  const activeChannelKey: ChannelKey | null =
-    channelView === "Atacado" ? "atacado"
-    : channelView === "Varejo" ? "varejo"
-    : channelView === "E-commerce" ? "ecommerce"
-    : null;
-
-  const activeCh = activeChannelKey
-    ? CHANNELS.find(c => c.key === activeChannelKey)!
-    : null;
-
-  if (!user) return null;
-
-  // Bandas bilaterais M4 — receita do ciclo vs meta do canal (±2%)
-  // Abaixo -2%: distribuição mensal não entrega a meta → aprovação
-  // Acima +2%: distribuição excessivamente otimista → aprovação
   const impactedMacroCV: ImpactedIndicator[] = (() => {
-    const result: ImpactedIndicator[] = [];
-    if (BASE.metaReceita > 0 && (divergencePct < -2 || divergencePct > 2)) {
-      result.push({
-        key: "receitaTotal", label: "Receita Total (ciclo)",
-        planned: BASE.metaReceita, projected: totalPlanned,
-        gap: totalPlanned - BASE.metaReceita, isRate: false,
-      });
-    }
-    return result;
+    if (!macroMeta.metaReceita || !hasDivergence) return [];
+    return [{
+      key: "receitaTotal", label: "Receita Total (ciclo)",
+      planned: macroMeta.metaReceita, projected: totalPlanned,
+      gap: totalPlanned - macroMeta.metaReceita, isRate: false,
+    }];
   })();
 
   const handleSubmitApprovalCV = async () => {
@@ -479,16 +855,14 @@ export default function CycleValidation() {
     try {
       const appliedSc = scenarios.find(s => s.id === appliedScenarioId) ?? scenarios[scenarios.length - 1] ?? null;
       await createApprovalRequest({
-        tenantId,
-        year:               new Date().getFullYear(),
-        fromModule:         4,
-        toModule:           2,
-        requesterEmail:     user.email,
-        justification:      approvalJustification,
-        proposedData:       { totalPlanned, divergence, divergencePct, coverageDays },
-        originalData:       { metaReceita: BASE.metaReceita, margemMeta: BASE.margemMeta },
+        tenantId, year: new Date().getFullYear(),
+        fromModule: 4, toModule: 2,
+        requesterEmail: user.email,
+        justification: approvalJustification,
+        proposedData: { totalPlanned, divergence, divergencePct, avgCoverage },
+        originalData: { metaReceita: macroMeta.metaReceita, margemMeta: macroMeta.margemMeta },
         impactedIndicators: impactedMacroCV,
-        scenarioId:         appliedSc?.id,
+        scenarioId: appliedSc?.id,
       });
       setAlreadyPending(true);
       setShowSubmitApprovalDialog(false);
@@ -497,13 +871,12 @@ export default function CycleValidation() {
     setIsSubmittingApproval(false);
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  if (!user) return null;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
-
-      {tour.isOpen && (
-        <ProductTour steps={CYCLE_VALIDATION_TOUR} onClose={tour.dismiss} />
-      )}
+      {tour.isOpen && <ProductTour steps={CYCLE_VALIDATION_TOUR} onClose={tour.dismiss} />}
 
       {/* ── Topbar ── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
@@ -522,134 +895,118 @@ export default function CycleValidation() {
               <User className="w-5 h-5" />
               <span className="text-sm">{user.name}</span>
             </div>
-            <button
-              onClick={tour.reopen}
-              className="p-2 text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-colors"
-              title="Ver tour desta tela"
-            >
+            <button onClick={tour.reopen} className="p-2 text-[#F6F3AA]/50 hover:text-[#F6F3AA] transition-colors" title="Ver tour">
               <HelpCircle className="w-4 h-4" />
             </button>
-            <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
+            <button onClick={() => { sessionStorage.removeItem("currentUser"); navigate("/"); }} className="text-[#F6F3AA] hover:opacity-80">
               <LogOut className="w-5 h-5" />
             </button>
           </div>
         </div>
       </header>
 
-      {/* ── Main content (offset for fixed topbar) ── */}
       <main className="max-w-[1600px] mx-auto px-6 pt-8 pb-12 space-y-5">
 
-        {/* ── Cycle Selector ── */}
+        {/* ── Cycle selector ── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm">
-          <div className="max-w-xs">
-            <label className="block text-[#28071C]/60 text-xs uppercase tracking-widest mb-2">
-              Ciclo Alvo
-            </label>
-            <select
-              value={selectedCycle}
-              onChange={e => setSelectedCycle(e.target.value)}
-              className="w-full bg-white rounded-xl px-4 py-2.5 text-[#28071C] text-sm border-2 border-[#7598CF] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 cursor-pointer"
-            >
-              <option value="">Selecione um ciclo</option>
-              <option value="verao2026">Verão 2026 (Ago/25 → Fev/26)</option>
-              <option value="inverno2026">Inverno 2026</option>
-              <option value="verao2027">Verão 2027</option>
-            </select>
+          <div className="flex items-center gap-6 flex-wrap">
+            <div className="max-w-xs flex-1">
+              <label className="block text-[#28071C]/60 text-xs uppercase tracking-widest mb-2">Temporada Alvo</label>
+              <select
+                value={selectedSeasonId}
+                onChange={e => setSelectedSeasonId(e.target.value)}
+                className="w-full bg-white rounded-xl px-4 py-2.5 text-[#28071C] text-sm border-2 border-[#7598CF] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 cursor-pointer"
+              >
+                <option value="">Selecione uma temporada</option>
+                {seasons.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.nome} {s.mesInicio && s.mesFim ? `(${SHORT_MONTH[s.mesInicio]} → ${SHORT_MONTH[s.mesFim]})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {selectedSeason && (
+              <div className="flex items-center gap-4 text-xs text-[#28071C]/60">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#7598CF]" />
+                  {activeCanals.length} {activeCanals.length === 1 ? "canal" : "canais"}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#9B8CD8]" />
+                  {consolidatedMonths.length} meses no ciclo consolidado
+                </span>
+                {isLoadingData && (
+                  <span className="flex items-center gap-1.5 text-[#7598CF]">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Carregando dados…
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {selectedCycle && (
+        {selectedSeasonId && activeCanals.length > 0 && (
           <>
-            {/* ── STICKY INDICATORS CARD ── */}
+            {/* ── Sticky Indicators ── */}
             <div id="tour-cv-indicators" className="sticky top-16 z-40">
               <div className="bg-[#28071C] rounded-2xl px-6 py-4 shadow-xl">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-white/80 text-xs uppercase tracking-widest">
-                    Indicadores Base do Ciclo · Verão 2026
+                    Indicadores do Ciclo · {selectedSeason?.nome}
                   </h3>
                   <Badge className="text-xs bg-[#7598CF]/30 text-[#7598CF] border-[#7598CF]/40">
-                    Plano Macro Aprovado
+                    {macroMeta.metaReceita > 0 ? "Plano Macro" : "Sem plano macro"}
                   </Badge>
                 </div>
                 <div className="grid grid-cols-5 gap-4 divide-x divide-white/10">
-                  {/* Receita — always shown */}
-                  <div className="relative group text-center cursor-default">
-                    <div className="text-xl font-bold text-[#F6F3AA]">
-                      {fmtR(BASE.metaReceita)}
-                    </div>
-                    <div className="text-xs text-white/60 mt-1">Meta de Receita do Ciclo</div>
-                    <div className={`text-xs mt-1 font-medium ${
-                      hasDivergence
-                        ? divergence > 0 ? "text-green-400" : "text-red-400"
-                        : "text-green-400"
-                    }`}>
-                      {hasDivergence
-                        ? `Ajustado: ${divergence > 0 ? "+" : ""}${fmtR(divergence)}`
-                        : "✓ Alinhado"}
-                    </div>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
-                      Receita total planejada para o ciclo. Divergência indica ajuste feito na curva de vendas em relação ao plano macro.
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-[#F6F3AA]">{fmtR(totalPlanned)}</div>
+                    <div className="text-xs text-white/60 mt-1">Receita Planejada</div>
+                    {macroMeta.metaReceita > 0 && (
+                      <div className={`text-xs mt-1 font-medium ${hasDivergence ? divergence > 0 ? "text-green-400" : "text-red-400" : "text-green-400"}`}>
+                        {hasDivergence ? `${divergence > 0 ? "+" : ""}${fmtR(divergence)} vs meta` : "✓ Alinhado"}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-center pl-4">
+                    <div className="text-xl font-bold text-white">{fmtN(totalEntradaGeral)}</div>
+                    <div className="text-xs text-white/60 mt-1">Total Entrada (pçs)</div>
+                    <div className="text-xs text-white/40 mt-0.5">{fmtR(totalCustoGeral)} em custo</div>
+                  </div>
+                  <div className="text-center pl-4">
+                    <div className="text-xl font-bold text-white">{avgCoverage}</div>
+                    <div className="text-xs text-white/60 mt-1">Cobertura Média (dias)</div>
+                    <div className={`text-xs mt-0.5 ${avgCoverage < 60 ? "text-red-400" : avgCoverage > 150 ? "text-yellow-400" : "text-green-400"}`}>
+                      {avgCoverage < 60 ? "⚠ Baixa" : avgCoverage > 150 ? "⚠ Elevada" : "✓ Adequada"}
                     </div>
                   </div>
-                  <div className="relative group text-center pl-4 cursor-default">
-                    <div className="text-xl font-bold text-white">{BASE.margemMeta}%</div>
-                    <div className="text-xs text-white/60 mt-1">Margem Meta</div>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
-                      Percentual de margem bruta definido no plano macro. Serve como referência para validar se a curva de preços do mix é consistente.
-                    </div>
+                  <div className="text-center pl-4">
+                    <div className="text-xl font-bold text-white">{estoqueColeçãoPassada.toLocaleString("pt-BR")}</div>
+                    <div className="text-xs text-white/60 mt-1">Est. Coleção Passada (pçs)</div>
                   </div>
-                  <div className="relative group text-center pl-4 cursor-default">
-                    <div className="text-xl font-bold text-white">{fmtN(BASE.estoqueInicio)}</div>
-                    <div className="text-xs text-white/60 mt-1">Estoque Início (pçs)</div>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
-                      Quantidade de peças em estoque no início do ciclo. Influencia diretamente a curva de entrada — quanto maior o estoque inicial, menor a necessidade de compra imediata.
-                    </div>
-                  </div>
-                  <div className="relative group text-center pl-4 cursor-default">
-                    <div className="text-xl font-bold text-white">{fmtR(BASE.orcamento)}</div>
-                    <div className="text-xs text-white/60 mt-1">Orçamento Aprovado</div>
+                  <div className="text-center pl-4">
+                    <div className="text-xl font-bold text-white">{activeCanals.length}</div>
+                    <div className="text-xs text-white/60 mt-1">Canais no Ciclo</div>
                     <div className="text-xs text-white/40 mt-0.5">
-                      Uso: {orcamentoUsoPct.toFixed(0)}%
-                    </div>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
-                      Orçamento previsto para compra/produção do ciclo. O % de uso mostra quanto da verba já está comprometido pela curva de entrada planejada.
-                    </div>
-                  </div>
-                  <div className="relative group text-center pl-4 cursor-default">
-                    <div className="text-xl font-bold text-white">
-                      {Math.round(coverageDays)}
-                    </div>
-                    <div className="text-xs text-white/60 mt-1">Cobertura Estimada (dias)</div>
-                    <div className={`text-xs mt-0.5 ${
-                      coverageDays < 60 ? "text-red-400"
-                      : coverageDays > 120 ? "text-yellow-400"
-                      : "text-green-400"
-                    }`}>
-                      {coverageDays < 60 ? "⚠ Baixa" : coverageDays > 120 ? "⚠ Elevada" : "✓ Adequada"}
-                    </div>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2 bg-white text-[#28071C] text-xs rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity delay-0 group-hover:delay-[2000ms] pointer-events-none z-50 leading-relaxed border border-[#28071C]/10">
-                      Quantos dias o estoque planejado sustenta as vendas projetadas. Entre 60 e 120 dias é considerado adequado — abaixo indica risco de ruptura, acima indica excesso.
+                      {activeCanals.map(c => c.name.split(" ")[0]).join(", ")}
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* ── MODULE TAB BAR ── */}
-            <div className="flex items-center gap-1 bg-white/60 backdrop-blur-sm rounded-2xl p-1.5 shadow-sm border border-[#28071C]/8">
-              {([
-                { key: "curva",     label: "1 · Curva de Receita" },
-                { key: "orcamento", label: "2 · Orçamento de Abastecimento" },
-              ] as { key: "curva" | "orcamento"; label: string }[]).map(tab => (
-                <button
-                  key={tab.key}
-                  onClick={() => setActiveModuleView(tab.key)}
-                  className={`flex-1 py-2 px-5 rounded-xl text-sm font-semibold transition-all ${
-                    activeModuleView === tab.key
-                      ? "bg-[#28071C] text-white shadow"
-                      : "text-[#28071C]/50 hover:text-[#28071C] hover:bg-[#28071C]/5"
-                  }`}
-                >
+            {/* ── Module tab bar ── */}
+            <div className="flex items-center gap-1 bg-white/60 backdrop-blur-sm rounded-2xl p-1.5 shadow-sm">
+              {(
+                [
+                  { key: "curva"    as const, label: "1 · Curva de Receita" },
+                  { key: "orcamento" as const, label: "2 · Orçamento de Abastecimento" },
+                  { key: "divisao"  as const, label: "3 · Plano por Divisão" },
+                ]
+              ).map(tab => (
+                <button key={tab.key} onClick={() => setActiveModuleView(tab.key)}
+                  className={`flex-1 py-2 px-5 rounded-xl text-sm font-semibold transition-all ${activeModuleView === tab.key ? "bg-[#28071C] text-white shadow" : "text-[#28071C]/50 hover:text-[#28071C] hover:bg-[#28071C]/5"}`}>
                   {tab.label}
                 </button>
               ))}
@@ -658,647 +1015,814 @@ export default function CycleValidation() {
             {/* ── VIEW: CURVA DE RECEITA ── */}
             {activeModuleView === "curva" && (<>
 
-            {/* ── SECTION: CURVA DE VENDAS POR CANAL ── */}
-            <div id="tour-cv-revenue" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-              <div className="border-t-4 border-[#7598CF] px-6 pt-5 pb-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-[#28071C] font-semibold text-base">
-                    Curva de Vendas por Canal
-                  </h3>
-                  {/* Channel Tabs */}
-                  <div className="flex items-center gap-2">
-                    {(["Todos", "Atacado", "Varejo", "E-commerce"] as ChannelView[]).map(v => (
-                      <button
-                        key={v}
-                        onClick={() => { setChannelView(v); setShowConsolidated(false); }}
-                        className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                          channelView === v
-                            ? "bg-[#28071C] text-white shadow"
-                            : "bg-white text-[#28071C] hover:bg-[#28071C]/10 border border-[#28071C]/20"
-                        }`}
-                      >
-                        {v}
-                      </button>
-                    ))}
+              {/* Config: estoque passado + PMV info */}
+              <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm border border-[#28071C]/8">
+                <div className="flex items-center gap-6 flex-wrap">
+                  <div>
+                    <label className="block text-[#28071C]/60 text-xs uppercase tracking-widest mb-1.5">
+                      Estoque Coleção Passada no Início do Ciclo (pçs)
+                    </label>
+                    <input
+                      type="number" min={0}
+                      value={estoqueColeçãoPassada}
+                      onChange={e => setEstoqueColeçãoPassada(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-36 border-2 border-[#7598CF]/40 rounded-xl px-3 py-2 text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF]"
+                    />
+                  </div>
+                  <div className="text-xs text-[#28071C]/50 flex flex-col gap-1">
+                    <span className="font-medium text-[#28071C]/70 uppercase tracking-widest text-[10px]">PMV por Canal</span>
+                    <div className="flex flex-wrap gap-3">
+                      {activeCanals.map(c => (
+                        <span key={c.id} className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.color }} />
+                          {c.name.split(" ")[0]}: <strong className="text-[#28071C]/80">{fmtR(avgPmv[c.id] || 65)}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-xs text-[#28071C]/50 flex flex-col gap-1">
+                    <span className="font-medium text-[#28071C]/70 uppercase tracking-widest text-[10px]">Custo Médio / Pç</span>
+                    <strong className="text-[#28071C]/80 text-sm">{fmtR(avgCost)}</strong>
                   </div>
                 </div>
+              </div>
 
-                {/* ── VIEW: TODOS ── */}
-                {channelView === "Todos" && (
-                  <>
-                    <div className="flex items-center gap-3 mb-3">
-                      <p className="text-sm text-[#28071C]/60">
-                        Curva planejada consolidada por canal
-                      </p>
+              {/* ── Canal tabs ── */}
+              <div id="tour-cv-revenue" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+                <div className="border-t-4 border-[#7598CF] px-6 pt-5 pb-6">
+                  <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                    <h3 className="text-[#28071C] font-semibold text-base">Curva de Vendas por Canal</h3>
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
-                        onClick={() => setShowConsolidated(v => !v)}
-                        className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${
-                          showConsolidated
-                            ? "bg-[#7598CF] text-white border-[#7598CF]"
-                            : "bg-white text-[#7598CF] border-[#7598CF]/40 hover:bg-[#7598CF]/10"
-                        }`}
+                        onClick={() => setChannelView("Consolidado")}
+                        className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${channelView === "Consolidado" ? "bg-[#28071C] text-white shadow" : "bg-white text-[#28071C] hover:bg-[#28071C]/10 border border-[#28071C]/20"}`}
                       >
-                        <BarChart3 className="w-3 h-3 inline mr-1" />
-                        Consolidado vs Ano Anterior
+                        Consolidado
+                      </button>
+                      {activeCanals.map(c => (
+                        <button key={c.id} onClick={() => setChannelView(c.id)}
+                          className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${channelView === c.id ? "text-white shadow" : "bg-white text-[#28071C] hover:bg-[#28071C]/10 border border-[#28071C]/20"}`}
+                          style={channelView === c.id ? { backgroundColor: c.color } : {}}>
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── Consolidado ── */}
+                  {channelView === "Consolidado" && (
+                    <>
+                      <div className="bg-white rounded-xl p-4 mb-4">
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={consolidatedChartData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
+                            <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
+                            <YAxis tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
+                            <ReTooltip content={<ChartTooltip />} />
+                            <Legend />
+                            {macroMeta.metaReceita > 0 && (
+                              <ReferenceLine y={macroMeta.metaReceita / consolidatedMonths.length} stroke="#28071C" strokeDasharray="5 5"
+                                label={{ value: "Média Meta", position: "right", fill: "#28071C", fontSize: 10 }} />
+                            )}
+                            {canalCalcResults.map(c => (
+                              <Bar key={c.canalId} dataKey={c.canalName} fill={c.color} />
+                            ))}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+                        {consolidatedMonths.map(month => {
+                          const total     = canalCalcResults.reduce((s, c) => s + (c.months.find(m => m.month === month)?.receita ?? 0), 0);
+                          const prevTotal = canalCalcResults.reduce((s, c) => s + (c.months.find(m => m.month === month)?.prevReceita ?? 0), 0);
+                          const diff = total - prevTotal;
+                          return (
+                            <div key={month} className="flex-1 min-w-[80px] text-center bg-[#28071C]/5 rounded-lg p-2">
+                              <div className="text-xs text-[#28071C]/50 font-medium">{SHORT_MONTH[month]}</div>
+                              <div className="text-sm font-bold text-[#28071C] mt-0.5">{fmtR(total)}</div>
+                              {prevTotal > 0 && (
+                                <div className={`text-xs mt-0.5 ${diff >= 0 ? "text-green-600" : "text-red-500"}`}>
+                                  {diff >= 0 ? "+" : ""}{fmtR(diff)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div className="min-w-[90px] text-center bg-[#28071C] rounded-lg p-2">
+                          <div className="text-xs text-white/60">Total</div>
+                          <div className="text-sm font-bold text-[#F6F3AA] mt-0.5">{fmtR(totalPlanned)}</div>
+                          {macroMeta.metaReceita > 0 && (
+                            <div className={`text-xs mt-0.5 font-medium ${hasDivergence ? divergence > 0 ? "text-green-400" : "text-red-400" : "text-green-400"}`}>
+                              {hasDivergence ? `${divergence > 0 ? "+" : ""}${fmtR(divergence)}` : "✓ Meta"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ── Individual canal ── */}
+                  {activeCanalResult && channelView !== "Consolidado" && (
+                    <>
+                      <div className="bg-white rounded-xl p-4 mb-4">
+                        <ResponsiveContainer width="100%" height={260}>
+                          <ComposedChart
+                            data={activeCanalResult.months.map(m => ({
+                              month: m.shortMonth,
+                              Planejado: m.receita,
+                              "Ano Anterior": m.prevReceita,
+                            }))}
+                            margin={{ top: 10, right: 20, left: 10, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
+                            <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
+                            <YAxis tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
+                            <ReTooltip content={<ChartTooltip />} />
+                            <Legend />
+                            <Bar dataKey="Planejado" fill={activeCanalResult.color} radius={[4,4,0,0]} />
+                            <Bar dataKey="Ano Anterior" fill={activeCanalResult.prevColor} radius={[4,4,0,0]} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b-2 border-[#28071C]/20">
+                              <th className="text-left py-2 px-3 text-[#28071C]/60 font-medium text-xs w-40">Métrica</th>
+                              {activeCanalResult.months.map(m => (
+                                <th key={m.month} className="text-center py-2 px-2 text-[#28071C]/60 font-medium text-xs">{m.shortMonth}</th>
+                              ))}
+                              <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {/* Receita — editable */}
+                            <tr className="border-b border-[#28071C]/10">
+                              <td className="py-2 px-3 text-[#28071C] font-medium text-xs">Receita (R$)</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-1.5 px-1 text-center">
+                                  <input
+                                    type="text"
+                                    value={(m.receita / 1000).toFixed(0)}
+                                    onChange={e => handleRevenueChange(channelView, m.month, `${e.target.value}000`)}
+                                    className="w-full text-center text-xs border border-[#7598CF]/40 rounded-lg py-1.5 px-1 bg-[#7598CF]/5 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 text-[#28071C] font-medium"
+                                    style={{ maxWidth: 70 }}
+                                  />
+                                  <div className="text-[10px] text-[#28071C]/40 mt-0.5">mil R$</div>
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center font-bold text-[#28071C] text-xs">{fmtR(activeCanalResult.totalReceita)}</td>
+                            </tr>
+                            {/* Ano anterior — read-only */}
+                            <tr className="border-b border-[#28071C]/10 bg-[#28071C]/3">
+                              <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Ano Anterior</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-2 px-2 text-center text-xs text-[#28071C]/50 italic">
+                                  {m.prevReceita > 0 ? fmtR(m.prevReceita) : "—"}
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center text-xs text-[#28071C]/50 italic">
+                                {fmtR(activeCanalResult.months.reduce((s, m) => s + m.prevReceita, 0))}
+                              </td>
+                            </tr>
+                            {/* Delta */}
+                            <tr className="border-b-2 border-[#28071C]/20">
+                              <td className="py-2 px-3 text-[#28071C]/50 text-xs">Δ vs Ant.</td>
+                              {activeCanalResult.months.map(m => {
+                                const diff = m.receita - m.prevReceita;
+                                return (
+                                  <td key={m.month} className={`py-2 px-2 text-center text-xs font-medium ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-[#28071C]/40"}`}>
+                                    {m.prevReceita > 0 && diff !== 0 ? `${diff > 0 ? "+" : ""}${(diff / 1000).toFixed(0)}k` : "—"}
+                                  </td>
+                                );
+                              })}
+                              <td />
+                            </tr>
+
+                            {/* Motor bottom-up section header */}
+                            <tr className="border-b border-[#28071C]/10 bg-[#7598CF]/5">
+                              <td className="py-2 px-3 text-[#28071C]/60 text-xs font-semibold" colSpan={activeCanalResult.months.length + 2}>
+                                ↓ Motor Bottom-up · PMV {fmtR(activeCanalResult.pmv)}
+                              </td>
+                            </tr>
+                            {/* Peças a vender */}
+                            <tr className="border-b border-[#28071C]/10">
+                              <td className="py-2 px-3 text-[#28071C]/70 text-xs">Peças a Vender</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-2 px-2 text-center text-xs text-[#28071C]/70">{fmtN(m.pecasVender)}</td>
+                              ))}
+                              <td className="py-2 px-3 text-center text-xs text-[#28071C]/70 font-medium">
+                                {fmtN(activeCanalResult.months.reduce((s, m) => s + m.pecasVender, 0))}
+                              </td>
+                            </tr>
+                            {/* Coverage target — editable */}
+                            <tr className="border-b border-[#28071C]/10 bg-[#F6F3AA]/20">
+                              <td className="py-2 px-3 text-[#28071C] font-medium text-xs">Meta Cobertura (dias)</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-1.5 px-1 text-center">
+                                  <input
+                                    type="text"
+                                    value={m.coberturaTarget}
+                                    onChange={e => handleCoverageChange(m.month, e.target.value)}
+                                    className="w-full text-center text-xs border border-[#F6F3AA] rounded-lg py-1.5 px-1 bg-[#F6F3AA]/40 focus:outline-none focus:ring-2 focus:ring-[#F6F3AA] text-[#28071C] font-medium"
+                                    style={{ maxWidth: 70 }}
+                                  />
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center text-xs text-[#28071C]/60">—</td>
+                            </tr>
+                            {/* Entrada — calculated, read-only */}
+                            <tr className="border-b border-[#28071C]/10 bg-[#9B8CD8]/8">
+                              <td className="py-2 px-3 text-[#28071C] font-semibold text-xs">Entrada (pçs) ⚡</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-2 px-2 text-center text-xs font-bold" style={{ color: "#9B8CD8" }}>
+                                  {m.entrada > 0 ? fmtN(m.entrada) : "—"}
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center text-xs font-bold" style={{ color: "#9B8CD8" }}>
+                                {fmtN(activeCanalResult.totalEntrada)}
+                              </td>
+                            </tr>
+                            {/* Custo entrada */}
+                            <tr className="border-b border-[#28071C]/10">
+                              <td className="py-2 px-3 text-[#28071C]/70 text-xs">Custo Entrada (R$)</td>
+                              {activeCanalResult.months.map(m => (
+                                <td key={m.month} className="py-2 px-2 text-center text-xs text-[#28071C]/70">
+                                  {m.custoEntrada > 0 ? fmtR(m.custoEntrada) : "—"}
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center text-xs text-[#28071C]/70 font-medium">
+                                {fmtR(activeCanalResult.totalCustoEntrada)}
+                              </td>
+                            </tr>
+
+                            {/* Toggle details */}
+                            <tr>
+                              <td colSpan={activeCanalResult.months.length + 2} className="py-2 px-3">
+                                <button onClick={() => setShowDetails(v => !v)}
+                                  className="text-xs text-[#7598CF] hover:underline flex items-center gap-1">
+                                  {showDetails ? "▲ Ocultar detalhes de estoque" : "▼ Ver detalhes de estoque"}
+                                </button>
+                              </td>
+                            </tr>
+
+                            {showDetails && (<>
+                              <tr className="border-b border-[#28071C]/10 bg-[#28071C]/3">
+                                <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Estoque Início</td>
+                                {activeCanalResult.months.map(m => (
+                                  <td key={m.month} className="py-2 px-2 text-center text-xs text-[#28071C]/50 italic">{fmtN(m.estoqueInicio)}</td>
+                                ))}
+                                <td />
+                              </tr>
+                              <tr className="border-b border-[#28071C]/10 bg-[#28071C]/3">
+                                <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Estoque Fim</td>
+                                {activeCanalResult.months.map(m => (
+                                  <td key={m.month} className="py-2 px-2 text-center text-xs text-[#28071C]/50 italic">{fmtN(m.estoqueFim)}</td>
+                                ))}
+                                <td />
+                              </tr>
+                              <tr className="bg-[#28071C]/3">
+                                <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Cobertura Real (dias)</td>
+                                {activeCanalResult.months.map(m => (
+                                  <td key={m.month} className={`py-2 px-2 text-center text-xs font-medium italic ${m.coberturaReal < 45 ? "text-red-500" : m.coberturaReal > 180 ? "text-yellow-600" : "text-green-600"}`}>
+                                    {m.coberturaReal}d
+                                  </td>
+                                ))}
+                                <td />
+                              </tr>
+                            </>)}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Coverage mini-cards */}
+                      <div className="mt-4 grid gap-2" style={{ gridTemplateColumns: `repeat(${activeCanalResult.months.length}, 1fr)` }}>
+                        {activeCanalResult.months.map(m => (
+                          <div key={m.month} className={`rounded-xl p-2 text-center border ${m.coberturaReal < 45 ? "bg-red-50 border-red-200" : m.coberturaReal > 180 ? "bg-yellow-50 border-yellow-200" : "bg-green-50 border-green-200"}`}>
+                            <div className="text-[10px] text-[#28071C]/60">{m.shortMonth}</div>
+                            <div className={`text-lg font-bold ${m.coberturaReal < 45 ? "text-red-600" : m.coberturaReal > 180 ? "text-yellow-600" : "text-green-700"}`}>
+                              {m.coberturaReal}
+                            </div>
+                            <div className="text-[10px] text-[#28071C]/40">dias</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Entry curve summary ── */}
+              <div id="tour-cv-entry" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+                <div className="border-t-4 border-[#9B8CD8] px-6 pt-5 pb-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <h3 className="text-[#28071C] font-semibold text-base">Curva de Entrada de Mercadoria</h3>
+                    <span className="text-xs bg-[#9B8CD8]/15 text-[#9B8CD8] px-2 py-0.5 rounded-full font-medium">Calculada automaticamente</span>
+                  </div>
+                  <p className="text-sm text-[#28071C]/60 mb-4">
+                    Resultado do motor bottom-up. Para ajustar a entrada, altere a <strong>Meta de Cobertura</strong> na aba do canal ou o <strong>Estoque de Coleção Passada</strong>.
+                  </p>
+
+                  <div className="bg-white rounded-xl p-4 mb-4">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <BarChart
+                        data={consolidatedMonths.map(month => {
+                          const row: any = { month: SHORT_MONTH[month] || month.slice(0,3) };
+                          for (const c of canalCalcResults) {
+                            const m = c.months.find(x => x.month === month);
+                            row[c.canalName] = m?.entrada ?? 0;
+                          }
+                          return row;
+                        })}
+                        margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
+                        <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
+                        <YAxis tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => fmtN(v)} />
+                        <ReTooltip content={<ChartTooltip money={false} />} />
+                        <Legend />
+                        {canalCalcResults.map(c => (
+                          <Bar key={c.canalId} dataKey={c.canalName} fill={c.color} stackId="entrada" radius={[2,2,0,0]} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-[#28071C]/20">
+                          <th className="text-left py-2 px-3 text-[#28071C]/60 font-medium text-xs w-36">Canal</th>
+                          {consolidatedMonths.map(m => (
+                            <th key={m} className="text-center py-2 px-2 text-[#28071C]/60 font-medium text-xs">{SHORT_MONTH[m]}</th>
+                          ))}
+                          <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">Total pçs</th>
+                          <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">Custo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {canalCalcResults.map(c => (
+                          <tr key={c.canalId} className="border-b border-[#28071C]/10 hover:bg-[#28071C]/3">
+                            <td className="py-2 px-3">
+                              <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: c.color }} />
+                                <span className="text-xs font-medium text-[#28071C]">{c.canalName}</span>
+                              </div>
+                            </td>
+                            {consolidatedMonths.map(month => {
+                              const m = c.months.find(x => x.month === month);
+                              return (
+                                <td key={month} className="py-2 px-2 text-center text-xs font-medium" style={{ color: m?.entrada ? c.color : "#28071C30" }}>
+                                  {m?.entrada ? fmtN(m.entrada) : "—"}
+                                </td>
+                              );
+                            })}
+                            <td className="py-2 px-3 text-center text-xs font-bold text-[#28071C]">{fmtN(c.totalEntrada)}</td>
+                            <td className="py-2 px-3 text-center text-xs text-[#28071C]/70">{fmtR(c.totalCustoEntrada)}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/5">
+                          <td className="py-2.5 px-3 text-xs font-bold text-[#28071C] uppercase tracking-wider">Total</td>
+                          {consolidatedMonths.map(month => {
+                            const total = canalCalcResults.reduce((s, c) => s + (c.months.find(m => m.month === month)?.entrada ?? 0), 0);
+                            return (
+                              <td key={month} className="py-2.5 px-2 text-center text-xs font-bold text-[#28071C]">
+                                {total > 0 ? fmtN(total) : "—"}
+                              </td>
+                            );
+                          })}
+                          <td className="py-2.5 px-3 text-center text-xs font-bold text-[#28071C]">{fmtN(totalEntradaGeral)}</td>
+                          <td className="py-2.5 px-3 text-center text-xs font-bold text-[#28071C]">{fmtR(totalCustoGeral)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Scenarios ── */}
+              <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+                <div className="border-t-4 border-[#28071C]/30 px-6 pt-5 pb-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <h3 className="text-[#28071C] font-semibold text-base">Cenários</h3>
+                    {scenarios.length > 0 && (
+                      <span className="text-xs text-[#28071C]/40 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
+                        {scenarios.length} {scenarios.length === 1 ? "salvo" : "salvos"}
+                      </span>
+                    )}
+                  </div>
+
+                  {showSaveForm && (
+                    <div className="flex items-center gap-3 mb-4 p-3 bg-[#7598CF]/10 rounded-xl border border-[#7598CF]/30">
+                      <input
+                        type="text" value={savingName}
+                        onChange={e => setSavingName(e.target.value)}
+                        placeholder="Nome do cenário (ex: Otimista, Conservador…)"
+                        className="flex-1 px-4 py-2 rounded-lg border border-[#7598CF]/40 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
+                      />
+                      <button onClick={handleSaveScenario} disabled={!savingName.trim()}
+                        className="px-4 py-2 bg-[#28071C] text-white rounded-lg text-sm font-medium hover:bg-[#28071C]/90 disabled:opacity-40">
+                        Confirmar
+                      </button>
+                      <button onClick={() => setShowSaveForm(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
+                        <X className="w-5 h-5" />
                       </button>
                     </div>
+                  )}
 
-                    {/* Chart */}
-                    <div className="bg-white rounded-xl p-4">
-                      <ResponsiveContainer width="100%" height={320}>
-                        <BarChart data={showConsolidated ? consolidatedChartData : todosChartData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
-                          <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
-                          <YAxis tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
-                          <ReTooltip content={<ChartTooltip />} />
-                          <Legend />
-                          <ReferenceLine y={BASE.metaReceita / CYCLE_MONTHS.length} stroke="#28071C" strokeDasharray="5 5" label={{ value: "Média Meta", position: "right", fill: "#28071C", fontSize: 10 }} />
-                          {showConsolidated ? (
-                            <>
-                              <Bar dataKey="Planejado Atacado" fill="#7598CF" stackId="planned" />
-                              <Bar dataKey="Planejado Varejo" fill="#9B8CD8" stackId="planned" />
-                              <Bar dataKey="Planejado E-commerce" fill="#F0C040" stackId="planned" />
-                              <Bar dataKey="Ano Ant. Atacado" fill="#7598CF55" stackId="prev" />
-                              <Bar dataKey="Ano Ant. Varejo" fill="#9B8CD855" stackId="prev" />
-                              <Bar dataKey="Ano Ant. E-commerce" fill="#F0C04055" stackId="prev" />
-                            </>
-                          ) : (
-                            <>
-                              <Bar dataKey="Atacado" fill="#7598CF" />
-                              <Bar dataKey="Varejo" fill="#9B8CD8" />
-                              <Bar dataKey="E-commerce" fill="#F0C040" />
-                            </>
-                          )}
-                        </BarChart>
-                      </ResponsiveContainer>
+                  {scenarios.length === 0 ? (
+                    <div className="text-center py-8 text-[#28071C]/40 text-sm">
+                      Nenhum cenário salvo. Faça ajustes e salve um cenário para comparar.
                     </div>
-
-                    {/* Monthly totals row */}
-                    <div className="mt-3 flex items-stretch gap-2 overflow-x-auto pb-1">
-                      {plannedRevenue.map(r => {
-                        const total = r.atacado + r.varejo + r.ecommerce;
-                        const prevTotal = (PREV_YEAR.find(p => p.month === r.month) ?? { atacado: 0, varejo: 0, ecommerce: 0 });
-                        const prevSum = prevTotal.atacado + prevTotal.varejo + prevTotal.ecommerce;
-                        const diff = total - prevSum;
+                  ) : (
+                    <div className="space-y-3">
+                      {scenarios.map(s => {
+                        const isApplied = s.id === appliedScenarioId;
+                        const scenDiff  = s.totalPlanned - macroMeta.metaReceita;
                         return (
-                          <div key={r.month} className="flex-1 min-w-[80px] text-center bg-[#28071C]/5 rounded-lg p-2">
-                            <div className="text-xs text-[#28071C]/50 font-medium">{r.month}</div>
-                            <div className="text-sm font-bold text-[#28071C] mt-0.5">{fmtR(total)}</div>
-                            {prevSum > 0 && (
-                              <div className={`text-xs mt-0.5 ${diff >= 0 ? "text-green-600" : "text-red-500"}`}>
-                                {diff >= 0 ? "+" : ""}{fmtR(diff)}
+                          <div key={s.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${isApplied ? "bg-[#28071C] border-[#28071C]" : "bg-white border-[#28071C]/10 hover:border-[#7598CF]/40"}`}>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`font-semibold text-sm ${isApplied ? "text-[#F6F3AA]" : "text-[#28071C]"}`}>{s.name}</span>
+                                {isApplied && <Badge className="text-xs bg-[#F6F3AA]/20 text-[#F6F3AA] border-[#F6F3AA]/30">Aplicado</Badge>}
                               </div>
+                              <div className={`text-xs mt-1 ${isApplied ? "text-white/60" : "text-[#28071C]/50"}`}>Salvo em {s.timestamp}</div>
+                            </div>
+                            <div className="flex items-center gap-6 text-center">
+                              <div>
+                                <div className={`text-sm font-bold ${isApplied ? "text-white" : "text-[#28071C]"}`}>{fmtR(s.totalPlanned)}</div>
+                                <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>Receita</div>
+                              </div>
+                              <div>
+                                <div className={`text-sm font-bold ${isApplied ? "text-white" : "text-[#28071C]"}`}>{Math.round(s.avgCoverage)} dias</div>
+                                <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>Cobertura</div>
+                              </div>
+                              {macroMeta.metaReceita > 0 && (
+                                <div>
+                                  <div className={`text-sm font-medium ${Math.abs(scenDiff) < 500 ? "text-green-500" : scenDiff > 0 ? "text-green-600" : "text-red-500"}`}>
+                                    {Math.abs(scenDiff) < 500 ? "✓" : scenDiff > 0 ? "+" : ""}{fmtR(scenDiff)}
+                                  </div>
+                                  <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>vs Meta</div>
+                                </div>
+                              )}
+                            </div>
+                            {!isApplied && (
+                              <button onClick={() => handleApplyScenario(s.id)}
+                                className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-lg text-xs font-medium hover:bg-[#28071C]/80 transition-all">
+                                <Check className="w-3 h-3" />Aplicar
+                              </button>
                             )}
                           </div>
                         );
                       })}
-                      <div className="min-w-[90px] text-center bg-[#28071C] rounded-lg p-2">
-                        <div className="text-xs text-white/60">Total Ciclo</div>
-                        <div className="text-sm font-bold text-[#F6F3AA] mt-0.5">{fmtR(totalPlanned)}</div>
-                        <div className={`text-xs mt-0.5 font-medium ${hasDivergence ? divergence > 0 ? "text-green-400" : "text-red-400" : "text-green-400"}`}>
-                          {hasDivergence ? `${divergence > 0 ? "+" : ""}${fmtR(divergence)}` : "✓ Meta"}
-                        </div>
-                      </div>
                     </div>
-                  </>
-                )}
+                  )}
 
-                {/* ── VIEW: INDIVIDUAL CHANNEL ── */}
-                {activeChannelKey && activeCh && (
-                  <>
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: activeCh.color }} />
-                      <p className="text-sm font-medium text-[#28071C]">
-                        Canal {activeCh.label} — edite os valores mensais planejados
-                      </p>
+                  {appliedScenarioId && (
+                    <div className="mt-4 flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-800">
+                      <Check className="w-4 h-4 text-green-600" />
+                      Cenário aplicado com sucesso.
                     </div>
-
-                    {/* Chart: original vs planned */}
-                    <div className="bg-white rounded-xl p-4 mb-4">
-                      <div className="flex gap-4 text-xs text-[#28071C]/60 mb-3">
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block w-3 h-0.5 rounded" style={{ backgroundColor: activeCh.color }} /> Planejado
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block w-3 h-0.5 rounded border-dashed" style={{ borderTop: `2px dashed ${activeCh.prevColor}`, display: "block" }} /> Ano Anterior
-                        </span>
-                      </div>
-                      <ResponsiveContainer width="100%" height={260}>
-                        <ComposedChart data={channelChartData(activeChannelKey)} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
-                          <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
-                          <YAxis yAxisId="abs" tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
-                          <YAxis yAxisId="pct" orientation="right" tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => `${v}%`} unit="%" />
-                          <ReTooltip content={<ChartTooltip />} />
-                          <Bar yAxisId="abs" dataKey="Planejado" fill={activeCh.color} radius={[4, 4, 0, 0]} />
-                          <Bar yAxisId="abs" dataKey="Ano Anterior" fill={activeCh.prevColor} radius={[4, 4, 0, 0]} />
-                          <Line yAxisId="pct" type="monotone" dataKey="percentPlanned" stroke="#28071C" strokeDasharray="4 2" dot={false} name="% do Total" />
-                        </ComposedChart>
-                      </ResponsiveContainer>
-                    </div>
-
-                    {/* Editable table for individual channel */}
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b-2 border-[#28071C]/20">
-                            <th className="text-left py-2 px-3 text-[#28071C]/60 font-medium text-xs w-32">Métrica</th>
-                            {CYCLE_MONTHS.map(m => (
-                              <th key={m} className="text-center py-2 px-2 text-[#28071C]/60 font-medium text-xs">{m}</th>
-                            ))}
-                            <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {/* Planejado row — editable */}
-                          <tr className="border-b border-[#28071C]/10">
-                            <td className="py-2 px-3 text-[#28071C] font-medium text-xs">Planejado (R$)</td>
-                            {plannedRevenue.map(r => (
-                              <td key={r.month} className="py-2 px-1 text-center">
-                                <input
-                                  type="text"
-                                  value={(r[activeChannelKey] / 1000).toFixed(0)}
-                                  onChange={e => handleRevenueChange(r.month, activeChannelKey, `${e.target.value}000`)}
-                                  className="w-full text-center text-xs border border-[#7598CF]/40 rounded-lg py-1.5 px-1 bg-[#7598CF]/5 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 text-[#28071C] font-medium"
-                                  style={{ maxWidth: 70 }}
-                                />
-                                <div className="text-[10px] text-[#28071C]/40 mt-0.5">mil R$</div>
-                              </td>
-                            ))}
-                            <td className="py-2 px-3 text-center font-bold text-[#28071C] text-xs">
-                              {fmtR(plannedRevenue.reduce((s, r) => s + r[activeChannelKey], 0))}
-                            </td>
-                          </tr>
-                          {/* % do total */}
-                          <tr className="border-b border-[#28071C]/10 bg-[#28071C]/3">
-                            <td className="py-2 px-3 text-[#28071C]/60 text-xs">% do Total Mês</td>
-                            {plannedRevenue.map(r => {
-                              const monthTotal = r.atacado + r.varejo + r.ecommerce;
-                              const pct = monthTotal > 0 ? (r[activeChannelKey] / monthTotal) * 100 : 0;
-                              return (
-                                <td key={r.month} className="py-2 px-2 text-center text-xs text-[#28071C]/60">
-                                  {pct.toFixed(1)}%
-                                </td>
-                              );
-                            })}
-                            <td className="py-2 px-3 text-center text-xs text-[#28071C]/60">
-                              {totalPlanned > 0
-                                ? `${((plannedRevenue.reduce((s, r) => s + r[activeChannelKey], 0) / totalPlanned) * 100).toFixed(1)}%`
-                                : "—"}
-                            </td>
-                          </tr>
-                          {/* Ano Anterior row — read-only */}
-                          <tr className="bg-[#28071C]/3">
-                            <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Ano Anterior</td>
-                            {PREV_YEAR.map(r => (
-                              <td key={r.month} className="py-2 px-2 text-center text-xs text-[#28071C]/50 italic">
-                                {r[activeChannelKey] > 0 ? fmtR(r[activeChannelKey]) : "—"}
-                              </td>
-                            ))}
-                            <td className="py-2 px-3 text-center text-xs text-[#28071C]/50 italic">
-                              {fmtR(PREV_YEAR.reduce((s, r) => s + r[activeChannelKey], 0))}
-                            </td>
-                          </tr>
-                          {/* Diferença vs ano anterior */}
-                          <tr>
-                            <td className="py-2 px-3 text-[#28071C]/50 text-xs">Δ vs Ant.</td>
-                            {plannedRevenue.map((r, i) => {
-                              const prev = PREV_YEAR[i][activeChannelKey];
-                              const diff = r[activeChannelKey] - prev;
-                              return (
-                                <td key={r.month} className={`py-2 px-2 text-center text-xs font-medium ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-[#28071C]/40"}`}>
-                                  {diff !== 0 ? `${diff > 0 ? "+" : ""}${(diff / 1000).toFixed(0)}k` : "—"}
-                                </td>
-                              );
-                            })}
-                            <td className="py-2 px-3" />
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* ── SECTION: CURVA DE ENTRADA DE PRODUTOS ── */}
-            <div id="tour-cv-entry" className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-              <div className="border-t-4 border-[#9B8CD8] px-6 pt-5 pb-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-[#28071C] font-semibold text-base">
-                      Curva de Entrada de Produtos
-                    </h3>
-                    <p className="text-sm text-[#28071C]/60 mt-0.5">
-                      {clientProduces
-                        ? "Peças a produzir conforme cobertura estimada"
-                        : "Verba mensal requerida conforme cobertura estimada"}
-                    </p>
-                  </div>
-                  {/* Toggle: cliente produz */}
-                  <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-2 border border-[#28071C]/10 shadow-sm">
-                    <span className="text-xs text-[#28071C]/60">Cliente produz?</span>
-                    <button
-                      onClick={() => setClientProduces(v => !v)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${clientProduces ? "bg-[#9B8CD8]" : "bg-[#28071C]/20"}`}
-                    >
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${clientProduces ? "translate-x-6" : "translate-x-1"}`} />
-                    </button>
-                    <span className={`text-xs font-medium ${clientProduces ? "text-[#9B8CD8]" : "text-[#28071C]/40"}`}>
-                      {clientProduces ? "Sim" : "Não"}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Alerta de uso do Orçamento */}
-                <div className={`flex items-center gap-3 rounded-xl p-3 mb-4 text-sm ${
-                  orcamentoUsoPct > 105 ? "bg-red-50 border border-red-200"
-                  : orcamentoUsoPct > 95 ? "bg-yellow-50 border border-yellow-200"
-                  : orcamentoUsoPct < 85 ? "bg-blue-50 border border-blue-200"
-                  : "bg-green-50 border border-green-200"
-                }`}>
-                  {orcamentoUsoPct > 100
-                    ? <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
-                    : orcamentoUsoPct > 95
-                    ? <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0" />
-                    : <Info className="w-4 h-4 text-blue-500 flex-shrink-0" />
-                  }
-                  <span className={`${
-                    orcamentoUsoPct > 105 ? "text-red-800"
-                    : orcamentoUsoPct > 95 ? "text-yellow-800"
-                    : orcamentoUsoPct < 85 ? "text-blue-800"
-                    : "text-green-800"
-                  }`}>
-                    Uso do Orçamento: <strong>{orcamentoUsoPct.toFixed(1)}%</strong> &nbsp;·&nbsp;
-                    {clientProduces
-                      ? `${fmtN(totalEntryPlanned)} pçs planejadas × R$ ${BASE.avgPrice}/pç = ${fmtR(entryValueTotal)}`
-                      : `${fmtR(entryValueTotal)} total planejado`
-                    }
-                    &nbsp;·&nbsp;
-                    {orcamentoRestante >= 0
-                      ? `Saldo: ${fmtR(orcamentoRestante)}`
-                      : `Excesso: ${fmtR(Math.abs(orcamentoRestante))}`
-                    }
-                  </span>
-                </div>
-
-                {/* Chart */}
-                <div className="bg-white rounded-xl p-4 mb-4">
-                  <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={entryChartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
-                      <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 12 }} />
-                      <YAxis tick={{ fill: "#28071C", fontSize: 11 }} tickFormatter={v => clientProduces ? fmtN(v) : `${(v/1000).toFixed(0)}k`} />
-                      <ReTooltip content={<ChartTooltip money={!clientProduces} />} />
-                      <Legend />
-                      <Bar dataKey="Planejado" fill="#9B8CD8" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="Original" fill="#9B8CD855" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* Editable table */}
-                <div className="overflow-x-auto mb-4">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b-2 border-[#28071C]/20">
-                        <th className="text-left py-2 px-3 text-[#28071C]/60 font-medium text-xs w-36">Linha</th>
-                        {CYCLE_MONTHS.map(m => (
-                          <th key={m} className="text-center py-2 px-2 text-[#28071C]/60 font-medium text-xs">{m}</th>
-                        ))}
-                        <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">Total</th>
-                        <th className="text-center py-2 px-3 text-[#28071C]/60 font-medium text-xs">vs Plano</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* Planejado — editable */}
-                      <tr className="border-b border-[#28071C]/10">
-                        <td className="py-2 px-3 text-[#28071C] font-medium text-xs">
-                          {clientProduces ? "Peças Planejadas" : "Verba Planejada (R$)"}
-                        </td>
-                        {entryCurve.map(r => (
-                          <td key={r.month} className="py-1.5 px-1">
-                            <input
-                              type="text"
-                              value={r.planned}
-                              onChange={e => handleEntryChange(r.month, e.target.value)}
-                              className="w-full text-center text-xs border border-[#9B8CD8]/40 rounded-lg py-1.5 px-1 bg-[#9B8CD8]/5 focus:outline-none focus:ring-2 focus:ring-[#9B8CD8]/40 text-[#28071C] font-medium"
-                              style={{ maxWidth: 70 }}
-                            />
-                          </td>
-                        ))}
-                        <td className={`py-2 px-3 text-center font-bold text-xs ${
-                          orcamentoUsoPct > 105 ? "text-red-600" : orcamentoUsoPct > 95 ? "text-yellow-600" : "text-[#28071C]"
-                        }`}>
-                          {clientProduces ? fmtN(totalEntryPlanned) : fmtR(totalEntryPlanned)}
-                        </td>
-                        <td className={`py-2 px-3 text-center text-xs font-medium ${
-                          entryDistortionPct > 5 ? "text-red-500"
-                          : entryDistortionPct < -5 ? "text-yellow-500"
-                          : "text-green-600"
-                        }`}>
-                          {entryDistortionPct >= 0 ? "+" : ""}{entryDistortionPct.toFixed(1)}%
-                        </td>
-                      </tr>
-                      {/* Original — read-only */}
-                      <tr className="bg-[#28071C]/3">
-                        <td className="py-2 px-3 text-[#28071C]/50 text-xs italic">Plano Original</td>
-                        {entryCurve.map(r => (
-                          <td key={r.month} className="py-2 px-2 text-center text-xs text-[#28071C]/50 italic">
-                            {r.original > 0 ? (clientProduces ? fmtN(r.original) : fmtR(r.original)) : "—"}
-                          </td>
-                        ))}
-                        <td className="py-2 px-3 text-center text-xs text-[#28071C]/50 italic">
-                          {clientProduces ? fmtN(totalEntryOriginal) : fmtR(totalEntryOriginal)}
-                        </td>
-                        <td />
-                      </tr>
-                      {/* Distortion per month */}
-                      <tr>
-                        <td className="py-2 px-3 text-[#28071C]/50 text-xs">Δ vs Original</td>
-                        {entryCurve.map(r => {
-                          const diff = r.planned - r.original;
-                          const pct = r.original > 0 ? (diff / r.original) * 100 : 0;
-                          return (
-                            <td key={r.month} className={`py-2 px-2 text-center text-xs font-medium ${
-                              Math.abs(pct) > 10 ? "text-red-500"
-                              : Math.abs(pct) > 5 ? "text-yellow-600"
-                              : "text-green-600"
-                            }`}>
-                              {diff !== 0 ? `${diff > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—"}
-                            </td>
-                          );
-                        })}
-                        <td />
-                        <td />
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Coverage commentary */}
-                {Math.abs(entryDistortionPct) > 5 && (
-                  <div className={`flex items-start gap-3 rounded-xl p-3 text-sm border ${
-                    entryDistortionPct > 5 ? "bg-red-50 border-red-200" : "bg-yellow-50 border-yellow-200"
-                  }`}>
-                    <AlertTriangle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${entryDistortionPct > 5 ? "text-red-500" : "text-yellow-600"}`} />
-                    <div className={`text-xs ${entryDistortionPct > 5 ? "text-red-800" : "text-yellow-800"}`}>
-                      <strong>Atenção:</strong> O ajuste da curva de entrada representa uma variação de{" "}
-                      <strong>{entryDistortionPct > 0 ? "+" : ""}{entryDistortionPct.toFixed(1)}%</strong> em relação ao plano original.
-                      {entryDistortionPct > 5 && " Isso pode pressionar a verba de compras além do aprovado."}
-                      {entryDistortionPct < -5 && " Isso pode resultar em cobertura inferior à necessária para atingir a meta de receita."}
-                      {" "}Cobertura estimada resultante: <strong>{Math.round(coverageDays)} dias</strong>.
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ── SECTION: COBERTURA (read-only) ── */}
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-              <div className="border-t-4 border-[#F6F3AA] px-6 pt-5 pb-6">
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="text-[#28071C] font-semibold text-base">Cobertura de Estoque</h3>
-                  <span className="text-xs bg-[#28071C]/10 text-[#28071C]/60 px-2 py-0.5 rounded-full">Somente leitura</span>
-                </div>
-                <p className="text-sm text-[#28071C]/60 mb-4">
-                  A cobertura é uma consequência da verba disponível e da curva ajustada — não é editável.
-                </p>
-                <div className="grid grid-cols-7 gap-3">
-                  {monthlyCoverage.map(mc => (
-                    <div key={mc.month} className={`rounded-xl p-3 text-center border ${
-                      mc.coverage < 45 ? "bg-red-50 border-red-200"
-                      : mc.coverage > 120 ? "bg-yellow-50 border-yellow-200"
-                      : "bg-green-50 border-green-200"
-                    }`}>
-                      <div className="text-xs text-[#28071C]/60 font-medium">{mc.month}</div>
-                      <div className={`text-2xl font-bold mt-1 ${
-                        mc.coverage < 45 ? "text-red-600"
-                        : mc.coverage > 120 ? "text-yellow-600"
-                        : "text-green-700"
-                      }`}>
-                        {mc.coverage}
-                      </div>
-                      <div className="text-xs text-[#28071C]/50 mt-0.5">dias</div>
-                      {mc.coverage < 45 && <div className="text-[10px] text-red-500 mt-1">⚠ Baixa</div>}
-                      {mc.coverage > 120 && <div className="text-[10px] text-yellow-600 mt-1">⚠ Elevada</div>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* ── SECTION: CENÁRIOS ── */}
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-              <div className="border-t-4 border-[#28071C]/30 px-6 pt-5 pb-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <h3 className="text-[#28071C] font-semibold text-base">Cenários</h3>
-                  {scenarios.length > 0 && (
-                    <span className="text-xs text-[#28071C]/40 bg-[#28071C]/5 px-2 py-0.5 rounded-full">
-                      {scenarios.length} {scenarios.length === 1 ? "salvo" : "salvos"}
-                    </span>
                   )}
                 </div>
-
-                {/* Save form */}
-                {showSaveForm && (
-                  <div className="flex items-center gap-3 mb-4 p-3 bg-[#7598CF]/10 rounded-xl border border-[#7598CF]/30">
-                    <input
-                      type="text"
-                      value={savingName}
-                      onChange={e => setSavingName(e.target.value)}
-                      placeholder="Nome do cenário (ex: Otimista, Conservador...)"
-                      className="flex-1 px-4 py-2 rounded-lg border border-[#7598CF]/40 text-sm text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
-                    />
-                    <button
-                      onClick={handleSaveScenario}
-                      disabled={!savingName.trim()}
-                      className="px-4 py-2 bg-[#28071C] text-white rounded-lg text-sm font-medium hover:bg-[#28071C]/90 disabled:opacity-40"
-                    >
-                      Confirmar
-                    </button>
-                    <button onClick={() => setShowSaveForm(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Scenario list */}
-                {scenarios.length === 0 ? (
-                  <div className="text-center py-8 text-[#28071C]/40 text-sm">
-                    Nenhum cenário salvo ainda. Faça ajustes e salve um cenário para comparar.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {scenarios.map(s => {
-                      const isApplied = s.id === appliedScenarioId;
-                      const scenDivergence = s.totalPlanned - BASE.metaReceita;
-                      return (
-                        <div key={s.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${
-                          isApplied
-                            ? "bg-[#28071C] border-[#28071C]"
-                            : "bg-white border-[#28071C]/10 hover:border-[#7598CF]/40"
-                        }`}>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className={`font-semibold text-sm ${isApplied ? "text-[#F6F3AA]" : "text-[#28071C]"}`}>
-                                {s.name}
-                              </span>
-                              {isApplied && (
-                                <Badge className="text-xs bg-[#F6F3AA]/20 text-[#F6F3AA] border-[#F6F3AA]/30">
-                                  Aplicado
-                                </Badge>
-                              )}
-                            </div>
-                            <div className={`text-xs mt-1 ${isApplied ? "text-white/60" : "text-[#28071C]/50"}`}>
-                              Salvo em {s.timestamp}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-6 text-center">
-                            <div>
-                              <div className={`text-sm font-bold ${isApplied ? "text-white" : "text-[#28071C]"}`}>
-                                {fmtR(s.totalPlanned)}
-                              </div>
-                              <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>Receita</div>
-                            </div>
-                            <div>
-                              <div className={`text-sm font-bold ${isApplied ? "text-white" : "text-[#28071C]"}`}>
-                                {Math.round(s.coverageDays)} dias
-                              </div>
-                              <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>Cobertura</div>
-                            </div>
-                            <div>
-                              <div className={`text-sm font-medium ${
-                                Math.abs(scenDivergence) < 500 ? "text-green-500"
-                                : scenDivergence > 0 ? "text-green-600"
-                                : "text-red-500"
-                              }`}>
-                                {Math.abs(scenDivergence) < 500 ? "✓" : scenDivergence > 0 ? "+" : ""}{fmtR(scenDivergence)}
-                              </div>
-                              <div className={`text-xs ${isApplied ? "text-white/50" : "text-[#28071C]/50"}`}>vs Meta</div>
-                            </div>
-                          </div>
-                          {!isApplied && (
-                            <button
-                              onClick={() => handleApplyScenario(s.id)}
-                              className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-lg text-xs font-medium hover:bg-[#28071C]/80 transition-all"
-                            >
-                              <Check className="w-3 h-3" />
-                              Aplicar
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Apply notice */}
-                {appliedScenarioId && (
-                  <div className="mt-4 flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-800">
-                    <Check className="w-4 h-4 text-green-600" />
-                    Cenário aplicado com sucesso. Os valores do ciclo foram atualizados. Ajustes adicionais serão feitos com base neste cenário.
-                  </div>
-                )}
-
-                {/* Divergence warning before applying */}
-                {hasDivergence && !appliedScenarioId && (
-                  <div className="mt-4 flex items-start gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm text-yellow-800">
-                    <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <strong>Divergência de {fmtR(Math.abs(divergence))} ({Math.abs(divergencePct).toFixed(1)}%)</strong> entre a receita planejada e a meta macro.
-                      {" "}Você pode aplicar o cenário mesmo assim, mas o sistema registrará a divergência.
-                    </div>
-                  </div>
-                )}
               </div>
-            </div>
 
-            </>)} {/* end activeModuleView === "curva" */}
+            </>)}
 
-            {/* ── VIEW: ORÇAMENTO DE ABASTECIMENTO ── */}
+            {/* ── Orçamento view ── */}
             {activeModuleView === "orcamento" && (
               <OrcamentoAbastecimentoView
-                plannedRevenue={plannedRevenue}
+                plannedRevenue={canalCalcResults.map(c => ({
+                  month: c.canalId,
+                  atacado:   c.canalId === "atacado"   ? c.totalReceita : 0,
+                  varejo:    c.canalId === "varejo"    ? c.totalReceita : 0,
+                  ecommerce: c.canalId === "ecommerce" ? c.totalReceita : 0,
+                }))}
                 supplyFornecedores={supplyFornecedores}
                 margemPct={margemOrc}
                 onMargemChange={setMargemOrc}
               />
             )}
+      {/* ──────────────────────────────────────────────────────────────────────
+          VIEW 3: PLANO POR DIVISÃO
+          Matrix Division × Mês com calibração bi-proporcional.
+          Fonte: M1 (total da coleção) × M3 (participação por divisão) × histórico (sazonalidade mensal)
+      ─────────────────────────────────────────────────────────────────────── */}
+      {activeModuleView === "divisao" && (() => {
+        const divIds    = Object.keys(divRevenue);
+        const months    = consolidatedMonths;
+        const hasDivs   = divIds.length > 0 && months.length > 0;
 
+        // Rótulos legíveis por divisão
+        const DIV_LABELS: Record<string, string> = {
+          feminino:  "Feminino",
+          masculino: "Masculino",
+          acessorios: "Acessórios",
+          infantil:  "Infantil",
+        };
+        const DIV_COLORS: Record<string, string> = {
+          feminino:  "#9B8CD8",
+          masculino: "#7598CF",
+          acessorios: "#F0C040",
+          infantil:  "#6BAE75",
+        };
+
+        // Total consolidado por mês (soma de todas as divisões)
+        const monthTotalsRev: Record<string, number> = {};
+        const monthTotalsPcs: Record<string, number> = {};
+        for (const m of months) {
+          monthTotalsRev[m] = divIds.reduce((s, d) => s + ((divRevenue[d] ?? {})[m] ?? 0), 0);
+          monthTotalsPcs[m] = divIds.reduce((s, d) => s + ((divPieces[d] ?? {})[m] ?? 0), 0);
+        }
+        const grandTotalRev = divIds.reduce((s, d) => s + (divTotals[d]?.revenue ?? 0), 0);
+        const grandTotalPcs = divIds.reduce((s, d) => s + (divTotals[d]?.pieces ?? 0), 0);
+
+        return (
+          <div className="space-y-5">
+            {/* Cabeçalho informativo */}
+            <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm border border-[#28071C]/8">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#28071C]">Plano por Divisão × Mês</h3>
+                  <p className="text-xs text-[#28071C]/50 mt-0.5">
+                    Distribuição da coleção por divisão com sazonalidade histórica · calibração bi-proporcional
+                  </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  {divLoadingSeasonality && (
+                    <span className="flex items-center gap-1.5 text-xs text-[#7598CF]">
+                      <Loader2 className="w-3 h-3 animate-spin" />Calculando perfis históricos…
+                    </span>
+                  )}
+                  <div className="text-xs text-[#28071C]/50">
+                    <span className="font-medium text-[#28071C]/70">Total coleção: </span>
+                    <span className="font-bold text-[#28071C]">{fmtR(grandTotalRev)}</span>
+                    <span className="ml-3 font-medium text-[#28071C]/70"> · </span>
+                    <span className="font-bold text-[#28071C]">{grandTotalPcs.toLocaleString("pt-BR")} peças</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {!hasDivs && (
+              <div className="bg-white/60 rounded-2xl p-8 text-center text-[#28071C]/40">
+                {divLoadingSeasonality
+                  ? "Calculando perfis históricos de sazonalidade…"
+                  : "Configure as divisões no Módulo 3 e salve um cenário para visualizar o plano por divisão."
+                }
+              </div>
+            )}
+
+            {hasDivs && (
+              <>
+                {/* Cards de resumo por divisão */}
+                <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${divIds.length}, 1fr)` }}>
+                  {divIds.map(divId => {
+                    const color  = DIV_COLORS[divId] ?? "#7598CF";
+                    const label  = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
+                    const totRev = divTotals[divId]?.revenue ?? 0;
+                    const totPcs = divTotals[divId]?.pieces ?? 0;
+                    const pct    = grandTotalRev > 0 ? (totRev / grandTotalRev) * 100 : 0;
+                    const m3Pct  = divM3Pcts[divId] ?? 0;
+                    const pmv    = divPmv[divId] ?? 0;
+                    return (
+                      <div key={divId} className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm" style={{ borderTop: `3px solid ${color}` }}>
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="text-sm font-semibold text-[#28071C]">{label}</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full font-semibold text-white" style={{ background: color }}>
+                            {pct.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="text-xl font-bold text-[#28071C]">{fmtR(totRev)}</div>
+                        <div className="text-xs text-[#28071C]/50 mt-0.5">{totPcs.toLocaleString("pt-BR")} peças</div>
+                        <div className="mt-2 pt-2 border-t border-[#28071C]/8 grid grid-cols-2 gap-1 text-[10px] text-[#28071C]/50">
+                          <span>M3 target: <strong className="text-[#28071C]/70">{m3Pct.toFixed(1)}%</strong></span>
+                          <span>PMV: <strong className="text-[#28071C]/70">{pmv > 0 ? fmtR(pmv) : "—"}</strong></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Matriz Division × Mês */}
+                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+                  <div className="border-t-4 border-[#28071C] px-6 pt-5 pb-4">
+                    <h4 className="text-sm font-semibold text-[#28071C] mb-1">Receita por Divisão (R$) · edição com calibração bi-proporcional</h4>
+                    <p className="text-xs text-[#28071C]/40 mb-4">Ao editar um mês, o sistema redistribui o delta entre os demais meses da mesma divisão proporcionalmente ao peso histórico.</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b-2 border-[#28071C]/10">
+                            <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider sticky left-0 bg-white/90 w-28">Divisão</th>
+                            {months.map(m => (
+                              <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider min-w-[5.5rem]">
+                                {SHORT_MONTH[m] ?? m.slice(0,3)}
+                              </th>
+                            ))}
+                            <th className="text-right py-2 pl-4 text-xs font-semibold text-[#28071C] uppercase tracking-wider border-l border-[#28071C]/10">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {divIds.map((divId, di) => {
+                            const color = DIV_COLORS[divId] ?? "#7598CF";
+                            const label = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
+                            const bg    = di % 2 === 0 ? "bg-transparent" : "bg-[#28071C]/2";
+                            return (
+                              <tr key={divId} className={`border-b border-[#28071C]/5 ${bg}`}>
+                                <td className={`py-2.5 pr-4 font-semibold text-xs sticky left-0 ${bg} bg-white/80`}>
+                                  <span className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+                                    {label}
+                                  </span>
+                                </td>
+                                {months.map(m => {
+                                  const val = (divRevenue[divId] ?? {})[m] ?? 0;
+                                  return (
+                                    <td key={m} className="py-1.5 px-2 text-right">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        value={Math.round(val)}
+                                        onChange={e => handleDivRevenueChange(divId, m, e.target.value)}
+                                        className="w-20 text-right text-xs text-[#28071C] bg-transparent border border-transparent focus:border-[#7598CF] focus:outline-none focus:bg-white rounded-lg px-1.5 py-1 transition-all"
+                                      />
+                                    </td>
+                                  );
+                                })}
+                                <td className="py-2.5 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
+                                  {fmtR(divTotals[divId]?.revenue ?? 0)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {/* Totais por mês */}
+                          <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/4">
+                            <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider sticky left-0 bg-[#28071C]/4">Total</td>
+                            {months.map(m => (
+                              <td key={m} className="py-3 px-2 text-right text-xs font-bold text-[#28071C]">
+                                {fmtR(monthTotalsRev[m] ?? 0)}
+                              </td>
+                            ))}
+                            <td className="py-3 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
+                              {fmtR(grandTotalRev)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Matriz de Peças por Divisão × Mês */}
+                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
+                  <div className="border-t-4 border-[#7598CF] px-6 pt-5 pb-4">
+                    <h4 className="text-sm font-semibold text-[#28071C] mb-1">Volume de Peças por Divisão</h4>
+                    <p className="text-xs text-[#28071C]/40 mb-4">Cálculo reverso: Peças = Receita ÷ PMV da divisão. Concentrar faturamento em meses de PMV alto reduz o volume total de peças.</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b-2 border-[#28071C]/10">
+                            <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider sticky left-0 bg-white/90 w-28">Divisão</th>
+                            {months.map(m => (
+                              <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider min-w-[5rem]">
+                                {SHORT_MONTH[m] ?? m.slice(0,3)}
+                              </th>
+                            ))}
+                            <th className="text-right py-2 pl-4 text-xs font-semibold text-[#28071C] uppercase tracking-wider border-l border-[#28071C]/10">Total pçs</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {divIds.map((divId, di) => {
+                            const color = DIV_COLORS[divId] ?? "#7598CF";
+                            const label = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
+                            const bg    = di % 2 === 0 ? "bg-transparent" : "bg-[#28071C]/2";
+                            return (
+                              <tr key={divId} className={`border-b border-[#28071C]/5 ${bg}`}>
+                                <td className={`py-2.5 pr-4 font-semibold text-xs sticky left-0 ${bg} bg-white/80`}>
+                                  <span className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+                                    {label}
+                                  </span>
+                                </td>
+                                {months.map(m => {
+                                  const pcs = (divPieces[divId] ?? {})[m] ?? 0;
+                                  return (
+                                    <td key={m} className="py-2.5 px-2 text-right text-xs text-[#28071C] font-medium">
+                                      {pcs > 0 ? pcs.toLocaleString("pt-BR") : <span className="text-[#28071C]/20">—</span>}
+                                    </td>
+                                  );
+                                })}
+                                <td className="py-2.5 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
+                                  {(divTotals[divId]?.pieces ?? 0).toLocaleString("pt-BR")}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {/* Totais */}
+                          <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/4">
+                            <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider sticky left-0 bg-[#28071C]/4">Total</td>
+                            {months.map(m => (
+                              <td key={m} className="py-3 px-2 text-right text-xs font-bold text-[#28071C]">
+                                {(monthTotalsPcs[m] ?? 0).toLocaleString("pt-BR")}
+                              </td>
+                            ))}
+                            <td className="py-3 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
+                              {grandTotalPcs.toLocaleString("pt-BR")}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mini bar chart — distribuição mensal consolidada */}
+                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
+                  <h4 className="text-sm font-semibold text-[#28071C] mb-4">Distribuição Mensal por Divisão</h4>
+                  <div className="flex items-end gap-2 h-48">
+                    {months.map(month => {
+                      const maxMonthlTotal = Math.max(...months.map(m => monthTotalsRev[m] ?? 0), 1);
+                      const monthTotal     = monthTotalsRev[month] ?? 0;
+                      const barH           = (monthTotal / maxMonthlTotal) * 100;
+                      return (
+                        <div key={month} className="flex-1 flex flex-col items-center gap-0.5">
+                          <span className="text-[9px] text-[#28071C]/40">{monthTotal > 0 ? fmtR(monthTotal) : ""}</span>
+                          <div className="w-full flex flex-col-reverse rounded-t overflow-hidden" style={{ height: `${Math.max(barH, 2)}%`, minHeight: 4 }}>
+                            {divIds.map(divId => {
+                              const rev   = (divRevenue[divId] ?? {})[month] ?? 0;
+                              const share = monthTotal > 0 ? (rev / monthTotal) * 100 : 0;
+                              const color = DIV_COLORS[divId] ?? "#7598CF";
+                              return share > 0 ? (
+                                <div key={divId} style={{ height: `${share}%`, background: color }} title={`${DIV_LABELS[divId] ?? divId}: ${fmtR(rev)}`} />
+                              ) : null;
+                            })}
+                          </div>
+                          <span className="text-[9px] font-semibold text-[#28071C]/60">{SHORT_MONTH[month] ?? month.slice(0,3)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Legenda */}
+                  <div className="flex items-center gap-4 mt-3 flex-wrap">
+                    {divIds.map(divId => (
+                      <span key={divId} className="flex items-center gap-1.5 text-xs text-[#28071C]/60">
+                        <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DIV_COLORS[divId] ?? "#7598CF" }} />
+                        {DIV_LABELS[divId] ?? divId}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
           </>
+        )}
+
+        {selectedSeasonId && activeCanals.length === 0 && !isLoadingData && (
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-12 text-center shadow-sm">
+            <div className="text-4xl mb-3">⚙️</div>
+            <p className="text-sm text-[#28071C]/60 mb-2 font-medium">Nenhum canal configurado para esta temporada.</p>
+            <p className="text-xs text-[#28071C]/40">
+              Acesse <strong>Configurações de Operação → Temporadas</strong> e configure os canais de venda para esta temporada.
+            </p>
+          </div>
         )}
       </main>
 
-      {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
+      {/* ── Action bar ── */}
       <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3">
         <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowSaveForm(v => !v)}
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm"
-            >
-              <Save className="w-4 h-4" />
-              Salvar cenário
+            <button onClick={() => setShowSaveForm(v => !v)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm">
+              <Save className="w-4 h-4" />Salvar cenário
             </button>
-            <button
-              onClick={handleCompare}
-              disabled={scenarios.length < 2}
-              title={scenarios.length < 2 ? "Salve ao menos 2 cenários para comparar" : "Comparar cenários salvos"}
-              className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl text-sm font-semibold hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all"
-            >
-              <GitCompare className="w-4 h-4" />
-              Comparar
-              {scenarios.length >= 2 && (
-                <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">
-                  {scenarios.length}
-                </span>
-              )}
+            <button onClick={handleCompare} disabled={scenarios.length < 2}
+              className="flex items-center gap-2 px-5 py-2.5 border-2 border-[#7598CF]/30 text-[#28071C]/70 rounded-xl text-sm font-semibold hover:bg-[#7598CF]/8 disabled:opacity-35 disabled:cursor-not-allowed transition-all">
+              <GitCompare className="w-4 h-4" />Comparar
+              {scenarios.length >= 2 && <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{scenarios.length}</span>}
             </button>
-            <button
-              onClick={handleExportPDF}
-              disabled={isExportingPDF}
-              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
-            >
-              <FileDown className="w-4 h-4" />
-              {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+            <button onClick={handleExportPDF} disabled={isExportingPDF}
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
+              <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
             </button>
           </div>
           {impactedMacroCV.length === 0 ? (
-            <button
-              onClick={handleApplyMetas}
+            <button onClick={handleApplyMetas}
               disabled={scenarios.length === 0 || !!appliedScenarioId}
-              title={
-                appliedScenarioId ? "Cenário já aplicado ao ciclo" :
-                scenarios.length === 0 ? "Salve um cenário antes de aplicar" :
-                "Aplicar o cenário mais recente ao ciclo"
-              }
-              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm"
-            >
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-sm">
               <CheckCheck className="w-4 h-4" />
               {appliedScenarioId ? "Metas aplicadas ✓" : "Aplicar metas"}
             </button>
-          ) : impactedMacroCV.length <= 2 ? (
-            <button
-              onClick={() => { if (!alreadyPending) setShowSubmitApprovalDialog(true); }}
+          ) : (
+            <button onClick={() => { if (!alreadyPending) setShowSubmitApprovalDialog(true); }}
               disabled={scenarios.length === 0}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm ${
-                alreadyPending
-                  ? "bg-amber-100 text-amber-700 border border-amber-300 cursor-default"
-                  : "bg-[#7598CF] text-white hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"
-              }`}
-            >
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm ${alreadyPending ? "bg-amber-100 text-amber-700 border border-amber-300 cursor-default" : "bg-[#7598CF] text-white hover:opacity-90 disabled:opacity-35 disabled:cursor-not-allowed"}`}>
               <SendHorizonal className="w-4 h-4" />
               {alreadyPending ? "Aguardando aprovação…" : "Submeter para Aprovação"}
-            </button>
-          ) : (
-            <button
-              disabled
-              title="Corrija os indicadores macro antes de aplicar (3 ou mais desvios)"
-              className="flex items-center gap-2 px-5 py-2.5 bg-red-100 text-red-400 border border-red-200 rounded-xl text-sm font-semibold cursor-not-allowed shadow-sm"
-            >
-              <AlertTriangle className="w-4 h-4" />
-              Aplicar metas
             </button>
           )}
         </div>
@@ -1307,123 +1831,62 @@ export default function CycleValidation() {
         </p>
       </div>
 
-      {/* ── COMPARE MODAL ── */}
+      {/* ── Compare modal ── */}
       {compareModal && compareIds && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#28071C]/10">
               <h2 className="text-[#28071C] font-semibold text-lg">Comparação de Cenários</h2>
-              <button onClick={() => setCompareModal(false)} className="text-[#28071C]/40 hover:text-[#28071C] transition-colors">
-                <X className="w-6 h-6" />
-              </button>
+              <button onClick={() => setCompareModal(false)} className="text-[#28071C]/40 hover:text-[#28071C]"><X className="w-6 h-6" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
               <div className="grid grid-cols-2 gap-6">
                 {compareIds.map(id => {
                   const s = scenarios.find(sc => sc.id === id);
                   if (!s) return null;
-                  const scenDivergence = s.totalPlanned - BASE.metaReceita;
+                  const diff = s.totalPlanned - macroMeta.metaReceita;
                   return (
                     <div key={id} className="space-y-4">
                       <div className="flex items-center gap-2">
                         <h3 className="font-semibold text-[#28071C]">{s.name}</h3>
-                        {s.id === appliedScenarioId && (
-                          <Badge className="text-xs bg-[#28071C] text-white">Aplicado</Badge>
-                        )}
+                        {s.id === appliedScenarioId && <Badge className="text-xs bg-[#28071C] text-white">Aplicado</Badge>}
                       </div>
-                      <div className="text-xs text-[#28071C]/50">Salvo em {s.timestamp}</div>
-
-                      {/* Key indicators */}
+                      <div className="text-xs text-[#28071C]/50">{s.timestamp}</div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-[#28071C]/5 rounded-xl p-3 text-center">
                           <div className="text-lg font-bold text-[#28071C]">{fmtR(s.totalPlanned)}</div>
                           <div className="text-xs text-[#28071C]/60">Receita Total</div>
-                          <div className={`text-xs mt-1 font-medium ${Math.abs(scenDivergence) < 500 ? "text-green-600" : scenDivergence > 0 ? "text-green-600" : "text-red-500"}`}>
-                            {Math.abs(scenDivergence) < 500 ? "✓ Alinhado" : `${scenDivergence > 0 ? "+" : ""}${fmtR(scenDivergence)} vs Meta`}
-                          </div>
+                          {macroMeta.metaReceita > 0 && (
+                            <div className={`text-xs mt-1 font-medium ${Math.abs(diff) < 500 ? "text-green-600" : diff > 0 ? "text-green-600" : "text-red-500"}`}>
+                              {Math.abs(diff) < 500 ? "✓ Alinhado" : `${diff > 0 ? "+" : ""}${fmtR(diff)} vs Meta`}
+                            </div>
+                          )}
                         </div>
-                        <div className={`rounded-xl p-3 text-center ${
-                          s.coverageDays < 60 ? "bg-red-50" : s.coverageDays > 120 ? "bg-yellow-50" : "bg-green-50"
-                        }`}>
-                          <div className={`text-lg font-bold ${s.coverageDays < 60 ? "text-red-600" : s.coverageDays > 120 ? "text-yellow-600" : "text-green-700"}`}>
-                            {Math.round(s.coverageDays)}
+                        <div className={`rounded-xl p-3 text-center ${s.avgCoverage < 60 ? "bg-red-50" : s.avgCoverage > 150 ? "bg-yellow-50" : "bg-green-50"}`}>
+                          <div className={`text-lg font-bold ${s.avgCoverage < 60 ? "text-red-600" : s.avgCoverage > 150 ? "text-yellow-600" : "text-green-700"}`}>
+                            {Math.round(s.avgCoverage)}
                           </div>
-                          <div className="text-xs text-[#28071C]/60">Cobertura (dias)</div>
+                          <div className="text-xs text-[#28071C]/60">Cobertura Média (dias)</div>
                         </div>
                       </div>
-
-                      {/* Revenue by channel */}
                       <div className="bg-[#28071C]/3 rounded-xl p-3">
                         <div className="text-xs font-medium text-[#28071C]/60 mb-2">Receita por Canal</div>
-                        {CHANNELS.map(ch => {
-                          const chTotal = s.plannedRevenue.reduce((acc, r) => acc + r[ch.key], 0);
+                        {Object.entries(s.plannedRevenue).map(([cid, months]) => {
+                          const def   = TODOS_CANAIS.find(c => c.id === cid);
+                          const total = Object.values(months).reduce((a, b) => a + b, 0);
+                          if (total === 0) return null;
                           return (
-                            <div key={ch.key} className="flex items-center gap-2 mb-1">
-                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ch.color }} />
-                              <span className="text-xs text-[#28071C]/60 w-20">{ch.label}</span>
-                              <span className="text-xs font-medium text-[#28071C]">{fmtR(chTotal)}</span>
+                            <div key={cid} className="flex items-center gap-2 mb-1">
+                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: def?.color ?? "#7598CF" }} />
+                              <span className="text-xs text-[#28071C]/60 w-24">{def?.name ?? cid}</span>
+                              <span className="text-xs font-medium text-[#28071C]">{fmtR(total)}</span>
                             </div>
                           );
                         })}
                       </div>
-
-                      {/* Entry curve mini */}
-                      <div className="bg-[#28071C]/3 rounded-xl p-3">
-                        <div className="text-xs font-medium text-[#28071C]/60 mb-2">Curva de Entrada</div>
-                        <div className="flex gap-1">
-                          {s.entryCurve.map(r => (
-                            <div key={r.month} className="flex-1 text-center">
-                              <div className="text-[9px] text-[#28071C]/40">{r.month}</div>
-                              <div className="text-[10px] font-medium text-[#28071C]">{fmtN(r.planned)}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
                     </div>
                   );
                 })}
-              </div>
-
-              {/* Side-by-side chart */}
-              <div className="mt-6">
-                <h4 className="text-sm font-semibold text-[#28071C] mb-3">Comparação de Cobertura por Mês (dias)</h4>
-                <div className="bg-white border border-[#28071C]/10 rounded-xl p-4">
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart
-                      data={CYCLE_MONTHS.map((m, i) => {
-                        const row: any = { month: m };
-                        compareIds.forEach(id => {
-                          const s = scenarios.find(sc => sc.id === id);
-                          if (!s) return;
-                          let cumStock = BASE.estoqueInicio * BASE.avgPrice;
-                          for (let j = 0; j <= i; j++) {
-                            const entry = s.entryCurve[j];
-                            cumStock += entry ? entry.planned * BASE.avgPrice : 0;
-                          }
-                          const rev = s.plannedRevenue[i];
-                          const monthRev = rev ? rev.atacado + rev.varejo + rev.ecommerce : 1;
-                          const avgDailyRev = (monthRev || 1) / 30;
-                          row[s.name] = Math.round(cumStock / avgDailyRev);
-                        });
-                        return row;
-                      })}
-                      margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#28071C15" />
-                      <XAxis dataKey="month" tick={{ fill: "#28071C", fontSize: 11 }} />
-                      <YAxis tick={{ fill: "#28071C", fontSize: 11 }} unit=" d" />
-                      <ReTooltip />
-                      <Legend />
-                      <ReferenceLine y={60} stroke="#ef4444" strokeDasharray="4 2" label={{ value: "Mín 60d", fill: "#ef4444", fontSize: 9 }} />
-                      {compareIds.map((id, idx) => {
-                        const s = scenarios.find(sc => sc.id === id);
-                        return s ? (
-                          <Bar key={id} dataKey={s.name} fill={idx === 0 ? "#7598CF" : "#9B8CD8"} radius={[3, 3, 0, 0]} />
-                        ) : null;
-                      })}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
               </div>
             </div>
             <div className="px-6 py-4 border-t border-[#28071C]/10 flex justify-between">
@@ -1431,22 +1894,16 @@ export default function CycleValidation() {
                 {compareIds.map(id => {
                   const s = scenarios.find(sc => sc.id === id);
                   return s ? (
-                    <button
-                      key={id}
-                      onClick={() => { handleApplyScenario(id); setCompareModal(false); }}
+                    <button key={id} onClick={() => { handleApplyScenario(id); setCompareModal(false); }}
                       disabled={id === appliedScenarioId}
-                      className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-medium hover:bg-[#28071C]/80 transition-all disabled:opacity-40"
-                    >
-                      <Check className="w-4 h-4" />
-                      Aplicar "{s.name}"
+                      className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-xl text-sm font-medium hover:bg-[#28071C]/80 disabled:opacity-40">
+                      <Check className="w-4 h-4" />Aplicar "{s.name}"
                     </button>
                   ) : null;
                 })}
               </div>
-              <button
-                onClick={() => setCompareModal(false)}
-                className="px-4 py-2 bg-white border border-[#28071C]/20 text-[#28071C] rounded-xl text-sm hover:bg-[#28071C]/5 transition-all"
-              >
+              <button onClick={() => setCompareModal(false)}
+                className="px-4 py-2 bg-white border border-[#28071C]/20 text-[#28071C] rounded-xl text-sm hover:bg-[#28071C]/5">
                 Fechar
               </button>
             </div>
@@ -1454,38 +1911,33 @@ export default function CycleValidation() {
         </div>
       )}
 
-      {/* ── PDF: Comparação de Cenários (capturado pelo html2canvas) ─────────── */}
-      <div
-        id="cycle-scenarios-pdf"
-        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
-      >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>Sazonalidade</p>
-        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>Comparação de Cenários</p>
+      {/* ── PDF capture ── */}
+      <div id="cycle-scenarios-pdf" style={{ position:"fixed", left:"-9999px", top:0, zIndex:-1, width:"1120px", padding:"28px", background:"#F2F2F2", fontFamily:"system-ui, sans-serif" }}>
+        <p style={{ fontSize:"13px", fontWeight:700, color:"#28071C", marginBottom:"4px" }}>Sazonalidade</p>
+        <p style={{ fontSize:"11px", color:"#28071C", opacity:0.4, marginBottom:"20px" }}>Comparação de Cenários</p>
         {scenarios.length === 0 ? (
-          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
+          <p style={{ fontSize:"12px", color:"#28071C", opacity:0.5 }}>Nenhum cenário salvo.</p>
         ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:"14px" }}>
             {scenarios.map(s => {
               const isApplied = s.id === appliedScenarioId;
-              const delta = s.totalPlanned - BASE.metaReceita;
-              const deltaPct = BASE.metaReceita ? ((delta / BASE.metaReceita) * 100).toFixed(1) : '—';
+              const delta     = macroMeta.metaReceita ? s.totalPlanned - macroMeta.metaReceita : 0;
+              const deltaPct  = macroMeta.metaReceita ? ((delta / macroMeta.metaReceita) * 100).toFixed(1) : "—";
               return (
-                <div key={s.id} style={{ flex: '1 1 220px', minWidth: '200px', maxWidth: '260px', background: 'white', borderRadius: '12px', padding: '16px', borderTop: `4px solid ${isApplied ? '#7598CF' : '#28071C'}` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#28071C' }}>{s.name}</span>
-                    {isApplied && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>APLICADO</span>}
+                <div key={s.id} style={{ flex:"1 1 220px", minWidth:"200px", maxWidth:"260px", background:"white", borderRadius:"12px", padding:"16px", borderTop:`4px solid ${isApplied ? "#7598CF" : "#28071C"}` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"12px" }}>
+                    <span style={{ fontSize:"13px", fontWeight:700, color:"#28071C" }}>{s.name}</span>
+                    {isApplied && <span style={{ fontSize:"9px", background:"#7598CF", color:"white", borderRadius:"999px", padding:"2px 6px", fontWeight:700 }}>APLICADO</span>}
                   </div>
                   {[
-                    { label: 'Indicador', plan: 'Plano', ref: 'vs Referência', isHeader: true },
-                    { label: 'Receita Total', plan: fmtR(s.totalPlanned), ref: `${delta >= 0 ? '+' : ''}${deltaPct}%` },
-                    { label: 'Meta Receita', plan: fmtR(BASE.metaReceita), ref: '—' },
-                    { label: 'Cobertura', plan: `${Math.round(s.coverageDays)} dias`, ref: s.coverageDays < 60 ? '⚠ Baixa' : s.coverageDays > 120 ? '⚠ Alta' : '✓ OK' },
-                    { label: 'Salvo em', plan: s.timestamp, ref: '' },
+                    { label:"Receita Total",   val: fmtR(s.totalPlanned) },
+                    { label:"Cobertura Média", val: `${Math.round(s.avgCoverage)} dias` },
+                    { label:"vs Meta",         val: macroMeta.metaReceita ? `${delta >= 0 ? "+" : ""}${deltaPct}%` : "—" },
+                    { label:"Salvo em",        val: s.timestamp },
                   ].map((row, i) => (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: row.isHeader ? '9px' : '11px', fontWeight: row.isHeader ? 700 : 400, color: row.isHeader ? 'rgba(40,7,28,0.4)' : '#28071C', textTransform: row.isHeader ? 'uppercase' : 'none', letterSpacing: row.isHeader ? '0.05em' : 0 }}>
-                      <span>{row.label}</span>
-                      <span style={{ textAlign: 'center', fontWeight: row.isHeader ? 700 : 600 }}>{row.plan}</span>
-                      <span style={{ textAlign: 'right', color: row.isHeader ? 'rgba(40,7,28,0.4)' : 'rgba(40,7,28,0.6)' }}>{row.ref}</span>
+                    <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px", padding:"5px 0", borderBottom:"1px solid #F2F2F2", fontSize:"11px", color:"#28071C" }}>
+                      <span style={{ opacity:0.5 }}>{row.label}</span>
+                      <span style={{ textAlign:"right", fontWeight:600 }}>{row.val}</span>
                     </div>
                   ))}
                 </div>
@@ -1495,7 +1947,7 @@ export default function CycleValidation() {
         )}
       </div>
 
-      {/* ─── MODAL: Pós-Aplicação ─────────────────────────────────────────── */}
+      {/* ── Post-apply modal ── */}
       {showPostApplyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 flex flex-col items-center gap-5">
@@ -1504,20 +1956,15 @@ export default function CycleValidation() {
             </div>
             <div className="text-center">
               <h2 className="text-[#28071C] font-bold text-lg mb-1">Ciclo validado!</h2>
-              <p className="text-[#28071C]/60 text-sm">A distribuição mensal foi aplicada. O fluxo de planejamento está completo.</p>
+              <p className="text-[#28071C]/60 text-sm">A distribuição mensal foi aplicada ao plano.</p>
             </div>
             <div className="flex flex-col gap-2 w-full">
-              <button
-                onClick={() => { setShowPostApplyModal(false); navigate("/channel-planning"); }}
-                className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
-              >
-                Voltar ao Plano por Canal (Módulo 2)
-                <ArrowRight className="w-4 h-4" />
+              <button onClick={() => { setShowPostApplyModal(false); navigate("/channel-planning"); }}
+                className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90">
+                Voltar ao Plano por Canal (M2) <ArrowRight className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
-                className="w-full px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
-              >
+              <button onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
+                className="w-full px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2]">
                 Voltar ao Dashboard
               </button>
             </div>
@@ -1525,76 +1972,35 @@ export default function CycleValidation() {
         </div>
       )}
 
-      {/* ─── MODAL: Submeter para Aprovação (M4→M2) ──────────────────────── */}
+      {/* ── Approval modal ── */}
       {showSubmitApprovalDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-7 flex flex-col gap-5">
             <div className="flex items-start justify-between">
               <div>
                 <h2 className="text-[#28071C] font-bold text-base">Submeter para Aprovação</h2>
-                <p className="text-[#28071C]/50 text-xs mt-0.5">
-                  {impactedMacroCV.length} indicador{impactedMacroCV.length > 1 ? "es" : ""} abaixo da meta do Plano por Canal (Módulo 2).
-                </p>
+                <p className="text-[#28071C]/50 text-xs mt-0.5">Divergência de {fmtR(Math.abs(divergence))} ({Math.abs(divergencePct).toFixed(1)}%) vs meta macro.</p>
               </div>
-              <button onClick={() => setShowSubmitApprovalDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setShowSubmitApprovalDialog(false)} className="text-[#28071C]/40 hover:text-[#28071C]"><X className="w-5 h-5" /></button>
             </div>
-
-            {/* Indicadores impactados */}
-            <div className="rounded-xl overflow-hidden border border-[#28071C]/8">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-[#F2F2F2]">
-                    <th className="text-left text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Indicador</th>
-                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Meta M2</th>
-                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Projetado M4</th>
-                    <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Gap</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {impactedMacroCV.map((ind) => (
-                    <tr key={ind.key} className="border-t border-[#28071C]/5">
-                      <td className="px-4 py-2.5 text-[#28071C]/70">{ind.label}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-[#28071C]">
-                        {ind.isRate ? `${ind.planned.toFixed(1)}%` : `R$ ${Math.round(ind.planned).toLocaleString("pt-BR")}`}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-amber-600">
-                        {ind.isRate ? `${ind.projected.toFixed(1)}%` : `R$ ${Math.round(ind.projected).toLocaleString("pt-BR")}`}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-red-500 font-semibold">
-                        {ind.isRate ? `${ind.gap.toFixed(1)} p.p.` : `R$ ${Math.round(ind.gap).toLocaleString("pt-BR")}`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Justificativa */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-[#28071C]/60 uppercase tracking-wide">Justificativa</label>
               <textarea
                 value={approvalJustification}
                 onChange={e => setApprovalJustification(e.target.value)}
-                placeholder="Explique por que a distribuição mensal do ciclo diverge da meta de receita do canal e quais ações compensarão esse gap…"
+                placeholder="Explique por que a distribuição diverge da meta e quais ações compensarão o gap…"
                 rows={3}
                 className="w-full border border-[#28071C]/15 rounded-xl px-4 py-3 text-sm text-[#28071C] placeholder-[#28071C]/30 resize-none focus:outline-none focus:border-[#7598CF]"
               />
             </div>
-
             <div className="flex gap-3">
-              <button
-                onClick={() => setShowSubmitApprovalDialog(false)}
-                className="flex-1 px-4 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2] transition-colors"
-              >
+              <button onClick={() => setShowSubmitApprovalDialog(false)}
+                className="flex-1 px-4 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2]">
                 Cancelar
               </button>
-              <button
-                onClick={handleSubmitApprovalCV}
+              <button onClick={handleSubmitApprovalCV}
                 disabled={isSubmittingApproval || !approvalJustification.trim()}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              >
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
                 <SendHorizonal className="w-4 h-4" />
                 {isSubmittingApproval ? "Enviando…" : "Enviar para Aprovação"}
               </button>
@@ -1602,125 +2008,88 @@ export default function CycleValidation() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Tela 2 — Orçamento de Abastecimento
-// Cruza a curva de receita planejada com a matriz de fornecedores para projetar
-// quando o caixa precisará de verba para matéria prima, produção e compras.
+// Orçamento de Abastecimento sub-component
 // ══════════════════════════════════════════════════════════════════════════════
 
 const TIPO_LABEL: Record<TipoFornecedorV2, string> = {
-  materia_prima:   "Matéria Prima",
-  servico:         "Serviço / Facção",
-  produto_acabado: "Produto Acabado",
+  materia_prima: "Matéria Prima", servico: "Serviço / Facção", produto_acabado: "Produto Acabado",
 };
-
 const TIPO_COLOR: Record<TipoFornecedorV2, string> = {
-  materia_prima:   "#7598CF",
-  servico:         "#9B8CD8",
-  produto_acabado: "#F0C040",
+  materia_prima: "#7598CF", servico: "#9B8CD8", produto_acabado: "#F0C040",
 };
-
 const fmtM = (v: number) =>
   v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(2)}M`
   : v >= 1_000   ? `R$ ${(v / 1_000).toFixed(0)}k`
   : v > 0        ? `R$ ${v.toFixed(0)}`
   : "—";
 
+interface MonthRevenueLegacy { month: string; atacado: number; varejo: number; ecommerce: number; }
+
 function OrcamentoAbastecimentoView({
-  plannedRevenue,
-  supplyFornecedores,
-  margemPct,
-  onMargemChange,
+  plannedRevenue, supplyFornecedores, margemPct, onMargemChange,
 }: {
-  plannedRevenue: MonthRevenue[];
+  plannedRevenue: MonthRevenueLegacy[];
   supplyFornecedores: SupplyFornecedor[];
   margemPct: number;
   onMargemChange: (v: number) => void;
 }) {
   const { months, receita } = aggregateReceita(plannedRevenue);
-
-  const projection = useMemo(
-    () => calcBudgetProjection(months, receita, margemPct, supplyFornecedores),
-    [months, receita, margemPct, supplyFornecedores]
-  );
-
-  const totalOrc = projection.reduce((s, p) => s + p.valor, 0);
+  const projection   = useMemo(() => calcBudgetProjection(months, receita, margemPct, supplyFornecedores), [months, receita, margemPct, supplyFornecedores]);
+  const totalOrc     = projection.reduce((s, p) => s + p.valor, 0);
   const totalReceita = receita.reduce((s, v) => s + v, 0);
   const custoPrevisto = totalReceita * (1 - margemPct / 100);
 
-  // Agrupa por tipo_fornecedor para os totais de resumo
   const byTipo = useMemo(() => {
-    const map: Record<TipoFornecedorV2, number> = {
-      materia_prima: 0, servico: 0, produto_acabado: 0,
-    };
-    for (const p of projection) {
-      for (const f of p.fornecedores) {
-        map[f.tipo] = (map[f.tipo] ?? 0) + f.valor;
-      }
-    }
+    const map: Record<TipoFornecedorV2, number> = { materia_prima: 0, servico: 0, produto_acabado: 0 };
+    for (const p of projection) for (const f of p.fornecedores) { map[f.tipo] = (map[f.tipo] ?? 0) + f.valor; }
     return map;
   }, [projection]);
 
   const hasFornecedores = supplyFornecedores.length > 0;
-  const hasScope = supplyFornecedores.some(f => (f.categorias ?? []).length > 0);
+  const hasScope        = supplyFornecedores.some(f => (f.categorias ?? []).length > 0);
 
   return (
     <div className="space-y-5">
-
-      {/* ── Configuração de margem ── */}
       <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <h3 className="text-[#28071C] font-semibold text-base mb-0.5">Orçamento de Abastecimento</h3>
-            <p className="text-xs text-[#28071C]/50">
-              Projeção de quando o caixa precisará de verba, com base na curva de receita e na matriz de fornecedores.
-            </p>
+            <p className="text-xs text-[#28071C]/50">Projeção de quando o caixa precisará de verba, cruzando receita e matriz de fornecedores.</p>
           </div>
           <div className="flex items-center gap-3">
             <label className="text-xs text-[#28071C]/50 font-medium">Margem bruta do ciclo:</label>
             <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                value={margemPct}
+              <input type="number" min="0" max="100" step="0.1" value={margemPct}
                 onChange={e => onMargemChange(parseFloat(e.target.value) || 0)}
-                className="w-20 border border-[#28071C]/20 rounded-lg px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40"
-              />
+                className="w-20 border border-[#28071C]/20 rounded-lg px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40" />
               <span className="text-xs text-[#28071C]/50">%</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Empty state ── */}
       {!hasFornecedores && (
         <div className="bg-white/70 rounded-2xl shadow-sm p-16 text-center">
           <div className="text-4xl mb-3">📦</div>
           <p className="text-sm text-[#28071C]/50 mb-2">Nenhum fornecedor cadastrado na Matriz de Abastecimento.</p>
-          <p className="text-xs text-[#28071C]/30">Acesse a tela de Matriz de Abastecimento para cadastrar fornecedores com escopo de categorias e condições de pagamento.</p>
         </div>
       )}
-
       {hasFornecedores && !hasScope && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
           <span className="text-amber-500 mt-0.5">⚠</span>
           <div>
             <p className="text-sm font-medium text-amber-800">Nenhum fornecedor com escopo de categorias definido.</p>
-            <p className="text-xs text-amber-600 mt-1">Para calcular o orçamento, cadastre o % de custo médio na seção "Escopo de Categorias" de cada fornecedor.</p>
+            <p className="text-xs text-amber-600 mt-1">Cadastre o % de custo médio na seção "Escopo de Categorias" de cada fornecedor.</p>
           </div>
         </div>
       )}
 
       {hasFornecedores && hasScope && (<>
-
-        {/* ── KPI summary ── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-[#28071C] rounded-2xl p-4 text-center">
             <p className="text-[10px] text-white/50 font-medium uppercase tracking-wider mb-1">Receita Total Planejada</p>
@@ -1733,9 +2102,7 @@ function OrcamentoAbastecimentoView({
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
             <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Orçamento Mapeado</p>
             <p className="text-xl font-bold text-[#28071C]">{fmtM(totalOrc)}</p>
-            <p className="text-[10px] text-[#28071C]/40 mt-0.5">
-              {custoPrevisto > 0 ? `${((totalOrc / custoPrevisto) * 100).toFixed(0)}% do custo` : "—"}
-            </p>
+            <p className="text-[10px] text-[#28071C]/40 mt-0.5">{custoPrevisto > 0 ? `${((totalOrc / custoPrevisto) * 100).toFixed(0)}% do custo` : "—"}</p>
           </div>
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
             <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Fornecedores Ativos</p>
@@ -1744,7 +2111,6 @@ function OrcamentoAbastecimentoView({
           </div>
         </div>
 
-        {/* ── Resumo por tipo ── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
           <h4 className="text-sm font-semibold text-[#28071C] mb-4">Total por Tipo de Insumo</h4>
           <div className="grid grid-cols-3 gap-4">
@@ -1752,81 +2118,48 @@ function OrcamentoAbastecimentoView({
               <div key={tipo} className="rounded-xl p-4 text-center" style={{ background: TIPO_COLOR[tipo] + "18", border: `1px solid ${TIPO_COLOR[tipo]}33` }}>
                 <p className="text-xs font-medium mb-1" style={{ color: TIPO_COLOR[tipo] }}>{TIPO_LABEL[tipo]}</p>
                 <p className="text-lg font-bold text-[#28071C]">{fmtM(byTipo[tipo])}</p>
-                {totalOrc > 0 && (
-                  <p className="text-[10px] text-[#28071C]/40 mt-0.5">
-                    {((byTipo[tipo] / totalOrc) * 100).toFixed(0)}% do total
-                  </p>
-                )}
+                {totalOrc > 0 && <p className="text-[10px] text-[#28071C]/40 mt-0.5">{((byTipo[tipo] / totalOrc) * 100).toFixed(0)}% do total</p>}
               </div>
             ))}
           </div>
         </div>
 
-        {/* ── Tabela mensal ── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
           <div className="border-t-4 px-6 pt-5 pb-3" style={{ borderColor: "#7598CF" }}>
             <h4 className="text-sm font-semibold text-[#28071C] mb-1">Calendário de Pagamentos</h4>
-            <p className="text-xs text-[#28071C]/50 mb-4">
-              Mês a mês de quando o orçamento precisará ser desembolsado, considerando lead time e condições de pagamento de cada fornecedor.
-            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-[#28071C]/10">
-                    <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-40">
-                      Fornecedor
-                    </th>
-                    <th className="text-left py-2 pr-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-28">
-                      Tipo
-                    </th>
-                    {months.map(m => (
-                      <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">
-                        {m}
-                      </th>
-                    ))}
-                    <th className="text-right py-2 pl-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">
-                      Total
-                    </th>
+                    <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-40">Fornecedor</th>
+                    <th className="text-left py-2 pr-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider w-28">Tipo</th>
+                    {months.map(m => <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">{m}</th>)}
+                    <th className="text-right py-2 pl-3 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider">Total</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Linhas por fornecedor */}
-                  {supplyFornecedores
-                    .filter(f => (f.categorias ?? []).length > 0)
-                    .map(forn => {
-                      const rowVals = projection.map(p =>
-                        p.fornecedores.find(pf => pf.nome === forn.nome)?.valor ?? 0
-                      );
-                      const rowTotal = rowVals.reduce((s, v) => s + v, 0);
-                      if (rowTotal === 0) return null;
-                      return (
-                        <tr key={forn.id} className="border-b border-[#28071C]/5 hover:bg-[#28071C]/3 transition-colors">
-                          <td className="py-2.5 pr-4 font-medium text-[#28071C] text-xs">{forn.nome}</td>
-                          <td className="py-2.5 pr-3">
-                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
-                              style={{ background: TIPO_COLOR[forn.tipo_fornecedor] + "20", color: TIPO_COLOR[forn.tipo_fornecedor] }}>
-                              {TIPO_LABEL[forn.tipo_fornecedor]}
-                            </span>
-                          </td>
-                          {rowVals.map((v, i) => (
-                            <td key={i} className={`py-2.5 px-2 text-right text-xs ${v > 0 ? "font-medium text-[#28071C]" : "text-[#28071C]/20"}`}>
-                              {v > 0 ? fmtM(v) : "—"}
-                            </td>
-                          ))}
-                          <td className="py-2.5 pl-3 text-right font-bold text-sm text-[#28071C]">{fmtM(rowTotal)}</td>
-                        </tr>
-                      );
-                    })
-                  }
-                  {/* Linha de total */}
+                  {supplyFornecedores.filter(f => (f.categorias ?? []).length > 0).map(forn => {
+                    const rowVals = projection.map(p => p.fornecedores.find(pf => pf.nome === forn.nome)?.valor ?? 0);
+                    const rowTotal = rowVals.reduce((s, v) => s + v, 0);
+                    if (rowTotal === 0) return null;
+                    return (
+                      <tr key={forn.id} className="border-b border-[#28071C]/5 hover:bg-[#28071C]/3">
+                        <td className="py-2.5 pr-4 font-medium text-[#28071C] text-xs">{forn.nome}</td>
+                        <td className="py-2.5 pr-3">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                            style={{ background: TIPO_COLOR[forn.tipo_fornecedor] + "20", color: TIPO_COLOR[forn.tipo_fornecedor] }}>
+                            {TIPO_LABEL[forn.tipo_fornecedor]}
+                          </span>
+                        </td>
+                        {rowVals.map((v, i) => <td key={i} className={`py-2.5 px-2 text-right text-xs ${v > 0 ? "font-medium text-[#28071C]" : "text-[#28071C]/20"}`}>{v > 0 ? fmtM(v) : "—"}</td>)}
+                        <td className="py-2.5 pl-3 text-right font-bold text-sm text-[#28071C]">{fmtM(rowTotal)}</td>
+                      </tr>
+                    );
+                  })}
                   <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/3">
                     <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider">Total Mensal</td>
                     <td className="py-3 pr-3" />
-                    {projection.map((p, i) => (
-                      <td key={i} className={`py-3 px-2 text-right text-sm font-bold ${p.valor > 0 ? "text-[#28071C]" : "text-[#28071C]/20"}`}>
-                        {p.valor > 0 ? fmtM(p.valor) : "—"}
-                      </td>
-                    ))}
+                    {projection.map((p, i) => <td key={i} className={`py-3 px-2 text-right text-sm font-bold ${p.valor > 0 ? "text-[#28071C]" : "text-[#28071C]/20"}`}>{p.valor > 0 ? fmtM(p.valor) : "—"}</td>)}
                     <td className="py-3 pl-3 text-right font-bold text-sm text-[#28071C]">{fmtM(totalOrc)}</td>
                   </tr>
                 </tbody>
@@ -1835,33 +2168,25 @@ function OrcamentoAbastecimentoView({
           </div>
         </div>
 
-        {/* ── Gráfico de barras ── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
           <h4 className="text-sm font-semibold text-[#28071C] mb-4">Distribuição Mensal do Orçamento</h4>
           <div className="flex items-end gap-3 h-40">
             {projection.map((p, i) => {
-              const maxVal = Math.max(...projection.map(x => x.valor), 1);
+              const maxVal    = Math.max(...projection.map(x => x.valor), 1);
               const heightPct = (p.valor / maxVal) * 100;
               return (
                 <div key={i} className="flex-1 flex flex-col items-center gap-1">
                   <span className="text-[10px] text-[#28071C]/50 font-medium">{p.valor > 0 ? fmtM(p.valor) : ""}</span>
-                  <div className="w-full rounded-t-lg transition-all" style={{
-                    height: `${Math.max(heightPct, 2)}%`,
-                    background: p.valor > 0 ? "#7598CF" : "#28071C10",
-                    minHeight: "4px",
-                  }} />
+                  <div className="w-full rounded-t-lg transition-all" style={{ height: `${Math.max(heightPct, 2)}%`, background: p.valor > 0 ? "#7598CF" : "#28071C10", minHeight: "4px" }} />
                   <span className="text-[10px] font-semibold text-[#28071C]/60">{p.mes}</span>
                 </div>
               );
             })}
           </div>
-          <p className="text-[10px] text-[#28071C]/30 mt-3 text-center">
-            Valores calculados com base no lead time + condições de pagamento de cada fornecedor.
-            Meses fora do ciclo são descartados.
-          </p>
         </div>
-
       </>)}
+
+
     </div>
   );
 }

@@ -260,13 +260,13 @@ export default function Dashboard() {
   // Suporte e client_admin têm acesso estratégico completo
   const effectiveProfile = (isSupport || isClientAdmin) ? "CEO" : (user?.profile ?? "");
 
-  // Modo demo: nenhum plano salvo ainda → navegação livre com dados mock
+  // Sem plano: apenas M1 fica disponível — nunca libera tudo automaticamente
   const isDemoMode = plannedYears.length === 0;
 
-  // Dev mode disponível para client_admin e support
-  const canUseDevMode = isSupport || isClientAdmin;
-  // Qualquer uma das condições libera tudo
-  const allUnlocked = isDemoMode || (canUseDevMode && devMode);
+  // Dev mode disponível apenas para support (suporte@thefashionoffice.com.br)
+  const canUseDevMode = isSupport;
+  // Somente dev mode explícito libera todos os módulos
+  const allUnlocked = canUseDevMode && devMode;
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;

@@ -100,3 +100,31 @@ export async function applyDivisionScenario(
     .update({ is_applied: true })
     .eq("id", scenarioId);
 }
+
+/**
+ * Aplica um cenário de divisão conhecendo apenas o id do cenário — resolve o
+ * season_id sozinho (usado no aceite de aprovação M3→M1, onde só temos o id).
+ */
+export async function applyDivisionScenarioById(
+  tenantId:   string,
+  scenarioId: string,
+): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data } = await (supabase as any)
+    .from("division_scenarios")
+    .select("season_id")
+    .eq("id", scenarioId)
+    .maybeSingle();
+  const seasonId = data?.season_id as string | undefined;
+  if (seasonId) {
+    await supabase
+      .from("division_scenarios")
+      .update({ is_applied: false })
+      .eq("tenant_id", tenantId)
+      .eq("season_id", seasonId);
+  }
+  await supabase
+    .from("division_scenarios")
+    .update({ is_applied: true })
+    .eq("id", scenarioId);
+}

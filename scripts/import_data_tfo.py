@@ -244,10 +244,12 @@ def main():
     # ── 4. VENDAS → sales_history ─────────────────────────────────────────────
     print("\n💰 [4/4] Vendas (VENDAS → sales_history)...")
     ws = wb["VENDAS"]
-    # cols: Data da venda, Tipo, Código do produto, Quantidade, Valor Bruto (Sem Desconto),
-    #       Desconto Aplicado, Valor da Venda (Com Desconto), Imposto,
-    #       Venda Líquida (Pós Imposto), Canal, Coleção do Produto, Temporada Ativa,
-    #       Forma de pagamento, Parcelas, Mês, Ano, Divisão, Categoria, Subcategoria, Linha, Custo
+    # cols (0-based):
+    #  0=Data da venda   1=Tipo              2=Código do produto  3=Quantidade
+    #  4=Valor Bruto     5=Desconto Aplicado 6=Valor c/ Desconto  7=Imposto
+    #  8=Venda Líquida   9=Canal            10=Coleção do Produto 11=Temporada Ativa
+    # 12=Forma pagamento 13=Parcelas         14=Mês               15=Ano
+    # 16=Divisão        17=Categoria        18=Subcategoria       19=Linha   20=Custo
     sales = []
     count_v = 0
     for r in ws.iter_rows(values_only=True):
@@ -283,6 +285,10 @@ def main():
             "channel":             safe_str(r[9]),
             "colecao":             colecao,
             "temporada":           temporada,
+            "payment_method":      safe_str(r[12]),
+            "installments":        int(r[13]) if r[13] else None,
+            "mes":                 safe_str(r[14]),
+            "ano":                 int(r[15]) if r[15] else None,
             "category":            safe_str(r[17]),
         })
         count_v += 1

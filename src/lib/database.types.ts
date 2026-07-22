@@ -1078,12 +1078,16 @@ export type Database = {
       }
       sales_history: {
         Row: {
+          ano: number | null                   // Ano de referência da venda
           category: string | null
           channel: string | null
           colecao: string | null
           created_at: string
           discount_value: number
           id: string
+          installments: number | null          // Parcelas
+          mes: string | null                   // Mês de referência da venda
+          payment_method: string | null        // Forma de pagamento
           price_realized: number | null
           quantity: number
           revenue_gross: number
@@ -1097,12 +1101,16 @@ export type Database = {
           type: string | null
         }
         Insert: {
+          ano?: number | null
           category?: string | null
           channel?: string | null
           colecao?: string | null
           created_at?: string
           discount_value?: number
           id?: string
+          installments?: number | null
+          mes?: string | null
+          payment_method?: string | null
           price_realized?: number | null
           quantity?: number
           revenue_gross?: number
@@ -1116,12 +1124,16 @@ export type Database = {
           type?: string | null
         }
         Update: {
+          ano?: number | null
           category?: string | null
           channel?: string | null
           colecao?: string | null
           created_at?: string
           discount_value?: number
           id?: string
+          installments?: number | null
+          mes?: string | null
+          payment_method?: string | null
           price_realized?: number | null
           quantity?: number
           revenue_gross?: number

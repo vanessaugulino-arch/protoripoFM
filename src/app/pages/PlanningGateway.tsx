@@ -1,9 +1,11 @@
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useRef } from "react"
 import { useNavigate } from "react-router"
+import { supabase } from "../../lib/supabase"
+import { getOfficialPlan, type OfficialMacro } from "../../services/supabase/officialPlanService"
 import {
   ArrowLeft, LogOut, User, ChevronRight, RotateCcw,
   PlusCircle, Settings, TrendingUp, TrendingDown, Minus,
-  Calendar, CheckCircle2, AlertCircle, Target, Info, HelpCircle,
+  Calendar, CheckCircle2, AlertCircle, Target, Info, HelpCircle, Layers,
 } from "lucide-react"
 import { isOnboardingComplete } from "../types/onboarding"
 import { getPlanCycle, getPlannedYears } from "../types/planCycle"
@@ -58,10 +60,8 @@ function AccTooltip({ text }: { text: string }) {
   )
 }
 
-// ─── Mock ACC data for current year (May 2026) ────────────────────────────────
-// Reference = prorated 2025 historical; ACC = realistic Jan-Mai 2026 actuals
-const HIST_2025 = { receita: 2_850_000, margemBruta: 42.3, pmv: 155, orcamento: 1_140_000, gmroi: 1.77, giro: 4.19 }
-const ACC_ACTUAL = { receita: 1_243_750, margemBruta: 41.8, pmv: 162, orcamento: 498_000, gmroi: 1.82, giro: 1.72 }
+// Estimativa de margem bruta quando custo não está disponível no banco
+const MARGEM_EST = 40.0
 
 function delta(actual: number, ref: number, higherIsBetter = true) {
   const pct = ((actual - ref) / Math.abs(ref)) * 100
@@ -82,6 +82,94 @@ export default function PlanningGateway() {
   const cycleState = useMemo(() => computeCycleState(), [])
   const progressRatio = yearProgressRatio(cycleState.monthsElapsed)
   const progressLabel = formatYearProgress(cycleState)
+
+  // ── Dados históricos reais do Supabase (substituem constantes mock) ──────────
+  interface RawHistRow { receita: number; pmv: number; estoque_medio_pecas: number }
+  interface HistMetrics { receita: number; margemBruta: number; pmv: number; orcamento: number; giro: number; gmroi: number }
+  const [histData, setHistData] = useState<{
+    cy: RawHistRow | null
+    py: RawHistRow | null
+    loaded: boolean
+  }>({ cy: null, py: null, loaded: false })
+  const histFetched = useRef(false)
+
+  // ── Plano Oficial: macro projetado bottom-up (dos níveis inferiores aplicados) ─
+  const [officialMacro, setOfficialMacro] = useState<OfficialMacro | null>(null)
+  const [officialLevel, setOfficialLevel] = useState<number>(1)
+  const officialFetched = useRef(false)
+
+  useEffect(() => {
+    if (histFetched.current) return
+    histFetched.current = true
+    const tenantId =
+      sessionStorage.getItem("activeTenantId") ??
+      (() => { try { return JSON.parse(sessionStorage.getItem("currentUser") ?? "{}").tenant_id } catch { return null } })()
+    if (!tenantId) { setHistData(d => ({ ...d, loaded: true })); return }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Promise.resolve((supabase as any).rpc("get_sales_historical_summary", { p_tenant_id: tenantId }))
+      .then(({ data, error }: { data: unknown; error: unknown }) => {
+        if (error || !Array.isArray(data) || data.length === 0) {
+          setHistData(d => ({ ...d, loaded: true })); return
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const find = (yr: number) => (data as any[]).find(r => Number(r.year) === yr) ?? null
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mapRow = (r: any): RawHistRow | null => r ? {
+          receita:              Number(r.receita),
+          pmv:                  Number(r.pmv),
+          estoque_medio_pecas:  Number(r.estoque_medio_pecas),
+        } : null
+        setHistData({
+          cy:     mapRow(find(cycleState.currentCalendarYear)),
+          py:     mapRow(find(cycleState.currentCalendarYear - 1)),
+          loaded: true,
+        })
+      })
+      .catch(() => setHistData(d => ({ ...d, loaded: true })))
+  }, [cycleState.currentCalendarYear])
+
+  // Carrega o Plano Oficial do ciclo corrente: se um nível inferior (canal, M2+)
+  // já foi aplicado, exibimos o macro PROJETADO bottom-up ao lado da meta do M1.
+  useEffect(() => {
+    if (officialFetched.current) return
+    officialFetched.current = true
+    const tenantId =
+      sessionStorage.getItem("activeTenantId") ??
+      (() => { try { return JSON.parse(sessionStorage.getItem("currentUser") ?? "{}").tenant_id } catch { return null } })()
+    if (!tenantId) return
+    getOfficialPlan(tenantId, cycleState.currentCalendarYear)
+      .then(plan => {
+        if (!plan) return
+        setOfficialLevel(plan.detailLevel)
+        setOfficialMacro(plan.macro)
+      })
+      .catch(() => { /* silencioso — o gateway funciona sem o plano oficial */ })
+  }, [cycleState.currentCalendarYear])
+
+  const buildMetrics = (row: RawHistRow | null): HistMetrics | null => {
+    if (!row) return null
+    const { receita, pmv, estoque_medio_pecas } = row
+    const estRS  = estoque_medio_pecas * pmv
+    const giro   = estRS > 0 ? +( receita / estRS ).toFixed(2) : 0
+    const gmroi  = +( (MARGEM_EST / 100) * giro ).toFixed(2)
+    return {
+      receita,
+      margemBruta: MARGEM_EST,
+      pmv,
+      orcamento:   Math.round(receita * 0.40),
+      giro,
+      gmroi,
+    }
+  }
+
+  // histPY = referência (ano anterior completo); accCY = realizado do ano corrente
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const histPY = useMemo(() => buildMetrics(histData.py), [histData.py])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const accCY  = useMemo(() => buildMetrics(histData.cy), [histData.cy])
+
+  const hasAccData = histData.loaded && (accCY !== null || histPY !== null)
 
   useEffect(() => {
     if (!isOnboardingComplete()) { navigate("/onboarding"); return }
@@ -123,12 +211,20 @@ export default function PlanningGateway() {
   }
 
   const refProrated = {
-    receita:     prorated(HIST_2025.receita, cycleState.monthsElapsed),
-    margemBruta: HIST_2025.margemBruta,
-    pmv:         HIST_2025.pmv,
-    orcamento:   prorated(HIST_2025.orcamento, cycleState.monthsElapsed),
-    gmroi:       HIST_2025.gmroi,
+    receita:     prorated(histPY?.receita ?? 0, cycleState.monthsElapsed),
+    margemBruta: histPY?.margemBruta ?? MARGEM_EST,
+    pmv:         histPY?.pmv ?? 0,
+    orcamento:   prorated(histPY?.orcamento ?? 0, cycleState.monthsElapsed),
+    gmroi:       histPY?.gmroi ?? 0,
   }
+
+  // Helpers para exibição segura de nulos
+  const fmtSafe = (v: number | null | undefined, fmt: (n: number) => string) =>
+    v != null && v !== 0 ? fmt(v) : "—"
+  const deltaSafe = (actual: number | null | undefined, ref: number | null | undefined, higherIsBetter = true) =>
+    actual != null && ref != null && ref !== 0
+      ? delta(actual, ref, higherIsBetter)
+      : { pct: 0, positive: true }
 
   // All possible ACC rows with their fieldKey for filtering
   const allAccRows = [
@@ -136,54 +232,54 @@ export default function PlanningGateway() {
       fieldKey: "receitaBruta",
       label: "Receita",
       tooltip: "Total faturado no período. Ponto de partida de todo o planejamento — quanto foi vendido em valor absoluto.",
-      ref: fmtBRL(refProrated.receita),
-      acc: fmtBRL(ACC_ACTUAL.receita),
-      ...delta(ACC_ACTUAL.receita, refProrated.receita),
+      ref: fmtSafe(refProrated.receita, fmtBRL),
+      acc: fmtSafe(accCY?.receita, fmtBRL),
+      ...deltaSafe(accCY?.receita, refProrated.receita),
       unit: "%",
     },
     {
       fieldKey: "margemBruta",
       label: "Margem Bruta",
-      tooltip: "Percentual que sobra da receita após o custo dos produtos. Mede a eficiência do mix e da precificação.",
-      ref: `${HIST_2025.margemBruta}%`,
-      acc: `${ACC_ACTUAL.margemBruta}%`,
-      ...delta(ACC_ACTUAL.margemBruta, HIST_2025.margemBruta),
+      tooltip: "Percentual que sobra da receita após o custo dos produtos. Mede a eficiência do mix e da precificação. Estimativa: custo não disponível nas vendas importadas.",
+      ref: `${refProrated.margemBruta.toFixed(1)}%`,
+      acc: accCY ? `${accCY.margemBruta.toFixed(1)}% *` : "—",
+      ...deltaSafe(accCY?.margemBruta, histPY?.margemBruta),
       unit: "pp",
     },
     {
       fieldKey: "pmv",
       label: "PMV",
       tooltip: "Preço Médio de Venda — valor médio por peça vendida. Impacta diretamente a margem e o volume necessário para atingir a receita.",
-      ref: fmtBRL(HIST_2025.pmv),
-      acc: fmtBRL(ACC_ACTUAL.pmv),
-      ...delta(ACC_ACTUAL.pmv, HIST_2025.pmv),
+      ref: fmtSafe(refProrated.pmv, fmtBRL),
+      acc: fmtSafe(accCY?.pmv, fmtBRL),
+      ...deltaSafe(accCY?.pmv, histPY?.pmv),
       unit: "%",
     },
     {
       fieldKey: "orcamento",
       label: "Orçamento Previsto",
-      tooltip: "Estimativa de investimento previsto para comprar ou produzir mercadoria no ciclo. Previsão inicial — refina-se conforme o plano de coleção avança.",
-      ref: fmtBRL(refProrated.orcamento),
-      acc: fmtBRL(ACC_ACTUAL.orcamento),
-      ...delta(ACC_ACTUAL.orcamento, refProrated.orcamento),
+      tooltip: "Estimativa de investimento previsto (40% da receita — aproximação quando custo não está disponível).",
+      ref: fmtSafe(refProrated.orcamento, fmtBRL),
+      acc: accCY ? `${fmtBRL(accCY.orcamento)} *` : "—",
+      ...deltaSafe(accCY?.orcamento, refProrated.orcamento),
       unit: "%",
     },
     {
       fieldKey: "giro",
       label: "Giro de Estoque",
-      tooltip: "Quantas vezes o estoque se renova no período. Giro alto significa menos capital parado e mais liquidez — desejável para moda.",
-      ref: HIST_2025.giro.toFixed(2),
-      acc: ACC_ACTUAL.giro.toFixed(2),
-      ...delta(ACC_ACTUAL.giro, HIST_2025.giro),
+      tooltip: "Quantas vezes o estoque se renova no período. Estimado via estoque médio em peças e PMV.",
+      ref: fmtSafe(histPY?.giro, v => v.toFixed(2)),
+      acc: fmtSafe(accCY?.giro, v => v.toFixed(2)),
+      ...deltaSafe(accCY?.giro, histPY?.giro),
       unit: "%",
     },
     {
       fieldKey: "gmroi",
       label: "GMROI",
       tooltip: "Lucro bruto gerado para cada R$ investido em estoque. GMROI > 1 significa retorno positivo sobre o investimento em produtos.",
-      ref: HIST_2025.gmroi.toFixed(2),
-      acc: ACC_ACTUAL.gmroi.toFixed(2),
-      ...delta(ACC_ACTUAL.gmroi, HIST_2025.gmroi),
+      ref: fmtSafe(refProrated.gmroi, v => v.toFixed(2)),
+      acc: fmtSafe(accCY?.gmroi, v => v.toFixed(2)),
+      ...deltaSafe(accCY?.gmroi, histPY?.gmroi),
       unit: "%",
     },
   ]
@@ -229,13 +325,14 @@ export default function PlanningGateway() {
     : 'Jan'
 
   const getAccRaw = (fieldKey: string): number => {
+    if (!accCY) return 0
     switch (fieldKey) {
-      case 'receitaBruta': return ACC_ACTUAL.receita
-      case 'margemBruta':  return ACC_ACTUAL.margemBruta
-      case 'pmv':          return ACC_ACTUAL.pmv
-      case 'orcamento':    return ACC_ACTUAL.orcamento
-      case 'giro':         return ACC_ACTUAL.giro
-      default:             return ACC_ACTUAL.gmroi
+      case 'receitaBruta': return accCY.receita
+      case 'margemBruta':  return accCY.margemBruta
+      case 'pmv':          return accCY.pmv
+      case 'orcamento':    return accCY.orcamento
+      case 'giro':         return accCY.giro
+      default:             return accCY.gmroi
     }
   }
 
@@ -311,9 +408,13 @@ export default function PlanningGateway() {
                 <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
                   <CheckCircle2 className="w-3.5 h-3.5" />Plano formal registrado
                 </span>
+              ) : hasAccData ? (
+                <span className="flex items-center gap-1.5 text-xs text-[#7598CF] bg-[#7598CF]/10 border border-[#7598CF]/30 rounded-full px-3 py-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />Dados reais importados
+                </span>
               ) : (
                 <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-3 py-1">
-                  <AlertCircle className="w-3.5 h-3.5" />Usando histórico 2025 como referência
+                  <AlertCircle className="w-3.5 h-3.5" />Sem histórico de vendas importado
                 </span>
               )}
             </div>
@@ -337,7 +438,26 @@ export default function PlanningGateway() {
           </div>
 
           <div className="p-6">
-            {hasSavedPlan ? (
+            {/* Loading state */}
+            {!histData.loaded && (
+              <div className="flex items-center justify-center py-8 gap-3 text-[#28071C]/40">
+                <div className="w-4 h-4 border-2 border-[#7598CF]/40 border-t-[#7598CF] rounded-full animate-spin" />
+                <span className="text-sm">Carregando histórico de vendas…</span>
+              </div>
+            )}
+
+            {/* Sem dados importados */}
+            {histData.loaded && !hasAccData && (
+              <div className="flex flex-col items-center justify-center py-8 gap-3 text-center">
+                <AlertCircle className="w-8 h-8 text-amber-400" />
+                <p className="text-[#28071C] font-semibold text-sm">Nenhum histórico de vendas encontrado</p>
+                <p className="text-[#28071C]/55 text-xs max-w-sm leading-relaxed">
+                  Importe o histórico de vendas em <strong>Configurações → Importar dados → Histórico de Vendas</strong> para visualizar os indicadores reais de acompanhamento.
+                </p>
+              </div>
+            )}
+
+            {histData.loaded && hasAccData && (hasSavedPlan ? (
               /* ── MODO: HÁ PLANO SALVO → realizado vs plano + projeção (3 colunas) ── */
               <>
                 <div className="flex items-center gap-2 mb-3">
@@ -412,6 +532,7 @@ export default function PlanningGateway() {
               </>
             ) : (
               /* ── MODO: SEM PLANO → realizado vs ano anterior + projeção (3 colunas) ── */
+              /* (só renderiza quando histData.loaded && hasAccData, ver condição externa) */
               <>
                 {/* AJUSTE 4 – Aviso claro de ausência de plano */}
                 <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
@@ -476,15 +597,50 @@ export default function PlanningGateway() {
 
                 <div className="mt-4 pt-3 border-t border-[#28071C]/8 space-y-1">
                   <p className="text-[9px] text-[#28071C]/30">
-                    Referência = {cycleState.monthsElapsed}/12 do fechamento anual {cycleState.currentCalendarYear - 1} (histórico).
+                    Referência = {cycleState.monthsElapsed}/12 do fechamento anual {cycleState.currentCalendarYear - 1} (histórico real importado).
                     Projeção = ACC extrapolado para 12 meses com base na performance atual.
+                    * Margem e Orçamento estimados (40% da receita) — importe custo de produtos para cálculo preciso.
                   </p>
                 </div>
 
               </>
-            )}
+            ))}
           </div>
         </div>
+
+        {/* ─── PROJEÇÃO BOTTOM-UP (Plano Oficial) ──────────────────────────── */}
+        {officialMacro && officialLevel >= 2 && (
+          <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden border border-[#7598CF]/20">
+            <div className="px-6 py-4 border-b border-[#28071C]/8 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-[#7598CF]/15 flex items-center justify-center">
+                <Layers className="w-4 h-4 text-[#7598CF]" />
+              </div>
+              <div>
+                <p className="text-[#28071C] font-semibold text-base">Projeção bottom-up (canais aplicados)</p>
+                <p className="text-[#28071C]/50 text-xs mt-0.5">
+                  Macro recalculado a partir do Módulo 2 pela soma dos absolutos. É a projeção — não substitui a meta que você definir no plano.
+                </p>
+              </div>
+            </div>
+            <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                { label: "Receita Bruta", val: fmtBRL(officialMacro.receitaBruta) },
+                { label: "Margem Bruta",  val: `${officialMacro.margemBruta.toFixed(1)}%` },
+                { label: "PMV",           val: fmtBRL(officialMacro.pmv) },
+                { label: "Giro",          val: `${officialMacro.giro.toFixed(2)}x` },
+                { label: "GMROI",         val: `${officialMacro.gmroi.toFixed(2)}x` },
+                { label: "Cobertura",     val: `${Math.round(officialMacro.cobertura)} dias` },
+                { label: "MKD %",         val: `${officialMacro.mkdPct.toFixed(1)}%` },
+                { label: "Orçamento",     val: fmtBRL(officialMacro.orcamento) },
+              ].map(({ label, val }) => (
+                <div key={label} className="bg-[#7598CF]/5 rounded-xl px-4 py-3">
+                  <p className="text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold">{label}</p>
+                  <p className="text-[#28071C] font-bold text-sm mt-0.5 font-mono">{val}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ─── ACTION CARDS ────────────────────────────────────────────────── */}
         <div id="tour-pg-actions" className="grid grid-cols-2 gap-6">

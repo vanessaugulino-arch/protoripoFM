@@ -26,7 +26,6 @@ import {
   HelpCircle,
   Package,
   ShoppingCart,
-  Store,
   BarChart3,
   TrendingUp,
   History,
@@ -76,9 +75,13 @@ import {
 import type { ImportDataType, ImportResult } from "../../services/importService";
 import { IMPORT_CONFIG } from "../../services/importService";
 import {
+  listImportHistory, recordImport, readCachedHistory,
+} from "../../services/supabase/importHistoryService";
+import {
   type Temporada,
   type TemporadaRegraDefault,
   MONTHS as MONTHS_SVC,
+  DEFAULT_REGRA,
   isTemporadaPast,
 } from "../../services/temporadaService";
 import {
@@ -88,21 +91,42 @@ import {
   deleteSeasonDb,
   getRegraDefaultDb,
   saveRegraDefaultDb,
+  listAllCanalConfigsDb,
   listCanalConfigDb,
   upsertCanalConfigDb,
   deleteCanalConfigDb,
+  updateSeasonCanalUnifiedDb,
+  listCanalRegraDefaultDb,
+  upsertCanalRegraDefaultDb,
+  deleteCanalRegraDefaultDb,
   type CanalConfig,
+  type CanalRegraDefault,
 } from "../../services/supabase/seasonService";
 
-// Canais configuráveis (início antes do varejo de referência)
-const CANAIS_B2B: { id: string; name: string }[] = [
-  { id: "atacado",         name: "Atacado" },
-  { id: "multimarca",      name: "Multimarca" },
-  { id: "franquia",        name: "Franquia" },
-  { id: "popup",           name: "Pop-up" },
-  { id: "marketplace",     name: "Marketplace" },
-  { id: "social_commerce", name: "Social Commerce" },
+// Todos os canais que podem ter período próprio dentro de uma temporada.
+// Agrupados por tipo para exibição no painel de configuração.
+const TODOS_CANAIS: { id: string; name: string; grupo: "D2C" | "B2B" }[] = [
+  { id: "varejo",          name: "Varejo Físico",          grupo: "D2C" },
+  { id: "ecommerce",       name: "E-commerce",             grupo: "D2C" },
+  { id: "atacado",         name: "Atacado / Distribuidor", grupo: "B2B" },
+  { id: "multimarca",      name: "Multimarca",             grupo: "B2B" },
+  { id: "franquia",        name: "Franquia",               grupo: "B2B" },
+  { id: "popup",           name: "Pop-up",                 grupo: "B2B" },
+  { id: "marketplace",     name: "Marketplace",            grupo: "B2B" },
+  { id: "social_commerce", name: "Social Commerce",        grupo: "B2B" },
 ];
+
+// Mapeamento IDs do onboarding (sales_channels) → IDs usados em canal_temporada_config
+const ONBOARDING_TO_CANAL_ID: Record<string, string> = {
+  varejo_fisico:     "varejo",
+  ecommerce_proprio: "ecommerce",
+  marketplace:       "marketplace",
+  atacado:           "atacado",
+  franquia:          "franquia",
+  multimarca_canal:  "multimarca",
+  popup:             "popup",
+  social_commerce:   "social_commerce",
+};
 
 const OPERATION_SETTINGS_TOUR: TourStep[] = [
   {
@@ -341,7 +365,6 @@ function HierNodeRow({
 }
 
 // ─── Tipos: histórico de importação ─────────────────────────────────────────
-const IMPORT_HISTORY_KEY = 'fm_import_history_v1';
 export interface ImportHistoryEntry {
   id: string;
   dataType: ImportDataType;
@@ -422,10 +445,12 @@ export default function OperationSettings() {
 
   // ── Temporadas ──────────────────────────────────────────────────────────────
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
-  const [temporadaNome,    setTemporadaNome]    = useState("");
-  const [temporadaInicio,  setTemporadaInicio]  = useState("Janeiro");
-  const [temporadaFim,     setTemporadaFim]     = useState("Dezembro");
-  const [temporadaAno,     setTemporadaAno]     = useState<number | "">("");
+  // Regra padrão (Verão + Inverno) — mesmos campos do onboarding
+  const [veraoInicio,    setVeraoInicio]    = useState(DEFAULT_REGRA.verao.mesInicio);
+  const [veraoFim,       setVeraoFim]       = useState(DEFAULT_REGRA.verao.mesFim);
+  const [invernoInicio,  setInvernoInicio]  = useState(DEFAULT_REGRA.inverno.mesInicio);
+  const [invernoFim,     setInvernoFim]     = useState(DEFAULT_REGRA.inverno.mesFim);
+  const [regraSaving,    setRegraSaving]    = useState(false);
 
   // ── Modal de impacto (editar/excluir temporada automática) ──────────────────
   type ModalAction = "delete" | "edit";
@@ -439,17 +464,24 @@ export default function OperationSettings() {
   }
   const [modal, setModal] = useState<TemporadaModal | null>(null);
   // Estado de edição inline para temporadas auto-geradas
-  const [editingAutoId,     setEditingAutoId]     = useState<string | null>(null);
-  const [editingAutoNome,   setEditingAutoNome]   = useState("");
-  const [editingAutoInicio, setEditingAutoInicio] = useState("");
-  const [editingAutoFim,    setEditingAutoFim]    = useState("");
+  const [editingAutoId,          setEditingAutoId]          = useState<string | null>(null);
+  const [editingAutoNome,        setEditingAutoNome]        = useState("");
+  const [editingAutoInicio,      setEditingAutoInicio]      = useState("");
+  const [editingAutoFim,         setEditingAutoFim]         = useState("");
+  const [editingAutoVendaInicio, setEditingAutoVendaInicio] = useState("");
+  const [editingAutoVendaFim,    setEditingAutoVendaFim]    = useState("");
 
-  // ── Canal × Temporada Config (Phase F) ──────────────────────────────────────
-  const [canalPanelId,    setCanalPanelId]    = useState<string | null>(null);
-  const [canalConfigs,    setCanalConfigs]    = useState<CanalConfig[]>([]);
-  const [canalLoading,    setCanalLoading]    = useState(false);
-  const [editingCanalId,  setEditingCanalId]  = useState<string | null>(null);
-  const [editingCanalMes, setEditingCanalMes] = useState("");
+  // ── Canal × Temporada Config — mapa por season_id (para exibição inline) ────
+  const [seasonCanalMap,  setSeasonCanalMap]  = useState<Record<string, CanalConfig[]>>({});
+  // Canais disponíveis para este tenant (carregados do onboarding_profiles)
+  const [tenantChannels,  setTenantChannels]  = useState<{ id: string; name: string }[]>([]);
+
+  // ── Canal Regra Default (período de venda por canal — nível regra) ──────────
+  const [canalRegraDefaults,   setCanalRegraDefaults]   = useState<CanalRegraDefault[]>([]);
+  const [addRegraCanalId,      setAddRegraCanalId]      = useState("");
+  const [addRegraTipo,         setAddRegraTipo]         = useState<"verao" | "inverno">("verao");
+  const [addRegraInicio,       setAddRegraInicio]       = useState(months[0]);
+  const [addRegraFim,          setAddRegraFim]          = useState(months[0]);
 
   // ── Coleções / Drops — carregadas do Supabase via useEffect ─────────────────
   const [colecoes, setColecoes] = useState<ColecaoRow[]>([]);
@@ -569,19 +601,32 @@ export default function OperationSettings() {
     products: number; orders: number; inventory: number; sales: number; loaded: boolean;
   }>({ products: 0, orders: 0, inventory: 0, sales: 0, loaded: false });
 
-  // ── Import History (log de importações, persistido no localStorage) ─────────
-  const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>(() => {
-    try { return JSON.parse(localStorage.getItem(IMPORT_HISTORY_KEY) ?? '[]'); } catch { return []; }
-  });
+  // ── Import History (persistido no Supabase; localStorage é só cache) ────────
+  // Inicia com o cache para a tela abrir preenchida, e é substituído pelos
+  // dados do banco assim que a consulta retorna.
+  const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>(
+    () => readCachedHistory() as ImportHistoryEntry[]
+  );
   const [historyDetailId, setHistoryDetailId] = useState<string | null>(null);
 
   const saveImportHistory = useCallback((entry: ImportHistoryEntry) => {
-    setImportHistory(prev => {
-      const updated = [entry, ...prev].slice(0, 50); // keep last 50
-      localStorage.setItem(IMPORT_HISTORY_KEY, JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
+    // Otimista: já mostra na tela, e persiste no banco em seguida
+    setImportHistory(prev => [entry, ...prev].slice(0, 50));
+    const tid = user?.tenant_id;
+    if (!tid) return;
+    recordImport(tid, entry)
+      .then(updated => setImportHistory(updated as ImportHistoryEntry[]))
+      .catch(() => { /* cache local já preservou a entrada */ });
+  }, [user?.tenant_id]);
+
+  // Carrega o histórico do banco quando o tenant fica disponível
+  useEffect(() => {
+    const tid = user?.tenant_id;
+    if (!tid) return;
+    listImportHistory(tid)
+      .then(rows => { if (rows.length > 0) setImportHistory(rows as ImportHistoryEntry[]); })
+      .catch(() => { /* mantém o cache */ });
+  }, [user?.tenant_id]);
 
   // Fetch DB counts — usa RPC SECURITY DEFINER para bypassar RLS em tabelas grandes
   const fetchDbCounts = useCallback(() => {
@@ -635,10 +680,82 @@ export default function OperationSettings() {
           : u.profile;
       if (effectiveProfile !== "CEO") { navigate("/dashboard"); return; }
       if (u.tenant_id) {
+        // Carrega regra padrão (Verão + Inverno) do Supabase
+        getRegraDefaultDb(u.tenant_id)
+          .then(regra => {
+            setVeraoInicio(regra.verao.mesInicio);
+            setVeraoFim(regra.verao.mesFim);
+            setInvernoInicio(regra.inverno.mesInicio);
+            setInvernoFim(regra.inverno.mesFim);
+
+          })
+          .catch(err => console.error("Erro ao carregar regra padrão:", err));
+
         // Carrega temporadas do Supabase
         listSeasonsDb(u.tenant_id)
           .then(setTemporadas)
           .catch(err => console.error("Erro ao carregar temporadas:", err));
+
+        // Carrega períodos de venda por canal (regra global)
+        listCanalRegraDefaultDb(u.tenant_id)
+          .then(setCanalRegraDefaults)
+          .catch(err => console.error("Erro ao carregar canal regras:", err));
+
+        // Carrega configs de canal por temporada (para exibição inline)
+        loadAllCanalConfigs(u.tenant_id);
+
+        // ── Detecta canais a partir do histórico de vendas (fonte canônica) ──────
+        // Lê valores únicos de 'channel' em sales_history. Se não houver histórico,
+        // faz fallback para onboarding_profiles e depois para TODOS_CANAIS.
+        ;(async () => {
+          try {
+            const { data: histRows } = await (supabase as any)
+              .from("sales_history")
+              .select("channel")
+              .eq("tenant_id", u.tenant_id)
+              .not("channel", "is", null)
+              .limit(5000);
+
+            const rawChannels: string[] = [...new Set<string>(
+              (histRows ?? []).map((r: any) => (r.channel as string ?? "").trim()).filter(Boolean)
+            )];
+
+            if (rawChannels.length > 0) {
+              // Normaliza nome livre → id canônico
+              const normalizeChannel = (ch: string): string => {
+                const c = ch.toLowerCase().replace(/[^a-z0-9]/g, "");
+                if (c.includes("varejo") || c.includes("fisico") || c.includes("loja")) return "varejo";
+                if (c.includes("ecommerce") || c.includes("online") || c.includes("site")) return "ecommerce";
+                if (c.includes("atacado") || c.includes("distrib")) return "atacado";
+                if (c.includes("franquia")) return "franquia";
+                if (c.includes("multimarca") || c.includes("revend")) return "multimarca";
+                if (c.includes("marketplace")) return "marketplace";
+                if (c.includes("popup") || c.includes("evento")) return "popup";
+                if (c.includes("social")) return "social_commerce";
+                return c;
+              };
+              const canalIds = [...new Set(rawChannels.map(normalizeChannel))];
+              const mapped = canalIds
+                .map(id => TODOS_CANAIS.find(c => c.id === id))
+                .filter((c): c is typeof TODOS_CANAIS[0] => Boolean(c));
+              if (mapped.length > 0) { setTenantChannels(mapped); return; }
+            }
+
+            // Fallback 1: onboarding_profiles
+            const { data: profile } = await (supabase as any)
+              .from("onboarding_profiles")
+              .select("sales_channels")
+              .eq("tenant_id", u.tenant_id)
+              .single();
+            const ids: string[] = (profile?.sales_channels as string[] | null) ?? [];
+            const mappedOb = ids
+              .map(scId => TODOS_CANAIS.find(c => c.id === (ONBOARDING_TO_CANAL_ID[scId] ?? scId)))
+              .filter((c): c is typeof TODOS_CANAIS[0] => Boolean(c));
+            setTenantChannels(mappedOb.length > 0 ? mappedOb : TODOS_CANAIS);
+          } catch {
+            setTenantChannels(TODOS_CANAIS);
+          }
+        })();
 
         // Carrega coleções do Supabase
         listColecoes(u.tenant_id)
@@ -725,26 +842,26 @@ export default function OperationSettings() {
     setTemporadas(data);
   };
 
-  // ── Handlers: Temporadas ──────────────────────────────────────────────────────
-  const handleSaveTemporada = async () => {
+  // ── Handlers: Regra de Temporadas ────────────────────────────────────────────
+  /** Salva a regra padrão (Verão + Inverno + canal unified) em season_default_rules */
+  const handleSaveRegra = async () => {
     if (!user?.tenant_id) return;
-    if (!temporadaNome.trim()) {
-      alert("Preencha o nome da temporada.");
+    if (veraoInicio === invernoInicio) {
+      alert("O início do Verão e do Inverno não podem ser o mesmo mês.");
       return;
     }
+    setRegraSaving(true);
     try {
-      const nova = await insertSeasonDb(
-        user.tenant_id,
-        temporadaNome.trim(),
-        temporadaInicio,
-        temporadaFim,
-        temporadaAno !== "" ? Number(temporadaAno) : undefined,
-      );
-      persistTemporadas([...temporadas, nova]);
-      setTemporadaNome(""); setTemporadaInicio("Janeiro"); setTemporadaFim("Dezembro"); setTemporadaAno("");
+      await saveRegraDefaultDb(user.tenant_id, {
+        verao:               { mesInicio: veraoInicio,   mesFim: veraoFim   },
+        inverno:             { mesInicio: invernoInicio, mesFim: invernoFim },
+        canalPeriodsUnified: canalRegraDefaults.length === 0,
+      });
     } catch (err) {
-      console.error("Erro ao salvar temporada:", err);
-      alert("Erro ao salvar temporada. Tente novamente.");
+      console.error("Erro ao salvar regra de temporadas:", err);
+      alert("Erro ao salvar configuração. Tente novamente.");
+    } finally {
+      setRegraSaving(false);
     }
   };
 
@@ -805,6 +922,8 @@ export default function OperationSettings() {
     setEditingAutoNome(t.nome);
     setEditingAutoInicio(t.mesInicio);
     setEditingAutoFim(t.mesFim);
+    setEditingAutoVendaInicio(t.mesInicio);
+    setEditingAutoVendaFim(t.mesFim);
   };
 
   const handleSaveEditAuto = () => {
@@ -866,51 +985,68 @@ export default function OperationSettings() {
     setModal(null);
   };
 
-  // ── Handlers: Canal × Temporada (Phase F) ────────────────────────────────────
-  const loadCanalConfigs = async (seasonId: string) => {
+  // ── Handlers: Canal × Temporada — inline toggle ──────────────────────────────
+
+  /** Carrega todos os canal_temporada_config do tenant e popula o mapa por season_id. */
+  const loadAllCanalConfigs = async (tenantId: string) => {
+    try {
+      const all = await listAllCanalConfigsDb(tenantId);
+      const map: Record<string, CanalConfig[]> = {};
+      for (const cfg of all) {
+        if (!map[cfg.season_id]) map[cfg.season_id] = [];
+        map[cfg.season_id].push(cfg);
+      }
+      setSeasonCanalMap(map);
+    } catch (err) {
+      console.error("Erro ao carregar canal configs:", err);
+    }
+  };
+
+  /** Sincroniza a seleção múltipla de canais para uma temporada (salva no banco). */
+  const handleSetCanalsForSeason = async (
+    seasonId: string,
+    newIds:   string[],
+    season:   Temporada,
+  ) => {
     if (!user?.tenant_id) return;
-    setCanalLoading(true);
+    const current  = (seasonCanalMap[seasonId] ?? []).map(c => c.canal_id);
+    const toAdd    = newIds.filter(id => !current.includes(id));
+    const toRemove = current.filter(id => !newIds.includes(id));
     try {
-      const configs = await listCanalConfigDb(user.tenant_id, seasonId);
-      setCanalConfigs(configs);
+      await Promise.all([
+        ...toAdd.map(id => upsertCanalConfigDb(user.tenant_id!, seasonId, id, season.mesInicio, season.mesFim)),
+        ...toRemove.map(id => deleteCanalConfigDb(user.tenant_id!, seasonId, id)),
+      ]);
+      const fresh   = await listCanalConfigDb(user.tenant_id, seasonId);
+      const unified = fresh.length === 0;
+      await updateSeasonCanalUnifiedDb(seasonId, unified);
+      setSeasonCanalMap(prev => ({ ...prev, [seasonId]: fresh }));
+      setTemporadas(prev => prev.map(t => t.id === seasonId ? { ...t, canalPeriodsUnified: unified } : t));
     } catch (err) {
-      console.error("Erro ao carregar config de canais:", err);
-    } finally {
-      setCanalLoading(false);
+      console.error("Erro ao atualizar canais:", err);
     }
   };
 
-  const toggleCanalPanel = (seasonId: string) => {
-    if (canalPanelId === seasonId) {
-      setCanalPanelId(null);
-      setCanalConfigs([]);
-      setEditingCanalId(null);
-    } else {
-      setCanalPanelId(seasonId);
-      setEditingCanalId(null);
-      loadCanalConfigs(seasonId);
+  // ── Handlers: Canal Regra Default (período de venda por canal — regra) ───────
+  const handleAddCanalRegra = async () => {
+    if (!user?.tenant_id || !addRegraCanalId) return;
+    try {
+      await upsertCanalRegraDefaultDb(user.tenant_id, addRegraCanalId, addRegraTipo, addRegraInicio, addRegraFim);
+      const updated = await listCanalRegraDefaultDb(user.tenant_id);
+      setCanalRegraDefaults(updated);
+      setAddRegraCanalId("");
+    } catch (err) {
+      console.error("Erro ao salvar período de canal:", err);
     }
   };
 
-  const handleSaveCanalConfig = async (canalId: string) => {
-    if (!user?.tenant_id || !canalPanelId) return;
+  const handleDeleteCanalRegra = async (canalId: string, tipo: "verao" | "inverno") => {
+    if (!user?.tenant_id) return;
     try {
-      await upsertCanalConfigDb(user.tenant_id, canalPanelId, canalId, editingCanalMes);
-      await loadCanalConfigs(canalPanelId);
+      await deleteCanalRegraDefaultDb(user.tenant_id, canalId, tipo);
+      setCanalRegraDefaults(prev => prev.filter(r => !(r.canal_id === canalId && r.tipo === tipo)));
     } catch (err) {
-      console.error("Erro ao salvar config de canal:", err);
-    } finally {
-      setEditingCanalId(null);
-    }
-  };
-
-  const handleDeleteCanalConfig = async (canalId: string) => {
-    if (!user?.tenant_id || !canalPanelId) return;
-    try {
-      await deleteCanalConfigDb(user.tenant_id, canalPanelId, canalId);
-      await loadCanalConfigs(canalPanelId);
-    } catch (err) {
-      console.error("Erro ao remover config de canal:", err);
+      console.error("Erro ao remover período de canal:", err);
     }
   };
 
@@ -1586,71 +1722,215 @@ export default function OperationSettings() {
             </p>
           </div>
 
-          {/* Formulário — adicionar nova temporada manual */}
-          <p className="text-[#28071C]/50 text-xs font-semibold uppercase tracking-widest mb-3">Adicionar temporada manual</p>
-          <div className="grid grid-cols-4 gap-4 mb-4">
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Nome da Temporada</label>
-              <input type="text" value={temporadaNome} onChange={e => setTemporadaNome(e.target.value)}
-                placeholder="Ex: Resort 2026"
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
+          {/* ══ Layout dois conceitos: Comunicação × Venda por Canal ══════════ */}
+          <div className="flex gap-5 mb-5">
+
+            {/* ── COLUNA ESQUERDA: Calendário de Comunicação ───────────────────── */}
+            <div className="flex-none flex flex-col gap-3">
+              <div>
+                <p className="text-[10px] font-bold text-[#28071C]/45 uppercase tracking-widest mb-0.5">
+                  Calendário de Comunicação
+                </p>
+                <p className="text-[11px] text-[#28071C]/45 leading-relaxed max-w-xs">
+                  Período em que a temporada é lançada ao mercado — base do calendário criativo e de marketing.
+                </p>
+              </div>
+
+              {/* Cards Verão + Inverno compactos */}
+              <div className="flex gap-3">
+                {/* Verão */}
+                <div className="w-[168px] bg-white rounded-xl border-2 border-[#7598CF]/25 p-3.5 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <span className="text-base">☀️</span>
+                    <span className="text-[#28071C] font-bold text-sm">Verão</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">Início</label>
+                      <select value={veraoInicio} onChange={e => setVeraoInicio(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-[#7598CF]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">Fim (incl. liq.)</label>
+                      <select value={veraoFim} onChange={e => setVeraoFim(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-[#7598CF]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                {/* Inverno */}
+                <div className="w-[168px] bg-white rounded-xl border-2 border-[#9B8CD8]/25 p-3.5 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <span className="text-base">❄️</span>
+                    <span className="text-[#28071C] font-bold text-sm">Inverno</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">Início</label>
+                      <select value={invernoInicio} onChange={e => setInvernoInicio(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-[#9B8CD8]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[9px] text-[#28071C]/40 font-bold uppercase tracking-widest mb-0.5">Fim (incl. liq.)</label>
+                      <select value={invernoFim} onChange={e => setInvernoFim(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-[#9B8CD8]/25 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#9B8CD8] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {veraoInicio === invernoInicio && (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                  <p className="text-amber-800 text-[11px]">Verão e Inverno não podem ter o mesmo mês de início.</p>
+                </div>
+              )}
+
+              <button onClick={handleSaveRegra} disabled={veraoInicio === invernoInicio || regraSaving}
+                className="flex items-center gap-2 px-4 py-2 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed self-start">
+                <Save className="w-3.5 h-3.5" />{regraSaving ? "Salvando…" : "Salvar Comunicação"}
+              </button>
             </div>
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Ano</label>
-              <input
-                type="number"
-                value={temporadaAno}
-                onChange={e => setTemporadaAno(e.target.value === "" ? "" : Number(e.target.value))}
-                placeholder="Ex: 2027"
-                min={2000} max={2100}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50" />
-            </div>
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Mês de Início</label>
-              <select value={temporadaInicio} onChange={e => setTemporadaInicio(e.target.value)}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                {months.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[#28071C]/70 text-sm uppercase tracking-wide mb-2">Mês de Fim</label>
-              <select value={temporadaFim} onChange={e => setTemporadaFim(e.target.value)}
-                className="w-full bg-white rounded-lg px-4 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 cursor-pointer">
-                {months.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
+
+            {/* Divisor vertical */}
+            <div className="w-px bg-[#28071C]/10 self-stretch flex-shrink-0 mx-1" />
+
+            {/* ── COLUNA DIREITA: Período de Venda por Canal ───────────────────── */}
+            <div className="flex-1 flex flex-col gap-3 min-w-0">
+              <div>
+                <p className="text-[10px] font-bold text-[#28071C]/45 uppercase tracking-widest mb-0.5">
+                  Período de Venda por Canal
+                </p>
+                <p className="text-[11px] text-[#28071C]/45 leading-relaxed">
+                  Ciclo financeiro e logístico de cada canal. Salvo automaticamente ao adicionar ou remover.
+                </p>
+              </div>
+
+              {/* Lista de canais configurados */}
+              {canalRegraDefaults.length > 0 && (
+                <div className="bg-white border border-[#28071C]/10 rounded-xl overflow-hidden">
+                  <div className="grid gap-2 px-3 py-1.5 bg-[#28071C]/3 border-b border-[#28071C]/6"
+                    style={{ gridTemplateColumns: '68px 1fr 90px 90px 28px' }}>
+                    <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Temporada</span>
+                    <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Canal</span>
+                    <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Início</span>
+                    <span className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest">Fim</span>
+                    <span />
+                  </div>
+                  {canalRegraDefaults.map(r => {
+                    const canal = TODOS_CANAIS.find(c => c.id === r.canal_id);
+                    return (
+                      <div key={`${r.canal_id}-${r.tipo}`}
+                        className="grid gap-2 items-center px-3 py-2 border-b border-[#28071C]/6 last:border-b-0 hover:bg-[#28071C]/2 transition-colors"
+                        style={{ gridTemplateColumns: '68px 1fr 90px 90px 28px' }}>
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full w-fit ${
+                          r.tipo === "verao"
+                            ? "bg-[#F6F3AA]/80 text-[#28071C]/70"
+                            : "bg-[#7598CF]/15 text-[#7598CF]"
+                        }`}>
+                          {r.tipo === "verao" ? "Verão" : "Inverno"}
+                        </span>
+                        <span className="text-xs font-semibold text-[#28071C]/70 truncate">{canal?.name ?? r.canal_id}</span>
+                        <span className="text-xs text-[#28071C]">{r.mes_inicio}</span>
+                        <span className="text-xs text-[#28071C]">{r.mes_fim}</span>
+                        <button
+                          onClick={() => handleDeleteCanalRegra(r.canal_id, r.tipo)}
+                          className="text-[#28071C]/25 hover:text-red-500 transition-colors flex items-center justify-center">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Formulário de adição inline */}
+              {TODOS_CANAIS.some(c => !canalRegraDefaults.find(r => r.canal_id === c.id && r.tipo === addRegraTipo)) && (
+                <div className="bg-[#7598CF]/5 border border-[#7598CF]/20 rounded-xl p-3">
+                  <p className="text-[9px] font-bold text-[#28071C]/40 uppercase tracking-widest mb-2">Adicionar canal</p>
+                  <div className="flex items-end gap-2 flex-wrap">
+                    <div className="w-[100px]">
+                      <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Temporada</label>
+                      <select value={addRegraTipo} onChange={e => { setAddRegraTipo(e.target.value as "verao" | "inverno"); setAddRegraCanalId(""); }}
+                        className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        <option value="verao">Verão</option>
+                        <option value="inverno">Inverno</option>
+                      </select>
+                    </div>
+                    <div className="w-[140px]">
+                      <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Canal</label>
+                      <select value={addRegraCanalId} onChange={e => setAddRegraCanalId(e.target.value)}
+                        className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        <option value="">Selecionar…</option>
+                        {TODOS_CANAIS
+                          .filter(c => !canalRegraDefaults.find(r => r.canal_id === c.id && r.tipo === addRegraTipo))
+                          .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="w-[100px]">
+                      <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Início</label>
+                      <select value={addRegraInicio} onChange={e => setAddRegraInicio(e.target.value)}
+                        className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div className="w-[100px]">
+                      <label className="text-[9px] text-[#28071C]/40 font-semibold uppercase tracking-wide">Fim</label>
+                      <select value={addRegraFim} onChange={e => setAddRegraFim(e.target.value)}
+                        className="w-full mt-0.5 px-2 py-1.5 border border-[#7598CF]/20 rounded-lg text-xs text-[#28071C] focus:outline-none focus:border-[#7598CF] bg-white cursor-pointer">
+                        {months.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <button
+                      disabled={!addRegraCanalId}
+                      onClick={handleAddCanalRegra}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-[#7598CF] text-white rounded-lg text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0">
+                      <Plus className="w-3 h-3" /> Adicionar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {canalRegraDefaults.length === 0 && (
+                <p className="text-[11px] text-[#28071C]/40 italic leading-relaxed">
+                  Se todos os canais vendem no mesmo período da temporada, nenhuma configuração adicional é necessária.
+                </p>
+              )}
             </div>
           </div>
-
-          <button onClick={handleSaveTemporada}
-            className="flex items-center px-6 py-3 bg-[#28071C] text-white rounded-lg hover:bg-[#28071C]/90 transition-all shadow-md mb-6">
-            <Save className="w-5 h-5 mr-2" />Salvar Temporada
-          </button>
 
           {/* Tabela de temporadas */}
           <div className="bg-white rounded-lg overflow-hidden border border-[#7598CF]/20">
             <table className="w-full">
               <thead className="bg-[#7598CF]">
                 <tr>
-                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Nome</th>
-                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Ano</th>
+                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Temporada</th>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Início</th>
                   <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Fim</th>
-                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Coleções</th>
+                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Canais</th>
+                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Início</th>
+                  <th className="px-4 py-3 text-left text-white text-sm uppercase tracking-wide">Fim</th>
                   <th className="px-4 py-3 text-center text-white text-sm uppercase tracking-wide">Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {temporadas.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-6 text-center text-[#28071C]/40 text-sm">Nenhuma temporada cadastrada.</td></tr>
                 )}
                 {temporadas.map(t => {
-                  const n      = colecoes.filter(c => c.season_id === t.id).length;
                   const isPast = isTemporadaPast(t);
                   const isEditingThis = editingAutoId === t.id;
                   return (
                     <tr key={t.id} className={`border-b border-[#28071C]/10 ${isPast ? "bg-[#28071C]/3" : "hover:bg-gray-50"}`}>
 
-                      {/* Nome + badges */}
+                      {/* Temporada: nome + badges (sem campo de ano) */}
                       <td className="px-4 py-3">
                         {isEditingThis ? (
                           <input autoFocus type="text" value={editingAutoNome}
@@ -1660,20 +1940,13 @@ export default function OperationSettings() {
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className={`font-medium text-sm ${isPast ? "text-[#28071C]/40" : "text-[#28071C]"}`}>{t.nome}</span>
                             {t.autoGerada && (
-                              <span className="text-[10px] font-bold text-[#7598CF] bg-[#7598CF]/10 px-1.5 py-0.5 rounded-full uppercase tracking-widest">
-                                Auto
-                              </span>
+                              <span className="text-[10px] font-bold text-[#7598CF] bg-[#7598CF]/10 px-1.5 py-0.5 rounded-full uppercase tracking-widest">Auto</span>
+                            )}
+                            {isPast && (
+                              <span className="text-[10px] text-[#28071C]/30 font-normal">enc.</span>
                             )}
                           </div>
                         )}
-                      </td>
-
-                      {/* Ano */}
-                      <td className="px-4 py-3">
-                        {t.anoFiscal
-                          ? <span className={`text-sm font-semibold ${isPast ? "text-[#28071C]/35" : "text-[#28071C]"}`}>{t.anoFiscal}{isPast && <span className="ml-1 text-[10px] text-[#28071C]/30 font-normal">enc.</span>}</span>
-                          : <span className="text-[#28071C]/25 text-sm">—</span>
-                        }
                       </td>
 
                       {/* Início */}
@@ -1700,12 +1973,73 @@ export default function OperationSettings() {
                         )}
                       </td>
 
-                      {/* Coleções */}
+                      {/* Canais — checkbox list */}
+                      <td className="px-3 py-2 min-w-[140px]">
+                        {isEditingThis ? (
+                          <div className="flex flex-col gap-1 bg-white border-2 border-[#7598CF]/40 rounded-lg px-2 py-1.5 max-h-36 overflow-y-auto">
+                            {(tenantChannels.length > 0 ? tenantChannels : TODOS_CANAIS).map(c => {
+                              const isChecked = (seasonCanalMap[t.id] ?? []).some(sc => sc.canal_id === c.id);
+                              return (
+                                <label key={c.id} className="flex items-center gap-2 cursor-pointer hover:bg-[#7598CF]/8 rounded px-1 py-0.5 select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => {
+                                      const current = (seasonCanalMap[t.id] ?? []).map(sc => sc.canal_id);
+                                      const next = isChecked
+                                        ? current.filter(id => id !== c.id)
+                                        : [...current, c.id];
+                                      handleSetCanalsForSeason(t.id, next, t);
+                                    }}
+                                    className="accent-[#7598CF] w-3.5 h-3.5 flex-shrink-0"
+                                  />
+                                  <span className="text-xs text-[#28071C]">{c.name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          (() => {
+                            const channelLookup = tenantChannels.length > 0 ? tenantChannels : TODOS_CANAIS;
+                            const selected = (seasonCanalMap[t.id] ?? [])
+                              .map(c => channelLookup.find(ch => ch.id === c.canal_id)?.name ?? c.canal_id);
+                            return selected.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {selected.map(name => (
+                                  <span key={name} className={`text-[10px] px-1.5 py-0.5 rounded-full border ${isPast ? "text-[#28071C]/30 border-[#28071C]/10 bg-transparent" : "bg-[#F6F3AA]/80 text-[#28071C]/70 border-[#28071C]/20"}`}>
+                                    {name}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-[#28071C]/30 italic">—</span>
+                            );
+                          })()
+                        )}
+                      </td>
+
+                      {/* Venda Início */}
                       <td className="px-4 py-3">
-                        {n > 0
-                          ? <span className="text-[11px] bg-[#7598CF]/15 text-[#7598CF] border border-[#7598CF]/30 rounded-full px-2 py-0.5 font-semibold">{n} coleç{n === 1 ? "ão" : "ões"}</span>
-                          : <span className="text-[#28071C]/30 text-xs">—</span>
-                        }
+                        {isEditingThis ? (
+                          <select value={editingAutoVendaInicio} onChange={e => setEditingAutoVendaInicio(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/40 rounded px-2 py-1 text-sm text-[#28071C] focus:outline-none cursor-pointer">
+                            {months.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        ) : (
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesInicio}</span>
+                        )}
+                      </td>
+
+                      {/* Venda Fim */}
+                      <td className="px-4 py-3">
+                        {isEditingThis ? (
+                          <select value={editingAutoVendaFim} onChange={e => setEditingAutoVendaFim(e.target.value)}
+                            className="bg-white border-2 border-[#7598CF]/40 rounded px-2 py-1 text-sm text-[#28071C] focus:outline-none cursor-pointer">
+                            {months.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                        ) : (
+                          <span className={isPast ? "text-[#28071C]/40 text-sm" : "text-[#28071C] text-sm"}>{t.mesFim}</span>
+                        )}
                       </td>
 
                       {/* Ações */}
@@ -1740,16 +2074,6 @@ export default function OperationSettings() {
                                   <Lock className="w-3.5 h-3.5" />
                                 </span>
                               )}
-                              <button
-                                onClick={() => toggleCanalPanel(t.id)}
-                                title="Configurar mês de início por canal"
-                                className={`p-2 rounded transition-colors ${
-                                  canalPanelId === t.id
-                                    ? "text-[#7598CF] bg-[#7598CF]/12"
-                                    : "text-[#28071C]/40 hover:text-[#28071C] hover:bg-[#28071C]/8"
-                                }`}>
-                                <Store className="w-4 h-4" />
-                              </button>
                               <button onClick={() => handleDeleteTemporada(t)}
                                 title="Excluir temporada"
                                 className="p-2 text-red-600 hover:bg-red-50 rounded transition-colors">
@@ -1766,107 +2090,6 @@ export default function OperationSettings() {
             </table>
           </div>
 
-          {/* ── Painel Canal × Temporada ──────────────────────────────────────── */}
-          {canalPanelId && (() => {
-            const season = temporadas.find(t => t.id === canalPanelId);
-            if (!season) return null;
-            const configMap = new Map(canalConfigs.map(c => [c.canal_id, c.mes_inicio]));
-            return (
-              <div className="mt-4 bg-white border border-[#7598CF]/25 rounded-xl overflow-hidden shadow-sm">
-                {/* Header */}
-                <div className="flex items-center justify-between px-5 py-3 bg-[#7598CF]/8 border-b border-[#7598CF]/15">
-                  <div className="flex items-center gap-2">
-                    <Store className="w-4 h-4 text-[#7598CF]" />
-                    <p className="text-sm font-semibold text-[#28071C]">
-                      Início de vendas por canal — <span className="text-[#7598CF]">{season.nome}</span>
-                    </p>
-                  </div>
-                  <button onClick={() => { setCanalPanelId(null); setEditingCanalId(null); }}
-                    className="p-1.5 text-[#28071C]/30 hover:text-[#28071C] rounded-lg transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Linha de referência: Varejo */}
-                <div className="flex items-center gap-4 px-5 py-3 border-b border-[#28071C]/6 bg-[#7598CF]/4">
-                  <span className="text-[10px] text-[#7598CF] font-bold uppercase tracking-widest w-32 flex-shrink-0">Referência</span>
-                  <span className="text-sm text-[#28071C]/70 flex-1">Varejo Físico / E-commerce</span>
-                  <span className="text-sm font-semibold text-[#7598CF]">{season.mesInicio}</span>
-                  <span className="text-[10px] text-[#28071C]/30 italic">definido na temporada</span>
-                </div>
-
-                {/* Canais configuráveis */}
-                {canalLoading ? (
-                  <div className="flex items-center justify-center gap-2 py-8 text-[#28071C]/40 text-sm">
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Carregando…
-                  </div>
-                ) : (
-                  <div className="divide-y divide-[#28071C]/5">
-                    {CANAIS_B2B.map(canal => {
-                      const configured = configMap.get(canal.id);
-                      const isEditing  = editingCanalId === canal.id;
-                      return (
-                        <div key={canal.id} className="flex items-center gap-4 px-5 py-3 hover:bg-[#28071C]/2 transition-colors">
-                          <span className="text-xs text-[#28071C]/45 font-semibold uppercase tracking-wide w-32 flex-shrink-0">
-                            {canal.name}
-                          </span>
-
-                          {isEditing ? (
-                            <select
-                              value={editingCanalMes}
-                              onChange={e => setEditingCanalMes(e.target.value)}
-                              className="text-sm border-2 border-[#7598CF]/40 rounded-lg px-2 py-1 text-[#28071C] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/30 flex-1 max-w-[140px] cursor-pointer">
-                              {months.map(m => <option key={m} value={m}>{m}</option>)}
-                            </select>
-                          ) : (
-                            <span className={`text-sm flex-1 ${configured ? "text-[#28071C] font-semibold" : "text-[#28071C]/30 italic"}`}>
-                              {configured ?? "mesmo que varejo"}
-                            </span>
-                          )}
-
-                          <div className="flex items-center gap-1.5">
-                            {isEditing ? (
-                              <>
-                                <button
-                                  onClick={() => handleSaveCanalConfig(canal.id)}
-                                  className="px-3 py-1 bg-[#7598CF] text-white text-xs rounded-lg hover:opacity-90 font-semibold transition-opacity">
-                                  Salvar
-                                </button>
-                                <button onClick={() => setEditingCanalId(null)}
-                                  className="p-1.5 text-[#28071C]/40 hover:text-[#28071C] rounded transition-colors">
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => {
-                                    setEditingCanalId(canal.id);
-                                    setEditingCanalMes(configured ?? season.mesInicio);
-                                  }}
-                                  title="Alterar mês de início"
-                                  className="p-1.5 text-[#28071C]/40 hover:text-[#28071C] hover:bg-[#28071C]/8 rounded transition-colors">
-                                  <Edit className="w-3.5 h-3.5" />
-                                </button>
-                                {configured && (
-                                  <button
-                                    onClick={() => handleDeleteCanalConfig(canal.id)}
-                                    title="Remover configuração"
-                                    className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors">
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
         </SettingsCard>
 
         {/* ── MODAL: Impacto da alteração de temporada automática ─────────────── */}

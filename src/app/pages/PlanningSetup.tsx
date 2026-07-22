@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useRef } from "react"
 import { useNavigate, useLocation } from "react-router"
 import {
   ArrowLeft, ArrowRight, Check, Star, Lock, Unlock, ChevronUp, ChevronDown, Info,
@@ -10,6 +10,7 @@ import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_DESC, STRATEGIC_FOCUS_ICONS,
   STRATEGIC_FOCUS_COLORS, PLAN_INDICATORS, DEFAULT_PRIORITIES,
   SUGGESTED_COUNTS, MAX_UNLOCK, savePlanCycle,
+  getPlanCycle, initPlanCycles,
 } from "../types/planCycle"
 import { autoGenerateForYear } from "../../services/temporadaService"
 import { saveCycle } from "../../services/supabase/planningScenarioService"
@@ -127,12 +128,11 @@ export default function PlanningSetup() {
   const year     = state?.year ?? new Date().getFullYear() + 1
   const isReview = state?.mode === 'review'
 
-  // Se for revisão, carrega o ciclo existente para pré-preencher
-  const existingCycle = useMemo(() => {
-    if (!isReview) return null
-    const raw = localStorage.getItem(`fashionmind_cycle_${year}`)
-    return raw ? JSON.parse(raw) as { focus: StrategicFocus; fieldPriorities: PlanFieldPriority[] } : null
-  }, [isReview, year])
+  // Ciclo existente carregado do Supabase (via cache em memória) para modo revisão
+  // Inicializa como null; é populado no useEffect de carregamento do usuário.
+  const [existingCycle, setExistingCycle] = useState<AnnualPlanCycle | null>(null)
+  /** Guard: garante que o pré-preenchimento do step 2 ocorre apenas uma vez */
+  const hasPrefilledRef = useRef(false)
 
   // ── Perfil do onboarding (lido uma vez — não muda durante a sessão) ────────
   const profile      = getStoredProfile()
@@ -142,14 +142,10 @@ export default function PlanningSetup() {
   // ── Wizard step ────────────────────────────────────────────────────────────
   const [user, setUser] = useState<{ name: string; email: string; profile: string; tenant_id?: string } | null>(null)
   const [step, setStep] = useState<1 | 2>(1)
-  const [focus, setFocus] = useState<StrategicFocus | null>(
-    existingCycle?.focus ?? null
-  )
+  const [focus, setFocus] = useState<StrategicFocus | null>(null)
 
   // ── Custom focus name ──────────────────────────────────────────────────────
-  const [customFocusName,   setCustomFocusName]   = useState<string>(
-    (existingCycle as any)?.customFocusName ?? ''
-  )
+  const [customFocusName,   setCustomFocusName]   = useState<string>('')
   const [customEditOpen,    setCustomEditOpen]    = useState(false)
   const [customDraft,       setCustomDraft]       = useState('')
 
@@ -175,42 +171,58 @@ export default function PlanningSetup() {
         ? "CEO"
         : u.profile
     if (effectiveProfile !== "CEO") navigate("/dashboard")
-  }, [navigate])
 
-  // Se for revisão e já tiver ciclo salvo, pré-preenche step 2 com as prioridades existentes
-  useEffect(() => {
-    if (isReview && existingCycle?.focus) {
-      const f = existingCycle.focus
-      const fps = existingCycle.fieldPriorities as PlanFieldPriority[]
-      setFocus(f)
-      if (fps?.length) {
-        // Filtra chaves que existem no PLAN_INDICATORS atual (previne crash com dados stale do localStorage)
-        const knownKeys = new Set(PLAN_INDICATORS.map(i => i.key))
-        const initStatuses: Record<string, FieldStatus> = {}
-        const order: string[] = []
-        const refs = new Set<string>()
-        let dismissed = 0
-        for (const fp of fps) {
-          if (!knownKeys.has(fp.key)) continue   // ignora chaves obsoletas
-          initStatuses[fp.key] = fp.status as FieldStatus
-          if (fp.isPriority) order.push(fp.key)
-          if (fp.isReference) refs.add(fp.key)
-          if (fp.status === 'dismissed') dismissed++
-        }
-        // Garante que Receita Bruta está sempre presente
-        if (!order.includes(RECEITA_KEY)) order.unshift(RECEITA_KEY)
-        setStatuses(initStatuses)
-        setActiveOrder(order)
-        setReferences(refs)
-        setDismissCount(dismissed)
-        setStep(2)
-      } else {
-        applyFocusDefaults(f)
-        setStep(2)
+    // Carrega o ciclo existente do Supabase (via cache em memória) para modo revisão
+    if (isReview) {
+      const tenantId = sessionStorage.getItem("activeTenantId") ?? u?.tenant_id ?? ""
+      if (tenantId) {
+        initPlanCycles(tenantId).then(() => {
+          const cycle = getPlanCycle(year)
+          if (cycle) setExistingCycle(cycle)
+        }).catch(() => {})
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [navigate])
+
+  // Quando o ciclo existente chega do Supabase, pré-preenche o step 2 (modo revisão)
+  // hasPrefilledRef evita re-execução caso o state de existingCycle seja atualizado novamente
+  useEffect(() => {
+    if (!isReview || !existingCycle?.focus || hasPrefilledRef.current) return
+    hasPrefilledRef.current = true
+
+    const f = existingCycle.focus
+    const fps = existingCycle.fieldPriorities as PlanFieldPriority[]
+    setFocus(f)
+    if (existingCycle.customFocusName) setCustomFocusName(existingCycle.customFocusName)
+
+    if (fps?.length) {
+      // Filtra chaves que existem no PLAN_INDICATORS atual (previne crash com dados obsoletos)
+      const knownKeys = new Set(PLAN_INDICATORS.map(i => i.key))
+      const initStatuses: Record<string, FieldStatus> = {}
+      const order: string[] = []
+      const refs = new Set<string>()
+      let dismissed = 0
+      for (const fp of fps) {
+        if (!knownKeys.has(fp.key)) continue
+        initStatuses[fp.key] = fp.status as FieldStatus
+        if (fp.isPriority) order.push(fp.key)
+        if (fp.isReference) refs.add(fp.key)
+        if (fp.status === 'dismissed') dismissed++
+      }
+      // Garante que Receita Bruta está sempre presente
+      if (!order.includes(RECEITA_KEY)) order.unshift(RECEITA_KEY)
+      setStatuses(initStatuses)
+      setActiveOrder(order)
+      setReferences(refs)
+      setDismissCount(dismissed)
+      setStep(2)
+    } else {
+      applyFocusDefaults(f)
+      setStep(2)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingCycle])
 
   // ── Apply focus defaults (profile-aware) ──────────────────────────────────
   const applyFocusDefaults = (f: StrategicFocus) => {
@@ -358,7 +370,7 @@ export default function PlanningSetup() {
         : {}),
       fieldPriorities,
       indicatorPriorities: [],
-      versions: existingCycle ? (JSON.parse(localStorage.getItem(`fashionmind_cycle_${year}`) ?? '{}').versions ?? []) : [],
+      versions: existingCycle?.versions ?? [],
       createdAt: new Date().toISOString(),
       lastModifiedAt: new Date().toISOString(),
     }

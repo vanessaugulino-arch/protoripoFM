@@ -43,6 +43,7 @@ interface ImportWizardProps {
 type WizardStep =
   | "type"
   | "upload"
+  | "sheet_select"
   | "mapping"
   | "validating"
   | "done"
@@ -78,6 +79,11 @@ export default function ImportWizard({
   const [validation, setValidation]   = useState<ValidationResult | null>(null);
   const [importing, setImporting]     = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  // Sheet selection state
+  const [pendingFile, setPendingFile]   = useState<File | null>(null);
+  const [availableSheets, setAvailableSheets] = useState<string[]>([]);
+  const [sizeWarning, setSizeWarning]   = useState<string | null>(null);
+  const [parsing, setParsing]           = useState(false);
 
   // Multi-file state
   const [fileQueue, setFileQueue]           = useState<File[]>([]);
@@ -133,27 +139,64 @@ export default function ImportWizard({
   }
 
   // ── Handlers de arquivo ──────────────────────────────────────────────────────
+  const MB = 1024 * 1024;
+
   async function handleFiles(files: File[]) {
     setParseError(null);
+    setSizeWarning(null);
     if (files.length === 0) return;
 
     if (files.length === 1) {
-      // Fluxo single
       const file = files[0];
       setFileName(file.name);
+
+      // Aviso informativo para arquivos grandes (não bloqueia)
+      if (file.size > 50 * MB) {
+        setSizeWarning(
+          `Arquivo grande (${(file.size / MB).toFixed(0)} MB) — pode levar alguns segundos. ` +
+          `Para agilizar, exporte apenas a aba necessária.`
+        );
+      }
+
+      setParsing(true);
       try {
         const result = await parseFile(file);
         setParsed(result);
         setMapping(autoMap(result.headers));
         setStep("mapping");
       } catch (e: unknown) {
-        setParseError((e as Error)?.message ?? "Erro ao processar arquivo");
+        const err = e as Error & { sheets?: string[] };
+        if (err.message === "MULTIPLE_SHEETS" && err.sheets?.length) {
+          setPendingFile(file);
+          setAvailableSheets(err.sheets);
+          setStep("sheet_select");
+        } else {
+          setParseError(err?.message ?? "Erro ao processar arquivo");
+        }
+      } finally {
+        setParsing(false);
       }
     } else {
-      // Fluxo multi
       setFileQueue(files);
       setBatchResults(files.map(f => ({ name: f.name, imported: 0, errors: 0, status: "pending" })));
       setStep("batch_confirm");
+    }
+  }
+
+  async function handleSheetSelect(sheetName: string) {
+    if (!pendingFile) return;
+    setParseError(null);
+    setParsing(true);
+    try {
+      // parseFile reutiliza o buffer em cache — não relê o arquivo do disco
+      const result = await parseFile(pendingFile, sheetName);
+      setParsed(result);
+      setMapping(autoMap(result.headers));
+      setStep("mapping");
+    } catch (e: unknown) {
+      setParseError((e as Error)?.message ?? "Erro ao processar aba");
+    } finally {
+      setParsing(false);
     }
   }
 
@@ -245,11 +288,67 @@ export default function ImportWizard({
     setFileQueue([]); setBatchResults([]); setBatchCurrentIdx(0);
     setBatchTotalImported(0); setBatchTotalErrors(0);
     batchRunning.current = false;
+    setPendingFile(null); setAvailableSheets([]); setSizeWarning(null);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
+
+  // ── Seleção de aba (arquivo XLSX com múltiplas abas) ─────────────────────────
+  if (step === "sheet_select") {
+    return (
+      <div>
+        <div className="mb-4">
+          <p className="text-[#28071C] font-semibold text-sm">
+            📋 {fileName}
+          </p>
+          <p className="text-[#28071C]/60 text-xs mt-1">
+            Esta planilha tem {availableSheets.length} abas. Selecione qual deseja importar:
+          </p>
+          {sizeWarning && (
+            <div className="mt-2 flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700">{sizeWarning}</p>
+            </div>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          {availableSheets.map(sheet => (
+            <button
+              key={sheet}
+              onClick={() => handleSheetSelect(sheet)}
+              className="flex items-center gap-3 px-4 py-3 border-2 border-[#28071C]/10 hover:border-[#7598CF]/50 rounded-xl text-left transition-all hover:bg-[#7598CF]/4 group"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-[#28071C]/40 group-hover:text-[#7598CF] flex-shrink-0" />
+              <span className="flex-1 text-sm text-[#28071C] font-medium">{sheet}</span>
+              <ChevronRight className="w-4 h-4 text-[#28071C]/30 group-hover:text-[#7598CF] transition-colors flex-shrink-0" />
+            </button>
+          ))}
+        </div>
+        {parsing && (
+          <div className="flex items-center justify-center gap-3 py-4 text-[#28071C]/50">
+            <Loader2 className="w-5 h-5 animate-spin text-[#7598CF]" />
+            <span className="text-sm">Lendo aba selecionada{sizeWarning ? " (arquivo grande, aguarde…)" : "…"}</span>
+          </div>
+        )}
+        {parseError && (
+          <div className="mt-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
+            <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-600">{parseError}</p>
+          </div>
+        )}
+        <div className="mt-4 text-center">
+          <button
+            onClick={() => { setPendingFile(null); setAvailableSheets([]); setStep("upload"); }}
+            className="text-sm text-[#28071C]/40 hover:text-[#28071C] underline transition-colors"
+          >
+            ← Escolher outro arquivo
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ── Seletor de tipo ───────────────────────────────────────────────────────────
   if (step === "type") {
@@ -313,6 +412,14 @@ export default function ImportWizard({
           </button>
         )}
 
+        {/* Loading durante parse */}
+        {parsing && (
+          <div className="flex items-center justify-center gap-3 py-6 text-[#28071C]/50">
+            <Loader2 className="w-5 h-5 animate-spin text-[#7598CF]" />
+            <span className="text-sm">Lendo arquivo{sizeWarning ? " (arquivo grande, aguarde…)" : "…"}</span>
+          </div>
+        )}
+
         {/* Drop zone com dica de múltiplos arquivos */}
         <div
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
@@ -350,6 +457,12 @@ export default function ImportWizard({
           <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mt-3">
             <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
             <p className="text-amber-700 text-sm">Tenant não identificado — faça login novamente para importar dados.</p>
+          </div>
+        )}
+        {sizeWarning && !parseError && (
+          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mt-3">
+            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <p className="text-amber-700 text-sm">{sizeWarning}</p>
           </div>
         )}
         {parseError && (

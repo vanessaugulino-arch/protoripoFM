@@ -160,9 +160,11 @@ export async function upsertHierarquiaDb(
 ): Promise<void> {
   const records = rows.map((r, i) => ({
     tenant_id: tenantId,
-    divisao: r.divisao,
     categoria: r.categoria,
-    subcategoria: r.subcategoria ?? null,
+    divisao: r.divisao,
+    // subcategoria é NOT NULL DEFAULT '' — normaliza null/undefined para ''
+    // para não violar a constraint e manter o índice único consistente.
+    subcategoria: r.subcategoria ?? "",
     ordem: r.ordem ?? i,
     ativo: true,
   }));

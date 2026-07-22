@@ -21,6 +21,7 @@ import {
   listModule3Scenarios,
   calculateScenarioConsolidated,
 } from "../services/module3ScenarioService";
+import { applyDivisionEdit, type DivisionIndicators } from "../engine/divisionEngineAdapter";
 
 export interface UseModule3Options {
   seasonId: string;
@@ -233,6 +234,12 @@ export function useModule3(options: UseModule3Options) {
         sellThrough: raw.avgSellThrough - macroTargets.sellThrough,
       },
       divisionBreakdown: {} as SeasonConsolidated["divisionBreakdown"],
+      // Absolutos completos para o rollup bottom-up (grão mensal)
+      totalPecas:      raw.totalPecas,
+      totalLucroBruto: raw.totalLucroBruto,
+      totalEstMedioRS: raw.totalEstMedioRS,
+      totalMarkdownRS: raw.totalMarkdownRS,
+      totalOrcamento:  raw.totalOrcamento,
       scenarios: listModule3Scenarios(seasonId),
     };
   }
@@ -260,11 +267,34 @@ export function useModule3(options: UseModule3Options) {
   const updateIndicators = useCallback(
     (divisionId: BusinessDivisionId, indicators: Partial<CommercialIndicators>) => {
       setState((prev) => {
+        const block = prev.divisions[divisionId];
+        // Receita da divisão (para o motor): receita_macro × participação, ou a
+        // receita já gravada no indicador quando não há meta macro.
+        const macroRev = options.macroTargets.revenue;
+        const revenue  = macroRev > 0
+          ? macroRev * (block.participation / 100)
+          : (block.indicators.revenue ?? 0);
+
+        // Cada campo editado passa pelo motor de clusters (T1/T3 e ponte GMROI).
+        // O que não tem correspondente no motor (sell-through) é gravado direto.
+        let nextInd: DivisionIndicators = {
+          avgPrice:    block.indicators.avgPrice,
+          margin:      block.indicators.margin,
+          mkd:         block.indicators.mkd,
+          gmroi:       block.indicators.gmroi ?? 0,
+          sellThrough: block.indicators.sellThrough,
+          revenue:     block.indicators.revenue,
+        };
+        for (const [field, value] of Object.entries(indicators)) {
+          if (typeof value !== "number") { nextInd = { ...nextInd, [field]: value as never }; continue; }
+          nextInd = applyDivisionEdit(nextInd, revenue, field as keyof DivisionIndicators, value);
+        }
+
         const divisions = {
           ...prev.divisions,
           [divisionId]: {
-            ...prev.divisions[divisionId],
-            indicators: { ...prev.divisions[divisionId].indicators, ...indicators },
+            ...block,
+            indicators: { ...block.indicators, ...nextInd },
           },
         };
         return {
