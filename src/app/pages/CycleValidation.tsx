@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
+import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import {
   listSupplyFornecedores, calcBudgetProjection, aggregateReceita,
@@ -745,12 +746,13 @@ export default function CycleValidation() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleRevenueChange = useCallback((canalId: string, month: string, raw: string) => {
-    const val = parseFloat(raw.replace(/[^\d.]/g, "")) || 0;
-    setPlannedRevenue(prev => ({
-      ...prev,
-      [canalId]: { ...(prev[canalId] ?? {}), [month]: val },
-    }));
-  }, []);
+    const val = Math.max(0, parseFloat(raw.replace(/[^\d.]/g, "")) || 0);
+    // IPF por canal: força o mês editado e redistribui o delta nos demais meses
+    // proporcional à curva histórica do canal (mantém o total do canal), igual ao
+    // nível divisão. Antes gravava direto, alterando o total sem redistribuir.
+    const histWeights = prevYearRevenue[canalId] ?? {};
+    setPlannedRevenue(prev => applyBiproportional(prev, canalId, month, val, histWeights));
+  }, [prevYearRevenue]);
 
   const handleCoverageChange = useCallback((month: string, raw: string) => {
     const val = Math.max(1, parseInt(raw.replace(/[^\d]/g, "")) || 90);
@@ -833,10 +835,19 @@ export default function CycleValidation() {
     setIsExportingPDF(false);
   };
 
-  const handleApplyMetas = () => {
+  const handleApplyMetas = async () => {
     if (appliedScenarioId) return;
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
+    // Plano Oficial: o M4 validou a distribuição temporal → avança o nível para 4.
+    // O macro anual não muda (o IPF preserva os totais); só reafirma o rollup e o nível.
+    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
+    if (tenantId) {
+      try {
+        await recomputeMacroFromDivisions(tenantId, year);
+        await advanceDetailLevel(tenantId, year, 4);
+      } catch { /* não bloqueia a aplicação */ }
+    }
     setShowPostApplyModal(true);
   };
 

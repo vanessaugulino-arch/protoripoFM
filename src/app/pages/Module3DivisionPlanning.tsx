@@ -54,8 +54,11 @@ import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 import {
   createApprovalRequest,
+  getPendingApprovalsForUser,
+  resolveApproval,
   hasPendingRequest,
   type ImpactedIndicator,
+  type PlanApprovalRequest,
 } from "../../services/supabase/planApprovalService";
 
 const MODULE3_TOUR: TourStep[] = [
@@ -273,6 +276,12 @@ export default function Module3DivisionPlanning() {
   const [isSubmittingApproval, setIsSubmittingApproval]      = useState(false);
   const [alreadyPending, setAlreadyPending]                  = useState(false);
 
+  // ── Aprovações recebidas do M5 (Sortimento → Divisão) ──────────────────────
+  const [incomingApprovals, setIncomingApprovals]           = useState<PlanApprovalRequest[]>([]);
+  const [showIncomingApproval, setShowIncomingApproval]     = useState(false);
+  const [activeIncoming, setActiveIncoming]                 = useState<PlanApprovalRequest | null>(null);
+  const [isResolvingApproval, setIsResolvingApproval]       = useState(false);
+
   // Médias históricas por divisão — carregadas quando a temporada de referência é selecionada
   const [historicalAvgs, setHistoricalAvgs] = useState<Partial<Record<BusinessDivisionId, TierHistoricalAvg>>>({});
 
@@ -286,6 +295,20 @@ export default function Module3DivisionPlanning() {
       setTenantId(tid);
       const hasAccess = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
       if (!hasAccess) navigate("/dashboard");
+
+      // Pedidos de aprovação direcionados ao M3 (vindos do M5 — Sortimento)
+      if (tid) {
+        const isCeoOrAdmin = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
+        getPendingApprovalsForUser(tid, 3, userData.email, isCeoOrAdmin)
+          .then(reqs => {
+            setIncomingApprovals(reqs);
+            if (reqs.length > 0) {
+              setActiveIncoming(reqs[0]);
+              setShowIncomingApproval(true);
+            }
+          })
+          .catch(() => {});
+      }
 
       // Carregar temporadas do Supabase
       if (tid) {
@@ -565,6 +588,23 @@ export default function Module3DivisionPlanning() {
       setApprovalJustification("");
     } catch { /* silent */ }
     setIsSubmittingApproval(false);
+  };
+
+  // ── Resolver pedido de aprovação recebido do M5 ────────────────────────────
+  const handleResolveIncoming = async (
+    req: PlanApprovalRequest,
+    decision: "approved" | "denied",
+  ) => {
+    if (!user) return;
+    setIsResolvingApproval(true);
+    try {
+      await resolveApproval(req.id, decision, user.email);
+      setIncomingApprovals(prev => prev.filter(r => r.id !== req.id));
+      const next = incomingApprovals.find(r => r.id !== req.id) ?? null;
+      setActiveIncoming(next);
+      if (!next) setShowIncomingApproval(false);
+    } catch { /* silent */ }
+    setIsResolvingApproval(false);
   };
 
   const handleExport = () => {
@@ -1347,6 +1387,90 @@ export default function Module3DivisionPlanning() {
               >
                 <SendHorizonal className="w-4 h-4" />
                 {isSubmittingApproval ? "Enviando…" : "Enviar para Aprovação"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: Pedido recebido do M5 (Sortimento → Divisão) ─────────────── */}
+      {showIncomingApproval && activeIncoming && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
+              <div>
+                <p className="text-[#F6F3AA] font-bold text-base">
+                  Pedido de Ajuste — Módulo {activeIncoming.from_module} (Sortimento)
+                </p>
+                <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
+                  Solicitado por {activeIncoming.requester_email} · {new Date(activeIncoming.created_at).toLocaleDateString("pt-BR")}
+                </p>
+              </div>
+              {incomingApprovals.length > 1 && (
+                <span className="text-[10px] bg-white/20 text-[#F6F3AA] rounded-full px-2 py-0.5 font-semibold">
+                  {incomingApprovals.length} pendentes
+                </span>
+              )}
+            </div>
+
+            <div className="overflow-y-auto p-6 flex-1">
+              <h4 className="text-[#28071C] font-semibold text-sm mb-3 uppercase tracking-wide">
+                Ajustes propostos por divisão
+              </h4>
+              <div className="overflow-x-auto mb-5">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="text-left px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest rounded-tl-lg">Indicador</th>
+                      <th className="text-right px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest">Plano Atual (M3)</th>
+                      <th className="text-right px-3 py-2 bg-[#7598CF]/10 text-[#7598CF] font-semibold uppercase tracking-widest rounded-tr-lg">Proposto (M{activeIncoming.from_module})</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#28071C]/6">
+                    {(activeIncoming.impacted_indicators as ImpactedIndicator[]).map(item => (
+                      <tr key={item.key} className="hover:bg-[#28071C]/2">
+                        <td className="px-3 py-2 text-[#28071C]/70 font-medium">{item.label}</td>
+                        <td className="px-3 py-2 text-right font-mono text-[#28071C]">
+                          {item.isRate ? `${item.planned.toFixed(1)}%` : `R$ ${Math.round(item.planned).toLocaleString("pt-BR")}`}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold text-[#7598CF]">
+                          {item.isRate ? `${item.projected.toFixed(1)}%` : `R$ ${Math.round(item.projected).toLocaleString("pt-BR")}`}
+                          <span className={`ml-1.5 text-[9px] font-normal ${item.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                            {item.gap >= 0 ? "+" : ""}{item.isRate ? `${item.gap.toFixed(1)}pp` : `R$${Math.round(item.gap).toLocaleString("pt-BR")}`}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {activeIncoming.justification && (
+                <div className="mb-2">
+                  <h4 className="text-[#28071C] font-semibold text-sm mb-2 uppercase tracking-wide">Justificativa</h4>
+                  <div className="bg-[#7598CF]/6 border border-[#7598CF]/20 rounded-xl px-4 py-3 text-sm text-[#28071C]/80 leading-relaxed italic">
+                    "{activeIncoming.justification}"
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] text-[#28071C]/40 mt-4 leading-relaxed">
+                Ao aceitar, revise as metas por divisão e ajuste os indicadores conforme a proposta do Sortimento antes de reaplicar o plano.
+              </p>
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#28071C]/8 flex gap-3 flex-shrink-0">
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, "denied")}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 border-2 border-red-200 text-red-600 rounded-xl text-sm font-semibold hover:bg-red-50 disabled:opacity-40">
+                Negar pedido
+              </button>
+              <button
+                onClick={() => handleResolveIncoming(activeIncoming, "approved")}
+                disabled={isResolvingApproval}
+                className="flex-1 py-2.5 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40">
+                {isResolvingApproval ? "Processando…" : "Aceitar pedido"}
               </button>
             </div>
           </div>

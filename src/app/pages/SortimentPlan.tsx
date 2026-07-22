@@ -32,6 +32,7 @@ import {
   CheckCheck,
   FileDown,
   HelpCircle,
+  SendHorizonal,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
@@ -71,6 +72,11 @@ import {
   listDivisionScenarios,
   type DivisionScenarioRow,
 } from "../../services/supabase/divisionScenarioService";
+import {
+  createApprovalRequest,
+  hasPendingRequest,
+  type ImpactedIndicator,
+} from "../../services/supabase/planApprovalService";
 import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
@@ -457,6 +463,13 @@ export default function SortimentPlan() {
   const [scenarioName,      setScenarioName]      = useState("");
   const [compareScenarioId, setCompareScenarioId] = useState<string>("");
 
+  // ── Solicitação de ajuste ao Módulo 3 (Sortimento → Divisão) ─────────────────
+  const [showRequestM3Modal, setShowRequestM3Modal] = useState(false);
+  const [requestM3Justif,    setRequestM3Justif]    = useState("");
+  const [isSendingM3Request, setIsSendingM3Request] = useState(false);
+  const [m3RequestPending,   setM3RequestPending]   = useState(false);
+  const [m3RequestSent,      setM3RequestSent]      = useState(false);
+
   const saveScenario = () => {
     if (!scenarioName.trim() || !seasonId || !user?.tenant_id) return;
     const name = scenarioName.trim();
@@ -497,6 +510,63 @@ export default function SortimentPlan() {
   };
 
   const exportPDF = () => window.print();
+
+  // ── Solicitar ajuste ao Módulo 3 (Sortimento → Divisão) ─────────────────────
+  // O sortimento pode implicar uma receita de mix (Σ receita das coleções) que
+  // difere da meta de receita da divisão vinda do M3. Este fluxo empacota essa
+  // divergência por divisão e a envia como pedido de aprovação para o M3.
+  const buildM3Impacted = (): ImpactedIndicator[] =>
+    divisions.map(d => {
+      const target = d.revenueTarget;
+      const mix    = d.collections.reduce((s, c) => s + colRevenue(d, c), 0);
+      return {
+        key:       `rev_${d.id}`,
+        label:     `${d.name} — Receita do mix`,
+        planned:   target,
+        projected: mix,
+        gap:       mix - target,
+        isRate:    false,
+      };
+    });
+
+  const handleRequestM3Adjustment = async () => {
+    if (!user?.tenant_id || !seasonId) return;
+    setIsSendingM3Request(true);
+    try {
+      const season = temporadas.find(t => t.id === seasonId);
+      const year   = season?.anoFiscal ?? new Date().getFullYear();
+      const proposedData = {
+        divisions: divisions.map(d => ({
+          id:               d.id,
+          name:             d.name,
+          revenueTarget:    d.revenueTarget,
+          participationPct: d.participationPct,
+          targetMarginPct:  d.targetMarginPct,
+          pricePyramid:     d.pricePyramid,
+          avgPriceP1:       d.avgPriceP1,
+          avgPriceP2:       d.avgPriceP2,
+          avgPriceP3:       d.avgPriceP3,
+          mixRevenue:       d.collections.reduce((s, c) => s + colRevenue(d, c), 0),
+        })),
+      };
+      await createApprovalRequest({
+        tenantId:           user.tenant_id,
+        year,
+        fromModule:         5,
+        toModule:           3,
+        requesterEmail:     user.email,
+        justification:      requestM3Justif.trim(),
+        proposedData:       proposedData as Record<string, unknown>,
+        originalData:       {},
+        impactedIndicators: buildM3Impacted(),
+      });
+      setM3RequestPending(true);
+      setM3RequestSent(true);
+      setShowRequestM3Modal(false);
+      setRequestM3Justif("");
+    } catch { /* silent */ }
+    setIsSendingM3Request(false);
+  };
 
   // ── Modal: Adicionar Coleção / Drop ─────────────────────────────────────────
   const [showAddModal, setShowAddModal]   = useState(false);
@@ -611,6 +681,23 @@ export default function SortimentPlan() {
       setMacroPlan(null);
     }
   }, [seasonId, temporadas]);
+
+  // Verifica se já há pedido de ajuste M5→M3 pendente para o ano da temporada
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id || temporadas.length === 0) { setM3RequestPending(false); return; }
+    const season = temporadas.find(t => t.id === seasonId);
+    const year   = season?.anoFiscal ?? new Date().getFullYear();
+    hasPendingRequest(user.tenant_id, 5, year)
+      .then(has => setM3RequestPending(has))
+      .catch(() => {});
+  }, [seasonId, temporadas, user]);
+
+  // Auto-dismiss do toast de pedido enviado
+  useEffect(() => {
+    if (!m3RequestSent) return;
+    const t = setTimeout(() => setM3RequestSent(false), 2500);
+    return () => clearTimeout(t);
+  }, [m3RequestSent]);
 
   // Processa init pendente do M3 quando temporadas e macroPlan estiverem disponíveis
   useEffect(() => {
@@ -2646,6 +2733,15 @@ export default function SortimentPlan() {
                 <FileDown className="w-4 h-4" />
                 Exportar PDF
               </button>
+              <button
+                onClick={() => setShowRequestM3Modal(true)}
+                disabled={m3RequestPending}
+                title={m3RequestPending ? "Já existe um pedido de ajuste pendente no Módulo 3" : "Enviar as divergências do sortimento ao Módulo 3 (Divisão)"}
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#7598CF]/40 text-[#7598CF] rounded-xl text-sm hover:bg-[#7598CF]/8 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <SendHorizonal className="w-4 h-4" />
+                {m3RequestPending ? "Ajuste pendente no M3" : "Solicitar ajuste ao M3"}
+              </button>
             </div>
             <button
               onClick={() => {
@@ -2664,6 +2760,90 @@ export default function SortimentPlan() {
           <p className="text-center text-[9px] text-[#28071C]/25 mt-1">
             Cenários não alteram o plano atual até "Aplicar cenário" ser acionado.
           </p>
+        </div>
+      )}
+
+      {/* ── MODAL: Solicitar ajuste ao Módulo 3 (Sortimento → Divisão) ───────── */}
+      {showRequestM3Modal && (
+        <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowRequestM3Modal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
+              <div>
+                <p className="text-[#F6F3AA] font-bold text-base">Solicitar ajuste ao Módulo 3</p>
+                <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
+                  Envia a receita do mix por divisão para o Planejamento por Divisão revisar as metas.
+                </p>
+              </div>
+              <button onClick={() => setShowRequestM3Modal(false)} className="text-[#F6F3AA]/60 hover:text-[#F6F3AA]">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6 flex-1">
+              <h4 className="text-[#28071C] font-semibold text-xs mb-3 uppercase tracking-wide">
+                Divergência receita do mix × meta da divisão
+              </h4>
+              <div className="rounded-xl overflow-hidden border border-[#28071C]/8 mb-5">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-[#F2F2F2]">
+                      <th className="text-left  text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Divisão</th>
+                      <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Meta M3</th>
+                      <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Mix M5</th>
+                      <th className="text-right text-[10px] text-[#28071C]/40 uppercase tracking-widest font-semibold px-4 py-2">Gap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {buildM3Impacted().map(ind => (
+                      <tr key={ind.key} className="border-t border-[#28071C]/5">
+                        <td className="px-4 py-2.5 text-[#28071C]/70">{ind.label.replace(" — Receita do mix", "")}</td>
+                        <td className="px-4 py-2.5 text-right font-mono text-[#28071C]">R$ {Math.round(ind.planned).toLocaleString("pt-BR")}</td>
+                        <td className="px-4 py-2.5 text-right font-mono font-semibold text-[#7598CF]">R$ {Math.round(ind.projected).toLocaleString("pt-BR")}</td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${ind.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                          {ind.gap >= 0 ? "+" : ""}R$ {Math.round(ind.gap).toLocaleString("pt-BR")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <label className="block text-[#28071C] font-semibold text-xs mb-2 uppercase tracking-wide">
+                Justificativa
+              </label>
+              <textarea
+                value={requestM3Justif}
+                onChange={e => setRequestM3Justif(e.target.value)}
+                rows={3}
+                placeholder="Explique por que o sortimento requer revisão das metas por divisão…"
+                className="w-full rounded-xl border border-[#28071C]/12 px-4 py-3 text-sm text-[#28071C] focus:outline-none focus:border-[#7598CF] resize-none"
+              />
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#28071C]/8 flex gap-3 flex-shrink-0">
+              <button
+                onClick={() => setShowRequestM3Modal(false)}
+                className="flex-1 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm font-semibold hover:bg-[#F2F2F2]">
+                Cancelar
+              </button>
+              <button
+                onClick={handleRequestM3Adjustment}
+                disabled={isSendingM3Request || !requestM3Justif.trim()}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                <SendHorizonal className="w-4 h-4" />
+                {isSendingM3Request ? "Enviando…" : "Enviar ao Módulo 3"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast: pedido M5→M3 enviado */}
+      {m3RequestSent && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9300] bg-[#28071C] text-[#F6F3AA] px-5 py-3 rounded-xl shadow-xl text-sm font-medium flex items-center gap-2">
+          <CheckCircle className="w-4 h-4" />
+          Pedido enviado ao Módulo 3.
         </div>
       )}
 
