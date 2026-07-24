@@ -57,19 +57,6 @@ export default function Login() {
         initPlanCycles(currentUser.tenant_id).catch(() => { /* silent — ciclos carregados sob demanda */ });
       }
 
-      // Conta demo — reinicia o fluxo completo a cada login
-      if (currentUser.email === "contato@thefashionoffice.com.br") {
-        localStorage.removeItem("fashionmind_presentation_seen");
-        localStorage.removeItem("fashionmind_onboarding_complete");
-        localStorage.removeItem("fashionmind_onboarding_profile");
-        // Remove também flags de tour para que os tours reapareçam
-        Object.keys(localStorage)
-          .filter(k => k.startsWith("fashionmind_tour_"))
-          .forEach(k => localStorage.removeItem(k));
-        navigate("/presentation");
-        return;
-      }
-
       if (currentUser.system_role === "support") {
         navigate("/tenant-selector");
         return;
@@ -81,40 +68,42 @@ export default function Login() {
 
         // ── Sincroniza localStorage com o DB (resolve perda de cache entre devices) ──
         const dbDone = await isOnboardingCompleteDb(currentUser.tenant_id).catch(() => false);
-        if (dbDone) {
-          // Hidrata localStorage a partir do DB para que módulos síncronos funcionem
-          await loadOnboardingProfileFromDb(currentUser.tenant_id).catch(() => null);
+        const onboardingDone = dbDone || localStorage.getItem("fashionmind_onboarding_complete") === "true";
+
+        // Onboarding JÁ concluído (fonte canônica = DB) → vai direto ao dashboard,
+        // sem repetir apresentação nem telas de conceito, mesmo em navegador novo.
+        if (onboardingDone) {
+          if (dbDone) await loadOnboardingProfileFromDb(currentUser.tenant_id).catch(() => null);
+          localStorage.setItem("fashionmind_presentation_seen", "true");
+          localStorage.setItem("fashionmind_onboarding_complete", "true");
+          navigate("/dashboard");
+          return;
         }
 
+        // Primeiro acesso do tenant → apresentação e depois onboarding.
         const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
-        if (!presentationSeen) {
-          navigate("/presentation");
-        } else {
-          const onboardingDone = dbDone || localStorage.getItem("fashionmind_onboarding_complete") === "true";
-          if (onboardingDone) navigate("/dashboard");
-          else navigate("/onboarding");
-        }
+        if (!presentationSeen) navigate("/presentation");
+        else navigate("/onboarding");
         return;
       }
 
       // Usuário convidado: fluxo normal de apresentação/onboarding
-      const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
-      if (!presentationSeen) {
-        navigate("/presentation");
+      const tid = currentUser.tenant_id;
+      const dbDoneInv = tid
+        ? await isOnboardingCompleteDb(tid).catch(() => false)
+        : false;
+      const onboardingDoneInv = dbDoneInv || localStorage.getItem("fashionmind_onboarding_complete") === "true";
+
+      // Onboarding do tenant já concluído → dashboard direto (sem repetir telas).
+      if (onboardingDoneInv) {
+        if (dbDoneInv) await loadOnboardingProfileFromDb(tid).catch(() => null);
+        localStorage.setItem("fashionmind_presentation_seen", "true");
+        localStorage.setItem("fashionmind_onboarding_complete", "true");
+        navigate("/dashboard");
       } else {
-        const tid = currentUser.tenant_id;
-        const dbDoneInv = tid
-          ? await isOnboardingCompleteDb(tid).catch(() => false)
-          : false;
-        if (dbDoneInv) {
-          await loadOnboardingProfileFromDb(tid).catch(() => null);
-        }
-        const onboardingDone = dbDoneInv || localStorage.getItem("fashionmind_onboarding_complete") === "true";
-        if (onboardingDone) {
-          navigate("/dashboard");
-        } else {
-          navigate("/onboarding");
-        }
+        const presentationSeen = localStorage.getItem("fashionmind_presentation_seen");
+        if (!presentationSeen) navigate("/presentation");
+        else navigate("/onboarding");
       }
     } catch (err: any) {
       const msg: string = err?.message ?? "";
