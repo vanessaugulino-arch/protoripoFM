@@ -294,14 +294,18 @@ export default function PlanningGateway() {
       )
     : null
 
-  const accRows = activeFieldKeys
+  // Só filtra pelos indicadores priorizados quando existe um plano SALVO (com
+  // versões). Sem plano salvo, o acompanhamento mostra TODOS os indicadores
+  // comparados ao ano anterior — evita tabela vazia quando há apenas um ciclo-stub
+  // (foco/prioridades definidos no setup, mas nenhuma meta salva ainda).
+  const hasSavedPlan = Boolean(currentYearPlan?.versions?.length)
+  const accRows = (activeFieldKeys && hasSavedPlan)
     ? allAccRows.filter(row => activeFieldKeys.has(row.fieldKey))
     : allAccRows
 
-  const accIsFiltered = activeFieldKeys !== null && accRows.length < allAccRows.length
+  const accIsFiltered = activeFieldKeys !== null && hasSavedPlan && accRows.length < allAccRows.length
 
   // ─── Plan-vs-actual mode: ativo quando há cenário salvo para o ano corrente ──
-  const hasSavedPlan = Boolean(currentYearPlan?.versions?.length)
   const planValues   = hasSavedPlan ? currentYearPlan!.versions[0].values : null
 
   const getPlanProrated = (fieldKey: string): number | null => {
@@ -404,7 +408,7 @@ export default function PlanningGateway() {
                   <p className="text-[#28071C]/50 text-xs mt-0.5">{progressLabel}</p>
                 </div>
               </div>
-              {plannedYears.includes(cycleState.currentCalendarYear) ? (
+              {hasSavedPlan ? (
                 <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
                   <CheckCircle2 className="w-3.5 h-3.5" />Plano formal registrado
                 </span>
