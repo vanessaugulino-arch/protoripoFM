@@ -373,7 +373,8 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
       v.mkdPct = (novoMkdRS / v.receitaBruta) * 100
       s.mkdRS  = 'calculated'
       s.mkdPct = 'calculated'
-      s.margemBruta = 'locked'
+      // Margem foi o campo EDITADO → permanece livre (é a decisão do usuário).
+      // Apenas o absorvedor (MKD%) é marcado como calculado.
     }
     // CustoMédio absorve para fechar a margem, mantendo o markdown fixo.
     //   Custo = (RL×(1−Margem%) − MKD R$) / Peças
@@ -382,7 +383,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
       const cpvTotal = rl! * (1 - v.margemBruta / 100)
       v.custoMedio   = Math.max(0, (cpvTotal - mkdRS) / pec!)
       s.custoMedio   = 'locked'
-      s.margemBruta  = 'locked'
+      // Margem foi o campo EDITADO → permanece livre; o Custo é o absorvedor.
     }
     // Margem% absorve (derivada de custo + markdown).
     const margemAbsorve = () => {
@@ -399,7 +400,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
         v.receitaBruta   = v.receitaLiquida + (v.devolucoes ?? 0)
         s.receitaLiquida = 'calculated'
         s.receitaBruta   = 'calculated'
-        s.margemBruta    = 'locked'
+        // Margem e Custo foram EDITADOS → seguem livres; a Receita é derivada.
       } else if (hasMarg) {
         // Editou Margem → MKD% absorve por padrão; Custo absorve se MKD tocado e Custo não
         if (hasMkd && !hasCusto) custoAbsorve()
