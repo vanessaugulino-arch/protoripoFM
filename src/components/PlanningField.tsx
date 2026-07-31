@@ -90,15 +90,20 @@ export function PlanningField({
   const [hasChanged, setHasChanged] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Helper: converte número para string pt-BR sem separador de milhar (para edição)
+  // Casas decimais por formato (peças/dias inteiros; demais até 2).
+  const maxFrac = (format === 'pieces' || format === 'days') ? 0 : 2
+  // String para EDIÇÃO — sem separador de milhar (facilita digitar/substituir).
   const toEditStr = (n: number): string =>
-    n.toLocaleString('pt-BR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 6 })
+    n.toLocaleString('pt-BR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: maxFrac })
+  // String para EXIBIÇÃO — com ponto de milhar (quando o campo NÃO está em foco).
+  const toDisplayStr = (n: number): string =>
+    n.toLocaleString('pt-BR', { useGrouping: true, minimumFractionDigits: 0, maximumFractionDigits: maxFrac })
 
   // Sincroniza localStr quando value muda externamente (reset, loadScenario…)
   // mas NUNCA enquanto o usuário está com foco no campo.
   useEffect(() => {
     if (!hasFocus) {
-      setLocalStr(value !== null ? toEditStr(value) : '')
+      setLocalStr(value !== null ? toDisplayStr(value) : '')
     }
   }, [value, hasFocus])
 
