@@ -190,9 +190,35 @@ export default function PlanningGateway() {
 
   const handleReview = () => {
     if (!reviewYear) return
-    navigate("/planning-setup", {
-      state: { year: reviewYear, mode: "review" },
-    })
+    // Revisão de meio de ciclo NÃO redefine o foco (isso descaracterizaria o plano
+    // vigente). Vai direto à tela de indicadores, herdando foco e prioridades já
+    // definidos no ciclo. Só cai no setup se, por algum motivo, o ciclo não existir.
+    const cycle = getPlanCycle(reviewYear)
+    if (cycle) {
+      // Projeção de fim de ano por indicador (ACC realizado extrapolado para 12
+      // meses nos fluxos; taxas mantidas). Alimenta a coluna "Projeção" da tela de
+      // indicadores para orientar a revisão de meio de ciclo.
+      const projection = accCY ? {
+        receitaBruta: getProjection(accCY.receita,   "receitaBruta"),
+        margemBruta:  accCY.margemBruta,
+        pmv:          accCY.pmv,
+        orcamento:    getProjection(accCY.orcamento, "orcamento"),
+        giro:         accCY.giro,
+        gmroi:        accCY.gmroi,
+      } : null
+      navigate("/planning", {
+        state: {
+          year: reviewYear,
+          mode: "review",
+          focus: cycle.focus,
+          ...(cycle.customFocusName ? { customFocusName: cycle.customFocusName } : {}),
+          fieldPriorities: cycle.fieldPriorities,
+          ...(projection ? { projection } : {}),
+        },
+      })
+    } else {
+      navigate("/planning-setup", { state: { year: reviewYear, mode: "review" } })
+    }
   }
 
   const handleNewCycle = () => {

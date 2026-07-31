@@ -65,6 +65,8 @@ interface LocationState {
   focus?: StrategicFocus
   customFocusName?: string
   fieldPriorities?: PlanFieldPriority[]
+  /** Projeção de fim de ano por indicador (revisão de meio de ciclo). */
+  projection?: Record<string, number | null>
 }
 
 // ─── Historical database ──────────────────────────────────────────────────────
@@ -256,6 +258,9 @@ export default function Planning() {
     : (focus ? STRATEGIC_FOCUS_LABELS[focus] : null)
 
   const fieldPriorities: PlanFieldPriority[] = routeState?.fieldPriorities ?? []
+  // Projeção de fim de ano por indicador (vinda do gateway em revisão). Quando
+  // presente, a tabela consolidada ganha a coluna "Projeção".
+  const projection: Record<string, number | null> | null = routeState?.projection ?? null
 
   const getHist = (yr: string) =>
     historicalDatabase.find(d => d.year === yr) ?? historicalDatabase[historicalDatabase.length - 1]
@@ -1030,9 +1035,12 @@ export default function Planning() {
 
             <div className="p-4">
               <div className="grid grid-cols-12 gap-2 mb-2 pb-1.5 border-b-2 border-[#28071C]/10">
-                <span className="col-span-5 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold">Indicador</span>
-                <span className="col-span-4 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right">Plano {year}</span>
-                <span className="col-span-3 text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right">vs Referência</span>
+                <span className={`${projection ? "col-span-4" : "col-span-5"} text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold`}>Indicador</span>
+                <span className={`${projection ? "col-span-3" : "col-span-4"} text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right`}>Plano {year}</span>
+                {projection && (
+                  <span className="col-span-3 text-[#7598CF] text-[10px] uppercase tracking-widest font-semibold text-right">Projeção</span>
+                )}
+                <span className={`${projection ? "col-span-2" : "col-span-3"} text-[#28071C]/50 text-[10px] uppercase tracking-widest font-semibold text-right`}>vs Ref.</span>
               </div>
               <div className="space-y-0.5">
                 {allPlanRows.map((row, i) => {
@@ -1050,9 +1058,14 @@ export default function Planning() {
                         </div>
                       )}
                       <div key={row.key} className="grid grid-cols-12 gap-2 items-center py-1.5 border-b border-[#28071C]/5 last:border-0 hover:bg-[#7598CF]/4 rounded-lg px-1 transition-colors">
-                        <span className={`col-span-5 text-sm ${i < planSplitAt ? "text-[#28071C]/70" : "text-[#28071C]/40"}`}>{row.label}</span>
-                        <span className={`col-span-4 text-right text-sm font-semibold ${i < planSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtPlan(row.label, row.plan)}</span>
-                        <div className="col-span-3 flex items-center justify-end gap-0.5">
+                        <span className={`${projection ? "col-span-4" : "col-span-5"} text-sm ${i < planSplitAt ? "text-[#28071C]/70" : "text-[#28071C]/40"}`}>{row.label}</span>
+                        <span className={`${projection ? "col-span-3" : "col-span-4"} text-right text-sm font-semibold ${i < planSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtPlan(row.label, row.plan)}</span>
+                        {projection && (
+                          <span className={`col-span-3 text-right text-sm font-mono ${projection[row.key] != null ? "text-[#7598CF]" : "text-[#28071C]/25"}`}>
+                            {projection[row.key] != null ? fmtPlan(row.label, projection[row.key] as number) : "—"}
+                          </span>
+                        )}
+                        <div className={`${projection ? "col-span-2" : "col-span-3"} flex items-center justify-end gap-0.5`}>
                           {row.plan !== null && <>
                             <span className={`text-[11px] font-medium ${vRef >= 0 ? "text-emerald-600" : "text-red-600"}`}>{fmtVar(vRef)}</span>
                             {vRef >= 0 ? <ArrowUp className="w-3 h-3 text-emerald-600" /> : <ArrowDown className="w-3 h-3 text-red-600" />}
