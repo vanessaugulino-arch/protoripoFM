@@ -213,7 +213,14 @@ export function addVersionToCycle(
 // ─── Mapeamento DB row → AnnualPlanCycle ─────────────────────────────────────
 
 function _rowToCycle(row: Record<string, unknown>): AnnualPlanCycle {
-  const fp = row.field_priorities
+  // field_priorities pode chegar como LISTA (savePlanCycle) ou como OBJETO
+  // keyed por indicador (PlanningSetup/saveCycle). Normaliza para lista — sem
+  // isso, o objeto era lido como lista vazia e o Acompanhamento do M1 ficava
+  // sem indicadores após um reload.
+  const fpRaw = row.field_priorities
+  const fp = Array.isArray(fpRaw)
+    ? fpRaw
+    : (fpRaw && typeof fpRaw === 'object' ? Object.values(fpRaw as Record<string, unknown>) : [])
   const vs = row.versions
 
   return {
@@ -221,7 +228,7 @@ function _rowToCycle(row: Record<string, unknown>): AnnualPlanCycle {
     mode:               (row.mode            as PlanMode)         ?? 'new',
     focus:              (row.focus           as StrategicFocus)   ?? 'crescimento',
     customFocusName:    row.custom_focus_name as string | undefined,
-    fieldPriorities:    (Array.isArray(fp) ? fp : [])            as PlanFieldPriority[],
+    fieldPriorities:    fp                                       as PlanFieldPriority[],
     indicatorPriorities: [],
     versions:           (Array.isArray(vs) ? vs : [])            as AnnualPlanVersion[],
     createdAt:          (row.created_at      as string)           ?? new Date().toISOString(),
