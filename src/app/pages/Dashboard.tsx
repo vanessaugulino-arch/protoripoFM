@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
+import { getM3AppliedYears } from "../../services/supabase/divisionScenarioService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 
@@ -161,7 +162,7 @@ function isModuleUnlocked(
   card: ModuleCard,
   plannedYears: number[],
   reviewedYears: number[],
-  hasActiveM3: boolean,
+  m3ActiveYears: number[],
   isDemoMode: boolean,
 ): boolean {
   if (card.id === 1) return true;
@@ -173,7 +174,10 @@ function isModuleUnlocked(
   return card.requiresModules.every((req) => {
     if (req === 1) return Boolean(getPlanCycle(latestYear)?.versions?.length);
     if (req === 2) return reviewedYears.includes(latestYear);
-    if (req === 3) return hasActiveM3;
+    // M3 só conta como "ativo" se o cenário aplicado for do MESMO ciclo/ano que
+    // está sendo avaliado — um M3 aplicado num ano anterior não pode liberar
+    // M5 para um ciclo novo que ainda não passou por M3.
+    if (req === 3) return m3ActiveYears.includes(latestYear);
     return true;
   });
 }
@@ -189,7 +193,7 @@ export default function Dashboard() {
 
   const plannedYears = getPlannedYears();
   const [reviewedYears, setReviewedYears] = useState<number[]>([]);
-  const [hasM3Active, setHasM3Active] = useState(false);
+  const [m3ActiveYears, setM3ActiveYears] = useState<number[]>([]);
 
   // Modo Desenvolvimento: bypassa todos os locks — disponível para client_admin e support
   const [devMode, setDevMode] = useState<boolean>(() => {
@@ -218,18 +222,9 @@ export default function Dashboard() {
       const u = JSON.parse(storedUserStr);
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
       if (tid) {
-        // Carrega anos revisados (M2) e cenário ativo M3 do Supabase
+        // Carrega anos revisados (M2) e anos com M3 aplicado, do Supabase
         getReviewedYears(tid).then(setReviewedYears).catch(() => {});
-        supabase
-          .from("division_scenarios")
-          .select("id")
-          .eq("tenant_id", tid)
-          .eq("is_applied", true)
-          .limit(1)
-          .then(
-            ({ data }: { data: { id: string }[] | null }) => setHasM3Active((data ?? []).length > 0),
-            () => {},
-          );
+        getM3AppliedYears(tid).then(setM3ActiveYears).catch(() => {});
 
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
@@ -270,7 +265,7 @@ export default function Dashboard() {
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked)) return;
+    if (!isModuleUnlocked(card, plannedYears, reviewedYears, m3ActiveYears, allUnlocked)) return;
     navigate(card.route);
   };
 
@@ -401,7 +396,7 @@ export default function Dashboard() {
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked);
+            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, m3ActiveYears, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;
