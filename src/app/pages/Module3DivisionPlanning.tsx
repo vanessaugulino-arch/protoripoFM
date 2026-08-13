@@ -97,10 +97,10 @@ import {
   PriceRange,
   RiskMatrix,
   VolumeAndCoverage,
-  DEFAULT_DIVISIONS,
   isValidRiskMatrix,
   isValidPriceRange,
 } from "../types/module3";
+import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import {
   applyModule3Scenario,
@@ -257,6 +257,9 @@ export default function Module3DivisionPlanning() {
   const tour     = useTour("module3-division");
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
+  // Divisões reais do tenant (products.division) — substitui a lista fixa de 4.
+  const [realDivisions, setRealDivisions] = useState<TenantDivision[]>([]);
+  const [divisionsLoaded, setDivisionsLoaded] = useState(false);
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
@@ -333,6 +336,23 @@ export default function Module3DivisionPlanning() {
     setIsLoading(false);
   }, [navigate]);
 
+  // ─── Divisões reais do tenant (products.division) ─────────────────────────
+  // Antes: lista fixa ["feminino","masculino","acessorios","infantil"] pra
+  // qualquer cliente. Agora: só aparece o que o tenant realmente tem no catálogo.
+  useEffect(() => {
+    if (!tenantId) return;
+    fetchTenantDivisions(tenantId)
+      .then(setRealDivisions)
+      .catch(() => setRealDivisions([]))
+      .finally(() => setDivisionsLoaded(true));
+  }, [tenantId]);
+
+  const divisionIds = useMemo(() => realDivisions.map((d) => d.id), [realDivisions]);
+  const divisionLabels = useMemo(
+    () => Object.fromEntries(realDivisions.map((d) => [d.id, d.label])) as Record<string, string>,
+    [realDivisions],
+  );
+
   // ─── Metas macro derivadas do Módulo 1 ───────────────────────────────────
   const selectedTemporada = temporadas.find((t) => String(t.id) === selectedSeasonId);
   const referenceTemporada = temporadas.find((t) => String(t.id) === referenceSeasonId);
@@ -397,6 +417,7 @@ export default function Module3DivisionPlanning() {
     seasonId: selectedSeasonId,
     referenceSeasonId,
     macroTargets,
+    divisionIds,
   });
 
   const meetsTarget = validateAgainstMacro();
@@ -415,30 +436,30 @@ export default function Module3DivisionPlanning() {
 
       // Aplica proporções históricas somente quando não há cenário salvo para a temporada
       const existingScenarios = listModule3Scenarios(selectedSeasonId);
-      if (existingScenarios.length === 0 && profiles.hasData) {
-        const validDivisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
-        const histPcts = normalizeDivisionPcts(profiles.divisions, validDivisions);
-        validDivisions.forEach(divId => {
+      if (existingScenarios.length === 0 && profiles.hasData && divisionIds.length > 0) {
+        const histPcts = normalizeDivisionPcts(profiles.divisions, divisionIds);
+        divisionIds.forEach(divId => {
           if ((histPcts[divId] ?? 0) > 0) {
             updateDivisionParticipation(divId, histPcts[divId]);
           }
         });
       }
     }).catch(() => {});
-  }, [tenantId, selectedSeasonId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenantId, selectedSeasonId, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Busca médias históricas por faixa para todas as divisões — usadas na compact card view.
   // Carrega os ranges dinâmicos do OperationSettings antes de filtrar os produtos;
   // cai no fallback hardcoded se o tenant ainda não configurou as faixas.
   useEffect(() => {
-    if (!tenantId) return;
-    const divisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
+    if (!tenantId || divisionIds.length === 0) return;
 
     loadAllDivisionGlobalRanges(tenantId).then(divRanges => {
       Promise.all(
-        divisions.map(divId => {
+        divisionIds.map(divId => {
           const ranges = divRanges?.[divId] ?? M3_TIER_RANGES_FALLBACK;
-          return fetchHistoricalTierAvgs(tenantId, divId, ranges)
+          // products.division guarda o rótulo real ("Feminino"), não o id normalizado.
+          const realLabel = divisionLabels[divId] ?? divId;
+          return fetchHistoricalTierAvgs(tenantId, realLabel, ranges)
             .then(avgs => [divId, avgs] as [BusinessDivisionId, TierHistoricalAvg])
             .catch(() => [divId, { p1: null, p2: null, p3: null }] as [BusinessDivisionId, TierHistoricalAvg]);
         }),
@@ -446,7 +467,7 @@ export default function Module3DivisionPlanning() {
         setHistoricalAvgs(Object.fromEntries(results) as Record<BusinessDivisionId, TierHistoricalAvg>);
       });
     });
-  }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenantId, divisionIds, divisionLabels]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalParticipation = Object.values(state.divisions).reduce(
     (sum, d) => sum + d.participation,
@@ -778,9 +799,20 @@ export default function Module3DivisionPlanning() {
               </span>
             </div>
           )}
+          {divisionsLoaded && divisionIds.length === 0 && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-900 mt-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>
+                Nenhuma divisão encontrada no catálogo de produtos. Importe seu catálogo (com a divisão de cada produto preenchida) para planejar o Módulo 3.{" "}
+                <button onClick={() => navigate("/operation-settings")} className="underline font-semibold">
+                  Ir para Configurações de Operação
+                </button>
+              </span>
+            </div>
+          )}
         </div>
 
-        {selectedSeasonId && (
+        {selectedSeasonId && divisionIds.length > 0 && (
           <>
             {/* ══════════════════════════════════════════════════════════════ */}
             {/* PARTE B — MENSAGEM DE ORIENTAÇÃO                              */}
@@ -819,14 +851,14 @@ export default function Module3DivisionPlanning() {
                     )}
                   </div>
                 </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => {
+                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(divisionIds.length, 1)}, minmax(0, 1fr))` }}>
+                  {divisionIds.map((divId) => {
                     const block = state.divisions[divId];
                     if (!block) return null;
                     return (
                       <div key={divId} className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-lg px-3 py-2">
                         <div className="text-[10px] uppercase tracking-wide text-[#28071C]/60 mb-1 font-semibold">
-                          {DEFAULT_DIVISIONS[divId]}
+                          {divisionLabels[divId] ?? divId}
                         </div>
                         <div className="flex items-center gap-1 mb-1">
                           <input
@@ -940,12 +972,16 @@ export default function Module3DivisionPlanning() {
             {/* PARTE D — BLOCOS POR DIVISÃO (4 colunas, cards empilhados)    */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div id="tour-m3-divisions" className="grid grid-cols-4 gap-3">
-              {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => (
+            <div id="tour-m3-divisions" className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(divisionIds.length, 1)}, minmax(0, 1fr))` }}>
+              {divisionIds.map((divId) => {
+                const block = state.divisions[divId];
+                if (!block) return null;
+                return (
                 <DivisionBlockCard
                   key={divId}
                   divId={divId}
-                  block={state.divisions[divId]}
+                  divisionLabel={divisionLabels[divId] ?? divId}
+                  block={block}
                   expanded={true}
                   onExpand={() => {}}
                   onUpdateIndicators={(ind) => updateIndicators(divId, ind)}
@@ -956,7 +992,8 @@ export default function Module3DivisionPlanning() {
                   tenantId={tenantId}
                   historicalAvgs={historicalAvgs}
                 />
-              ))}
+                );
+              })}
             </div>
 
             {/* ══════════════════════════════════════════════════════════════ */}
@@ -1487,6 +1524,7 @@ export default function Module3DivisionPlanning() {
 
 interface DivisionBlockCardProps {
   divId: BusinessDivisionId;
+  divisionLabel: string;
   block: DivisionPlanBlock;
   expanded: boolean;
   onExpand: () => void;
@@ -1501,6 +1539,7 @@ interface DivisionBlockCardProps {
 
 function DivisionBlockCard({
   divId,
+  divisionLabel,
   block,
   onUpdateIndicators,
   onUpdateRiskMatrix,
@@ -1517,7 +1556,7 @@ function DivisionBlockCard({
   const riskValid = isValidRiskMatrix(block.riskMatrix);
   const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
 
-  const divisionName = DEFAULT_DIVISIONS[divId];
+  const divisionName = divisionLabel;
 
   return (
     <div className="space-y-2">
@@ -1553,6 +1592,7 @@ function DivisionBlockCard({
                       seasonId,
                       referenceSeasonId,
                       tenantId,
+                      divisionLabel,
                     },
                   });
                 }}
@@ -1620,7 +1660,7 @@ function DivisionBlockCard({
       {/* Cabeçalho do segmento */}
       <div className="bg-[#28071C] rounded-xl px-3 py-2">
         <div className="text-[#F6F3AA] text-[11px] font-bold uppercase tracking-wide">
-          {DEFAULT_DIVISIONS[divId]}
+          {divisionLabel}
         </div>
         <div className="text-[#F6F3AA]/55 text-[10px] mt-0.5">
           {block.participation}% · PMV R${block.indicators.avgPrice.toFixed(0)} · M {block.indicators.margin.toFixed(0)}% · ST {block.indicators.sellThrough.toFixed(0)}%

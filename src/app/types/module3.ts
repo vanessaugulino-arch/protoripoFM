@@ -6,7 +6,11 @@
  */
 
 // ─── Divisões de Negócio ──────────────────────────────────────────────────────
-export type BusinessDivisionId = "feminino" | "masculino" | "acessorios" | "infantil";
+// Antes era um union fixo ("feminino" | "masculino" | "acessorios" | "infantil"),
+// mostrando 4 divisões pra qualquer tenant independente do catálogo real. Agora
+// é dinâmico — as divisões vêm de productHierarchyService.fetchTenantDivisions,
+// que lê os valores reais de products.division do tenant.
+export type BusinessDivisionId = string;
 
 export interface BusinessDivision {
   id: BusinessDivisionId;
@@ -230,18 +234,3 @@ export function isValidPriceRange(priceRange: PriceRange): boolean {
   return Math.abs(total - 100) < 0.01;
 }
 
-// ─── Divisões Padrão ──────────────────────────────────────────────────────
-export const DEFAULT_DIVISIONS: Record<BusinessDivisionId, string> = {
-  feminino: "Feminino Adulto",
-  masculino: "Masculino Adulto",
-  acessorios: "Acessórios",
-  infantil: "Infantil",
-};
-
-// ─── Participações Iniciais Padrão ────────────────────────────────────────
-export const DEFAULT_PARTICIPATION: Record<BusinessDivisionId, number> = {
-  feminino: 45,
-  masculino: 35,
-  acessorios: 15,
-  infantil: 5,
-};

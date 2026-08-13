@@ -13,7 +13,6 @@ import {
   PriceRange,
   VolumeAndCoverage,
   SeasonConsolidated,
-  DEFAULT_PARTICIPATION,
   calculateSellThrough,
 } from "../app/types/module3";
 import {
@@ -27,6 +26,8 @@ export interface UseModule3Options {
   seasonId: string;
   referenceSeasonId: string;
   macroTargets: MacroTarget;
+  // Divisões reais do tenant (vindas de fetchTenantDivisions) — nunca uma lista fixa.
+  divisionIds: string[];
 }
 
 function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated {
@@ -53,13 +54,17 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * produz EXATAMENTE os valores do M1.
  * O usuário depois ajusta por divisão; desvios disparam o fluxo de aprovação.
  */
-function initializeDivisions(macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
+function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
   const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
+  // Bootstrap com divisão igualitária — o efeito de proporções históricas reais
+  // (Module3DivisionPlanning, via getHistoricalProfiles) corrige isso logo em
+  // seguida quando não há cenário salvo ainda.
+  const equalShare = divisionIds.length > 0 ? 100 / divisionIds.length : 0;
 
-  (["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).forEach((divId) => {
+  divisionIds.forEach((divId) => {
     divisions[divId] = {
       divisionId: divId,
-      participation: DEFAULT_PARTICIPATION[divId],
+      participation: equalShare,
       indicators: {
         // Lê do M1; fallback para valores de referência quando M1 não tem o indicador
         avgPrice:    195,
@@ -109,7 +114,7 @@ export function useModule3(options: UseModule3Options) {
   const [state, setState] = useState<Module3State>(() => ({
     selectedSeasonId: options.seasonId,
     referenceSeasonId: options.referenceSeasonId,
-    divisions: initializeDivisions(options.macroTargets),
+    divisions: initializeDivisions(options.divisionIds, options.macroTargets),
     scenarios: options.seasonId ? listModule3Scenarios(options.seasonId) : [],
     activeScenarioId: undefined,
     consolidated: buildInitialConsolidated(options.macroTargets),
@@ -117,20 +122,23 @@ export function useModule3(options: UseModule3Options) {
     error: undefined,
   }));
 
-  // Re-inicializar quando a temporada muda
+  // Re-inicializar quando a temporada muda OU quando as divisões reais do tenant
+  // chegam (elas são buscadas assincronamente — no primeiro render costumam
+  // estar vazias).
+  const divisionIdsKey = options.divisionIds.join(",");
   useEffect(() => {
-    if (!options.seasonId) return;
+    if (!options.seasonId || options.divisionIds.length === 0) return;
     setState((prev) => ({
       ...prev,
       selectedSeasonId: options.seasonId,
       referenceSeasonId: options.referenceSeasonId,
-      divisions: initializeDivisions(options.macroTargets),
+      divisions: initializeDivisions(options.divisionIds, options.macroTargets),
       scenarios: listModule3Scenarios(options.seasonId),
       activeScenarioId: undefined,
       consolidated: buildInitialConsolidated(options.macroTargets),
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.seasonId]);
+  }, [options.seasonId, divisionIdsKey]);
 
   // Propagação delta: quando as taxas do M1 mudam dentro da mesma temporada,
   // cada divisão tem sua taxa multiplicada pelo mesmo fator k.
