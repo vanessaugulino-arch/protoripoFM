@@ -69,9 +69,15 @@ export interface VolumeAndCoverage {
   
   // Comum
   coverage: number;                 // Dias de cobertura de estoque
-  initialStock: number;             // Estoque inicial em peças
-  replenishments: number;           // Total de reposições no período
+  initialStock: number;             // Estoque inicial em peças — fato real, protegido
+  replenishments: number;           // Total de reposições no período — calculado (absorve)
   unitsExpectedSold: number;        // Peças esperadas a vender (base para sell-through)
+
+  // Cluster Giro × Cobertura × Estoque Médio — o usuário só edita UMA ponta por
+  // vez; as outras duas são recalculadas (ver applyVolumeCoverageEdit). Nenhuma
+  // combinação de duas pontas ao mesmo tempo é permitida.
+  giro?: number;                    // Vezes que o estoque "vira" na temporada
+  estoqueMedio?: number;             // Peças — ponto médio entre estoque inicial e final
 }
 
 // ─── Bloco de Planejamento por Divisão ──────────────────────────────────────

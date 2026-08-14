@@ -91,6 +91,12 @@ function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget):
         initialStock: 1000,
         replenishments: 500,
         unitsExpectedSold: 1200,
+        // Bootstrap do cluster Giro/Cobertura/Estoque Médio — placeholder até o
+        // usuário tocar em qualquer ponta (aí sim vira a conta real, com os
+        // dias reais da temporada). 180 dias ~ 6 meses fiscais, mesmo fallback
+        // usado quando a temporada ainda não carregou.
+        giro: 180 / 45,
+        estoqueMedio: 1200 / (180 / 45),
       },
       meetsTarget: true,
       status: "draft",

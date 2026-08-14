@@ -102,6 +102,7 @@ import {
 } from "../types/module3";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
+import { applyVolumeCoverageEdit, recalcVolumeClusterFromAnchor } from "../../engine/divisionEngineAdapter";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
@@ -371,6 +372,13 @@ export default function Module3DivisionPlanning() {
   // ─── Metas macro derivadas do Módulo 1 ───────────────────────────────────
   const selectedTemporada = temporadas.find((t) => String(t.id) === selectedSeasonId);
   const referenceTemporada = temporadas.find((t) => String(t.id) === referenceSeasonId);
+
+  // Base real do cluster Giro/Cobertura/Estoque Médio (Bloco 4): dias da
+  // temporada de verdade, não um "365" genérico. 30 dias/mês, mesma convenção
+  // já usada em outros lugares do app (ex: prazo de fornecedor em supplyService).
+  const diasDaTemporada = selectedTemporada
+    ? countSeasonMonths(selectedTemporada.mesInicio, selectedTemporada.mesFim) * 30
+    : 180;
 
   const macroTargets: MacroTarget = useMemo(() => {
     if (!selectedTemporada) {
@@ -992,14 +1000,11 @@ export default function Module3DivisionPlanning() {
                           const planned   = macroM1Extras.values[key] ?? 0;
                           const projected = getM3ConsolidatedValue(key, state.consolidated);
                           const gap       = projected - planned;
-                          const band      = APPROVAL_BANDS_M3[key];
-                          // "meets" usa threshold de 95% para indicadores ↑ melhor,
-                          // e banda positiva para indicadores ↓ melhor
-                          const meets     = planned === 0 || (
-                            band?.higherIsBetter === false
-                              ? gap <= band.badPos
-                              : projected >= planned * 0.95
-                          );
+                          // Mesma régua do banner/botão de aprovação (bandas bilaterais
+                          // do PRD, Seção 5.2) — antes era uma conta solta de ">=95% da
+                          // meta" que não existe no PRD e discordava do banner (um cartão
+                          // podia aparecer verde com o indicador fora da banda de verdade).
+                          const meets     = planned === 0 || !isOutsideBandM3(key, planned, projected);
                           return (
                             <div key={key} className={`rounded-lg px-2.5 py-1.5 border bg-white/80 ${
                               meets ? "border-green-200" : "border-red-200"
@@ -1073,6 +1078,7 @@ export default function Module3DivisionPlanning() {
                   referenceSeasonId={referenceSeasonId}
                   tenantId={tenantId}
                   historicalAvgs={historicalAvgs}
+                  diasDaTemporada={diasDaTemporada}
                 />
                 );
               })}
@@ -1617,6 +1623,7 @@ interface DivisionBlockCardProps {
   referenceSeasonId: string;
   tenantId: string;
   historicalAvgs: Partial<Record<BusinessDivisionId, TierHistoricalAvg>>;
+  diasDaTemporada: number;
 }
 
 function DivisionBlockCard({
@@ -1630,6 +1637,7 @@ function DivisionBlockCard({
   referenceSeasonId,
   tenantId,
   historicalAvgs,
+  diasDaTemporada,
 }: DivisionBlockCardProps) {
   const navigate = useNavigate();
   const [isProducer, setIsProducer] = useState(true);
@@ -1639,6 +1647,24 @@ function DivisionBlockCard({
   const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
 
   const divisionName = divisionLabel;
+
+  // ── Cluster Giro × Cobertura × Estoque Médio — só uma ponta por vez ────────
+  const volumeClusterInputs = {
+    vendasEsperadas: block.volumeCoverage.unitsExpectedSold,
+    estoqueInicial:  block.volumeCoverage.initialStock,
+    diasDaTemporada,
+  };
+  const handleVolumeClusterEdit = (field: "giro" | "coverage" | "estoqueMedio", value: number) => {
+    const r = applyVolumeCoverageEdit(field, value, volumeClusterInputs);
+    onUpdateVolume({ giro: r.giro, coverage: r.coverage, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
+  };
+  // Vendas Esp. e Est. Inicial não fazem parte do round-robin, mas ainda
+  // precisam refletir nele — mantém a Cobertura atual como referência.
+  const handleAnchorEdit = (patch: Partial<VolumeAndCoverage>) => {
+    const nextInputs = { ...volumeClusterInputs, ...patch };
+    const r = recalcVolumeClusterFromAnchor(block.volumeCoverage.coverage, nextInputs);
+    onUpdateVolume({ ...patch, giro: r.giro, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
+  };
 
   return (
     <div className="space-y-2">
@@ -1898,24 +1924,50 @@ function DivisionBlockCard({
             />
           )}
           <CompactField
-            label="Cobertura (d)"
-            value={block.volumeCoverage.coverage}
-            onChange={(v) => onUpdateVolume({ coverage: v })}
-            tooltip="Quantos dias o estoque disponível cobre as vendas planejadas. Cobertura alta aumenta risco de sobrestoque e capital parado."
+            label="Vendas Esp."
+            value={block.volumeCoverage.unitsExpectedSold}
+            onChange={(v) => handleAnchorEdit({ unitsExpectedSold: v })}
+            tooltip="Peças esperadas a vender na temporada. É a âncora do cluster Giro/Cobertura/Estoque Médio abaixo — mudar aqui recalcula os três mantendo a Cobertura atual como referência."
           />
           <CompactField
             label="Est. Inicial"
             value={block.volumeCoverage.initialStock}
-            onChange={(v) => onUpdateVolume({ initialStock: v })}
-            tooltip="Quantidade de peças em estoque no início da temporada para esta divisão."
+            onChange={(v) => handleAnchorEdit({ initialStock: v })}
+            tooltip="Quantidade de peças em estoque no início da temporada — fato real, não é recalculado pelo cluster abaixo. Mudar aqui ajusta as Reposições pra manter o Estoque Médio consistente."
           />
-          <CompactField
-            label="Reposições"
-            value={block.volumeCoverage.replenishments}
-            onChange={(v) => onUpdateVolume({ replenishments: v })}
-            tooltip="Quantidade de peças de reposição previstas para recebimento ao longo da temporada."
-          />
-          <CompactField label="Vendas Esp."     value={block.volumeCoverage.unitsExpectedSold} onChange={(v) => onUpdateVolume({ unitsExpectedSold: v })} />
+
+          {/* Cluster Giro × Cobertura × Estoque Médio — edite UMA ponta por vez;
+              as outras duas se recalculam automaticamente. */}
+          <div className="pt-1 border-t border-[#28071C]/10 space-y-1.5">
+            <CompactField
+              label="Giro"
+              value={block.volumeCoverage.giro ?? 0}
+              onChange={(v) => handleVolumeClusterEdit("giro", v)}
+              suffix="x"
+              tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula Cobertura e Estoque Médio — as três pontas nunca são editadas juntas."
+            />
+            <CompactField
+              label="Cobertura (d)"
+              value={block.volumeCoverage.coverage}
+              onChange={(v) => handleVolumeClusterEdit("coverage", v)}
+              tooltip="Quantos dias o estoque médio cobre as vendas planejadas. Editar aqui recalcula Giro e Estoque Médio."
+            />
+            <CompactField
+              label="Estoque Médio"
+              value={block.volumeCoverage.estoqueMedio ?? 0}
+              onChange={(v) => handleVolumeClusterEdit("estoqueMedio", v)}
+              tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula Giro e Cobertura."
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
+            <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
+              Reposições (calc.)
+            </label>
+            <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">
+              {Math.round(block.volumeCoverage.replenishments).toLocaleString("pt-BR")}
+            </div>
+          </div>
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
             <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">ST Calc.</label>
             <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">
