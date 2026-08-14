@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
@@ -18,6 +18,8 @@ import {
 import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
 import { recomputeOfficialMacro, advanceDetailLevel } from "../../services/supabase/officialPlanService";
 import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
+import { applyDivisionEdit, mapToEngineField, type DivisionIndicators } from "../../engine/divisionEngineAdapter";
+import type { FieldKey } from "../../engine/planningEngine";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -425,12 +427,19 @@ export default function ChannelPlanning() {
     () => initChannelData(macroReceita, macroRatesForChannels)
   );
 
-  // Rastreia PMV/Custo tocados manualmente por canal, nesta sessão de edição.
-  // Regra: markdown só absorve automaticamente a diferença de margem quando o
-  // usuário NÃO mexeu em preço/custo — se já mexeu, ele assumiu outro caminho
-  // pra chegar na margem (aumentar preço, baixar custo), e o sistema não deve
-  // sobrepor isso empurrando o markdown sozinho.
-  const [touchedPriceOrCost, setTouchedPriceOrCost] = useState<Partial<Record<ChannelId, true>>>({});
+  // Rastreia quais das 3 alavancas não-margem (PMV, Custo, MKD) foram tocadas
+  // manualmente por canal, nesta sessão de edição. Regra: MKD é a alavanca
+  // padrão pra fechar a margem — o usuário pode tocar MAIS UMA alavanca (ex:
+  // preço) que a sugestão de compensação via MKD continua disponível. Só
+  // quando DUAS das três alavancas já foram tocadas é que ele esgotou a
+  // folga (já escolheu outro caminho pra margem) e a sugestão para de aparecer.
+  const [touchedLevers, setTouchedLevers] = useState<Partial<Record<ChannelId, Set<"pmv" | "custoMedio" | "mkdPct">>>>({});
+
+  // Campos do motor (pmv, margemBruta, mkdPct, custoMedio) já tocados por
+  // canal, acumulados entre edições — alimenta o mesmo motor de clusters do
+  // M1/M3 (applyDivisionEdit) pra que Margem/MKD/PMV/Custo se recalculem
+  // sozinhos aqui também, com a mesma regra "trava depois de 2 alavancas".
+  const touchedChannelFieldsRef = useRef<Partial<Record<ChannelId, Set<FieldKey>>>>({});
 
   useEffect(() => {
     const plan      = getPlanCycle(selectedYear);
@@ -481,7 +490,8 @@ export default function ChannelPlanning() {
     };
 
     setPercents(initPercents);
-    setTouchedPriceOrCost({});
+    setTouchedLevers({});
+    touchedChannelFieldsRef.current = {};
 
     if (!tenantId) {
       setChannelData(initChannelData(newMacroR, newRates));
@@ -559,17 +569,63 @@ export default function ChannelPlanning() {
     setEditingValue(isNaN(rawVal) ? "" : String(rawVal));
   };
 
+  // Campo do canal → campo do motor de clusters (mesmo quarteto do M1/M3).
+  // Giro/Cobertura/GMROI ficam de fora por ora — não fazem parte da regra
+  // Margem/MKD/PMV/Custo em discussão.
+  const CHANNEL_FIELD_TO_INDICATOR: Partial<Record<keyof ChannelData, keyof DivisionIndicators>> = {
+    margemBruta: "margin",
+    pmv:         "avgPrice",
+    mkdPct:      "mkd",
+    custoMedio:  "custoMedio",
+  };
+
   const handleDriverChange = (ch: ChannelId, field: keyof ChannelData, raw: string) => {
     // Permite digitar livremente, incluindo ponto/vírgula intermediários
     setEditingValue(raw);
     const normalized = raw.replace(",", ".").replace(/[^0-9.]/g, "");
     const value = parseFloat(normalized);
     if (isNaN(value)) return;
-    if (field === "pmv" || field === "custoMedio") {
-      setTouchedPriceOrCost(prev => ({ ...prev, [ch]: true }));
+    if (field === "pmv" || field === "custoMedio" || field === "mkdPct") {
+      setTouchedLevers(prev => {
+        const next = new Set(prev[ch]);
+        next.add(field);
+        return { ...prev, [ch]: next };
+      });
     }
+
+    const indicatorField = CHANNEL_FIELD_TO_INDICATOR[field];
+
     setChannelData(prev => {
-      const updated: ChannelData = { ...prev[ch], [field]: value };
+      let updated: ChannelData = { ...prev[ch], [field]: value };
+
+      if (indicatorField) {
+        // Passa pelo mesmo motor de clusters do M1/M3 — Margem/MKD/PMV/Custo
+        // se recalculam entre si com a regra "MKD trava depois de 2 alavancas".
+        const current: DivisionIndicators = {
+          avgPrice:    prev[ch].pmv,
+          margin:      prev[ch].margemBruta,
+          mkd:         prev[ch].mkdPct,
+          custoMedio:  prev[ch].custoMedio,
+          gmroi:       prev[ch].gmroi,
+          sellThrough: 0,
+          revenue:     prev[ch].receita,
+        };
+        const touchedSoFar = touchedChannelFieldsRef.current[ch] ?? new Set<FieldKey>();
+        const nextInd = applyDivisionEdit(current, prev[ch].receita, indicatorField, value, touchedSoFar);
+        const engineField = mapToEngineField(indicatorField);
+        if (engineField) {
+          touchedSoFar.add(engineField);
+          touchedChannelFieldsRef.current = { ...touchedChannelFieldsRef.current, [ch]: touchedSoFar };
+        }
+        updated = {
+          ...updated,
+          margemBruta: nextInd.margin,
+          pmv:         nextInd.avgPrice,
+          mkdPct:      nextInd.mkd,
+          custoMedio:  nextInd.custoMedio ?? updated.custoMedio,
+        };
+      }
+
       return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
     });
   };
@@ -834,17 +890,17 @@ export default function ChannelPlanning() {
   const marginCompensation = useMemo(() => {
     const item = impactedMacro.find(i => i.key === "margemBruta");
     if (!item) return null;
-    // Se o usuário já mexeu em preço/custo de algum canal envolvido, ele já
-    // escolheu outro caminho pra chegar na margem — o sistema não sugere
-    // mexer no markdown por cima disso.
-    if (visibleChannels.some(ch => touchedPriceOrCost[ch])) return null;
+    // Se o usuário já tocou 2 das 3 alavancas (PMV/Custo/MKD) de algum canal
+    // envolvido, ele já esgotou a folga pra chegar na margem por outro
+    // caminho — o sistema não sugere mexer no markdown por cima disso.
+    if (visibleChannels.some(ch => (touchedLevers[ch]?.size ?? 0) >= 2)) return null;
     const entities = visibleChannels.map(ch => ({
       id: ch,
       receita: channelData[ch].receita,
       cpv: channelData[ch].orcamento, // orcamento = producao × custoMedio = CPV do canal
     }));
     return computeMarginCompensationViaMkd(entities, item.planned);
-  }, [impactedMacro, visibleChannels, channelData, touchedPriceOrCost]);
+  }, [impactedMacro, visibleChannels, channelData, touchedLevers]);
 
   const handleApplyMarginCompensation = () => {
     if (!marginCompensation) return;

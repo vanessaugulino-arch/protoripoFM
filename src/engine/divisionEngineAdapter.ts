@@ -18,7 +18,12 @@ import {
   type PlanningValues,
 } from './planningEngine'
 
-/** Indicadores comerciais da divisão que o motor conhece. */
+/**
+ * Indicadores comerciais que o motor conhece — usado tanto pela divisão (M3)
+ * quanto pelo canal (M2). custoMedio é opcional porque o M3 não expõe esse
+ * campo na tela (é derivado internamente); quando ausente, o motor deriva o
+ * custo a partir de margem/mkd/pmv, preservando o comportamento do M3.
+ */
 export interface DivisionIndicators {
   avgPrice:    number  // PMV
   margin:      number  // %
@@ -26,15 +31,22 @@ export interface DivisionIndicators {
   gmroi:       number
   sellThrough: number  // % — fora dos clusters
   revenue?:    number
+  custoMedio?: number  // R$ — quando presente (M2), é a fonte de verdade; senão é derivado
 }
 
-/** Campo do M3 → campo do motor. Sell-Through não tem correspondente. */
+/** Campo → campo do motor. Sell-Through não tem correspondente. */
 const FIELD_MAP: Record<string, FieldKey | undefined> = {
   avgPrice:    'pmv',
   margin:      'margemBruta',
   mkd:         'mkdPct',
   gmroi:       'gmroi',
   sellThrough: undefined,
+  custoMedio:  'custoMedio',
+}
+
+/** Expõe o mapeamento campo M3 → campo do motor pro chamador acumular `touched`. */
+export function mapToEngineField(field: keyof DivisionIndicators): FieldKey | undefined {
+  return FIELD_MAP[field as string]
 }
 
 /**
@@ -44,6 +56,10 @@ const FIELD_MAP: Record<string, FieldKey | undefined> = {
  * @param revenue     receita da divisão em R$ (receita_macro × participação, ou indicators.revenue)
  * @param editedField campo editado ('avgPrice' | 'margin' | 'mkd' | 'gmroi' | 'sellThrough')
  * @param editedValue novo valor
+ * @param touchedSoFar campos do motor já tocados pelo usuário nesta divisão,
+ *   antes desta edição (persistido pelo chamador entre chamadas) — sem isso,
+ *   a regra "MKD só trava depois de 2 alavancas tocadas" não tem memória e
+ *   trava (ou nunca trava) incorretamente a cada edição isolada.
  * @returns indicadores atualizados após a absorção dos clusters
  */
 export function applyDivisionEdit(
@@ -51,6 +67,7 @@ export function applyDivisionEdit(
   revenue: number,
   editedField: keyof DivisionIndicators,
   editedValue: number,
+  touchedSoFar?: Set<FieldKey>,
 ): DivisionIndicators {
   // Sell-Through (e revenue) não passam pelo motor — grava direto.
   const engineField = FIELD_MAP[editedField as string]
@@ -63,7 +80,8 @@ export function applyDivisionEdit(
   const pecas = rev > 0 && pmv > 0 ? rev / pmv : 0
   const lucro = rev * (current.margin / 100)
   const mkdRS = rev * (current.mkd / 100)
-  const custo = pecas > 0 ? Math.max(0, (rev - lucro - mkdRS) / pecas) : 0
+  // M2 tem custoMedio real (fonte de verdade); M3 não expõe o campo — deriva.
+  const custo = current.custoMedio ?? (pecas > 0 ? Math.max(0, (rev - lucro - mkdRS) / pecas) : 0)
   const estoque = current.gmroi > 0 ? lucro / current.gmroi : 0
 
   // Baseline do motor a partir dos indicadores atuais da divisão.
@@ -80,7 +98,8 @@ export function applyDivisionEdit(
   }
 
   const base = buildStateFromBaseline(baseline)
-  const touched = new Set<FieldKey>([engineField])
+  const touched = new Set<FieldKey>(touchedSoFar)
+  touched.add(engineField)
   const next = recalculate(
     { ...base, values: { ...base.values, [engineField]: editedValue }, touched },
   )
@@ -92,6 +111,10 @@ export function applyDivisionEdit(
     margin:      v.margemBruta ?? current.margin,
     mkd:         v.mkdPct      ?? current.mkd,
     gmroi:       v.gmroi       ?? current.gmroi,
+    // custoMedio só é devolvido quando a entrada já o tinha (M2) — no M3,
+    // onde o campo é derivado internamente, current.custoMedio é undefined
+    // e o resultado também fica undefined (comportamento inalterado do M3).
+    custoMedio:  current.custoMedio !== undefined ? (v.custoMedio ?? current.custoMedio) : undefined,
     // sellThrough e revenue inalterados por edições que passam pelo motor
   }
 }

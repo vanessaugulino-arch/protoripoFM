@@ -20,7 +20,8 @@ import {
   listModule3Scenarios,
   calculateScenarioConsolidated,
 } from "../services/module3ScenarioService";
-import { applyDivisionEdit, type DivisionIndicators } from "../engine/divisionEngineAdapter";
+import { applyDivisionEdit, mapToEngineField, type DivisionIndicators } from "../engine/divisionEngineAdapter";
+import type { FieldKey } from "../engine/planningEngine";
 
 export interface UseModule3Options {
   seasonId: string;
@@ -134,6 +135,13 @@ export function useModule3(options: UseModule3Options) {
   // chegar na margem (subir preço), e o sistema não sobrepõe empurrando o MKD.
   const [touchedPrice, setTouchedPrice] = useState<Record<string, true>>({});
 
+  // Campos do motor (avgPrice/PMV, mkd) já tocados por divisão, acumulados
+  // entre edições — sem isso, o motor trata cada edição como um toque
+  // isolado e a regra "MKD só trava depois de 2 alavancas tocadas" nunca
+  // dispara. Não precisa re-renderizar sozinho (só alimenta o motor), por
+  // isso é ref e não state.
+  const touchedDivisionFieldsRef = useRef<Record<string, Set<FieldKey>>>({});
+
   // Re-inicializar quando a temporada muda OU quando as divisões reais do tenant
   // chegam (elas são buscadas assincronamente — no primeiro render costumam
   // estar vazias).
@@ -150,6 +158,7 @@ export function useModule3(options: UseModule3Options) {
       consolidated: buildInitialConsolidated(options.macroTargets),
     }));
     setTouchedPrice({});
+    touchedDivisionFieldsRef.current = {};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.seasonId, divisionIdsKey]);
 
@@ -309,10 +318,14 @@ export function useModule3(options: UseModule3Options) {
           sellThrough: block.indicators.sellThrough,
           revenue:     block.indicators.revenue,
         };
+        const touchedSoFar = touchedDivisionFieldsRef.current[divisionId] ?? new Set<FieldKey>();
         for (const [field, value] of Object.entries(indicators)) {
           if (typeof value !== "number") { nextInd = { ...nextInd, [field]: value as never }; continue; }
-          nextInd = applyDivisionEdit(nextInd, revenue, field as keyof DivisionIndicators, value);
+          nextInd = applyDivisionEdit(nextInd, revenue, field as keyof DivisionIndicators, value, touchedSoFar);
+          const engineField = mapToEngineField(field as keyof DivisionIndicators);
+          if (engineField) touchedSoFar.add(engineField);
         }
+        touchedDivisionFieldsRef.current = { ...touchedDivisionFieldsRef.current, [divisionId]: touchedSoFar };
 
         const divisions = {
           ...prev.divisions,
