@@ -531,7 +531,11 @@ export default function Module3DivisionPlanning() {
   // participação entre divisões, sugere o MKD% que fecha a conta de volta na
   // meta — mesma lógica do M2, reaproveitando o motor de cluster por divisão
   // (applyDivisionEdit já resolve "editar MKD → Margem absorve").
-  const divisionMarginCompensation = useMemo(() => {
+  // Não é hook (por isso pode vir depois do early return, junto de impactedMacroM3
+  // acima) — precisou virar IIFE simples porque um useMemo aqui, condicionado ao
+  // "if (!user || isLoading) return null" logo acima, quebra a contagem de hooks
+  // entre renders (React error #310) assim que user/isLoading mudam.
+  const divisionMarginCompensation = (() => {
     const item = impactedMacroM3.find(i => i.key === "margemBruta");
     if (!item) return null;
     // Se o usuário já mexeu no PMV de alguma divisão envolvida, ele já
@@ -549,7 +553,7 @@ export default function Module3DivisionPlanning() {
       return { id: divId, receita: revDiv, cpv };
     });
     return computeMarginCompensationViaMkd(entities, item.planned);
-  }, [impactedMacroM3, divisionIds, state.divisions, macroTargets.revenue, touchedPrice]);
+  })();
 
   const handleApplyDivisionMarginCompensation = () => {
     if (!divisionMarginCompensation) return;
