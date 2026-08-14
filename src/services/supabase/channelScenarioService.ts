@@ -87,6 +87,20 @@ export async function applyChannelScenario(
   year: number,
   scenarioId: string
 ): Promise<void> {
+  // Validação real (não só a trava de UI, que depende do cache local do
+  // navegador): sem M1 salvo pra este ano no banco, não aplica.
+  const { data: cycle, error: cycleErr } = await (supabase as any)
+    .from("annual_plan_cycles")
+    .select("versions")
+    .eq("tenant_id", tenantId)
+    .eq("year", year)
+    .maybeSingle();
+  if (cycleErr) throw cycleErr;
+  const versions = (cycle?.versions as unknown[] | null) ?? [];
+  if (versions.length === 0) {
+    throw new Error(`O Planejamento Estratégico (M1) de ${year} ainda não foi salvo no banco.`);
+  }
+
   await supabase
     .from("channel_scenarios")
     .update({ is_applied: false })

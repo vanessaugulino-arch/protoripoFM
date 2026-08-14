@@ -624,8 +624,16 @@ export default function Module3DivisionPlanning() {
       // Plano Oficial: aguarda a gravação do is_applied e recalcula o macro
       // bottom-up (divisão → mês → ano fiscal), avançando o nível para 3.
       if (tenantId) {
+        // A aplicação do cenário precisa mesmo funcionar — se falhar, avisa e
+        // PARA aqui (antes um catch único também engolia erro real de
+        // applyDivisionScenario e mostrava "sucesso" sem nada aplicado).
         try {
           await applyDivisionScenario(tenantId, selectedSeasonId, chosen.id);
+        } catch (err) {
+          alert(`Não foi possível aplicar o plano por divisão: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+          return;
+        }
+        try {
           await recomputeMacroFromDivisions(tenantId, year);
           await advanceDetailLevel(tenantId, year, 3);
         } catch {

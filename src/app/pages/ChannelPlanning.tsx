@@ -639,9 +639,17 @@ export default function ChannelPlanning() {
     }
     const last = savedScenarios[savedScenarios.length - 1];
     if (last) {
-      // Aguarda a aplicação para então recalcular o macro oficial (bottom-up).
+      // A aplicação do cenário precisa mesmo funcionar — se falhar, avisa e
+      // PARA aqui (antes só o recompute era tolerante a falha; um catch único
+      // também engolia erro real de applyChannelScenario e mostrava "sucesso"
+      // mesmo sem nada ter sido aplicado).
       try {
         await applyChannelScenario(tenantId, selectedYear, last.id);
+      } catch (err) {
+        showToast(`Não foi possível aplicar as metas: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+        return;
+      }
+      try {
         // Plano Oficial: recalcula o macro a partir do canal aplicado (primazia
         // dos absolutos, na função Postgres) e avança o nível de detalhe para 2.
         await recomputeOfficialMacro(tenantId, selectedYear);

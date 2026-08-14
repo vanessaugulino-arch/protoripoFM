@@ -542,11 +542,15 @@ export default function Planning() {
     setSaveDialogOpen(true)
   }
 
-  const handleConfirmSave = () => {
+  const handleConfirmSave = async () => {
     const name = saveScenario(scenarioNameInput || undefined)
     const vals: Record<string, number | null> = {}
     FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
-    addVersionToCycle(year, name, vals)
+    const result = await addVersionToCycle(year, name, vals)
+    if (!result.ok) {
+      alert(`O cenário "${name}" não foi salvo no banco: ${result.error}\n\nTente novamente — se persistir, avise o suporte.`)
+      return
+    }
     setSaveDialogOpen(false)
     setScenarioNameInput("")
   }
@@ -587,7 +591,7 @@ export default function Planning() {
     URL.revokeObjectURL(url)
   }
 
-  const handleApplyMetas = () => {
+  const handleApplyMetas = async () => {
     const target = activeScenario ?? (scenarios.length > 0 ? scenarios[scenarios.length - 1] : null)
     if (!target) {
       alert("Salve um cenário antes de aplicar as metas.")
@@ -595,7 +599,11 @@ export default function Planning() {
     }
     const vals: Record<string, number | null> = {}
     FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
-    addVersionToCycle(year, target.name, vals)
+    const result = await addVersionToCycle(year, target.name, vals)
+    if (!result.ok) {
+      alert(`As metas não foram aplicadas — o plano não foi salvo no banco: ${result.error}\n\nTente novamente — se persistir, avise o suporte.`)
+      return
+    }
     setShowPostApplyModal(true)
   }
 

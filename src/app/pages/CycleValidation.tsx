@@ -278,7 +278,11 @@ export default function CycleValidation() {
   // Seasons
   const [seasons, setSeasons]                     = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId]   = useState("");
-  const [canalConfigs, setCanalConfigs]             = useState<CanalConfig[]>([]);
+  // Configuração real vinda do banco (canal_temporada_config) — o fallback
+  // (períodos unificados por canal do tenant) é derivado, não guardado aqui,
+  // pra nunca ficar preso a uma corrida entre este fetch, as temporadas e os
+  // canais do tenant (3 efeitos assíncronos independentes).
+  const [dbCanalConfigs, setDbCanalConfigs]         = useState<CanalConfig[]>([]);
   const [tenantCanalIds, setTenantCanalIds]         = useState<string[]>([]);
   const [isLoadingData, setIsLoadingData]           = useState(false);
 
@@ -498,18 +502,8 @@ export default function CycleValidation() {
     const season = seasons.find(s => s.id === selectedSeasonId);
 
     listCanalConfigDb(tenantId, selectedSeasonId)
-      .then(configs => {
-        if (configs.length > 0) {
-          setCanalConfigs(configs);
-        } else if (season) {
-          // Fallback: unified period for all tenant canals
-          const fallback: CanalConfig[] = tenantCanalIds.map(cid => ({
-            id: `fallback-${cid}`, canal_id: cid,
-            mes_inicio: season.mesInicio, mes_fim: season.mesFim,
-          }));
-          setCanalConfigs(fallback);
-        }
-      }).catch(() => {});
+      .then(setDbCanalConfigs)
+      .catch(() => {});
 
     // Prev year revenue
     if (season) {
@@ -544,6 +538,19 @@ export default function CycleValidation() {
     () => seasons.find(s => s.id === selectedSeasonId) ?? null,
     [seasons, selectedSeasonId],
   );
+
+  // Config real do banco quando existe; senão, período unificado da temporada
+  // pra cada canal do tenant. Derivado a cada render — nunca fica travado numa
+  // versão vazia por causa da ordem em que os 3 fetches (config, temporadas,
+  // canais do tenant) terminam.
+  const canalConfigs = useMemo((): CanalConfig[] => {
+    if (dbCanalConfigs.length > 0) return dbCanalConfigs;
+    if (!selectedSeason) return [];
+    return tenantCanalIds.map(cid => ({
+      id: `fallback-${cid}`, canal_id: cid,
+      mes_inicio: selectedSeason.mesInicio, mes_fim: selectedSeason.mesFim,
+    }));
+  }, [dbCanalConfigs, selectedSeason, tenantCanalIds]);
 
   const activeCanals = useMemo(() => {
     const activeCids = new Set(tenantCanalIds);
