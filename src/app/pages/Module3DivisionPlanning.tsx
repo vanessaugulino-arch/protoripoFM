@@ -102,7 +102,7 @@ import {
 } from "../types/module3";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   applyModule3Scenario,
   cloneModule3Scenario,
@@ -258,6 +258,7 @@ export default function Module3DivisionPlanning() {
   const tour     = useTour("module3-division");
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
   // Divisões reais do tenant (products.division) — substitui a lista fixa de 4.
   const [realDivisions, setRealDivisions] = useState<TenantDivision[]>([]);
   const [divisionsLoaded, setDivisionsLoaded] = useState(false);
@@ -302,6 +303,10 @@ export default function Module3DivisionPlanning() {
 
       // Pedidos de aprovação direcionados ao M3 (vindos do M5 — Sortimento)
       if (tid) {
+        // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+        // reload nesta tela lê macroTargets/M1 desatualizados (deriveSeasonMacroTarget
+        // depende de getPlanCycle/getPlannedYears).
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
         const isCeoOrAdmin = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
         getPendingApprovalsForUser(tid, 3, userData.email, isCeoOrAdmin)
           .then(reqs => {

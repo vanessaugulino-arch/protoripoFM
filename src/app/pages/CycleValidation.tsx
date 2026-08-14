@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
 import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   listSupplyFornecedores, calcBudgetProjection, aggregateReceita,
   type SupplyFornecedor, type TipoFornecedorV2,
@@ -273,6 +273,7 @@ export default function CycleValidation() {
   // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
   // do Dashboard (que é decorativo e não impede acesso direto à tela).
   const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
 
   // Seasons
   const [seasons, setSeasons]                     = useState<Temporada[]>([]);
@@ -338,6 +339,11 @@ export default function CycleValidation() {
     if (!tid) return;
 
     const db = supabase as any;
+
+    // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+    // reload nesta tela lê m1Values/macroMeta desatualizados (ou "?? 45"/
+    // "?? 0" fallback) mesmo com o M1 salvo de verdade no banco.
+    initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
 
     getReviewedYears(tid).then(setM2ReviewedYears).catch(() => {});
 

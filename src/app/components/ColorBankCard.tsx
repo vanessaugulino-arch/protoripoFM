@@ -228,9 +228,8 @@ export function ColorBankCard({ tenantId: _tenantId }: ColorBankCardProps) {
       <div className="flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/18 rounded-xl px-4 py-3">
         <Info className="w-4 h-4 text-[#7598CF] flex-shrink-0 mt-0.5" />
         <p className="text-[#28071C]/65 text-sm leading-relaxed">
-          O <strong>Banco de Cores</strong> é um dicionário global da plataforma que agrupa nomes de cores em{' '}
+          O <strong>Banco de Cores</strong> agrupa os nomes de cores da sua marca em{' '}
           <strong>família</strong> (ex: Azul) e <strong>intensidade</strong> (ex: Royal, Marinho, Claro).
-          Toda cor cadastrada por qualquer cliente enriquece esse banco, que fica disponível para todos.
         </p>
       </div>
 

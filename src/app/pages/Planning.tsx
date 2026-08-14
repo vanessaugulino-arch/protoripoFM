@@ -26,7 +26,7 @@ import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_ICONS, STRATEGIC_FOCUS_COLORS,
-  addVersionToCycle, getPlanCycle,
+  addVersionToCycle, getPlanCycle, initPlanCycles,
 } from '../types/planCycle'
 import type { PlanFieldPriority, StrategicFocus, PlanMode } from '../types/planCycle'
 
@@ -328,6 +328,10 @@ export default function Planning() {
       setUser(u)
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? ""
       setTenantId(tid)
+      // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+      // reload nesta tela faz addVersionToCycle (Salvar/Aplicar) virar no-op
+      // silencioso, porque getPlanCycle(year) volta null pro ano corrente.
+      if (tid) initPlanCycles(tid).catch(() => {})
       const effectiveProfile =
         u.system_role === "support" || u.system_role === "client_admin"
           ? "CEO"

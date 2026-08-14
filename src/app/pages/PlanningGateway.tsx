@@ -8,7 +8,7 @@ import {
   Calendar, CheckCircle2, AlertCircle, Target, Info, HelpCircle, Layers,
 } from "lucide-react"
 import { isOnboardingComplete } from "../types/onboarding"
-import { getPlanCycle, getPlannedYears } from "../types/planCycle"
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle"
 import { ProductTour, type TourStep } from "../components/ProductTour"
 import { useTour } from "../hooks/useTour"
 
@@ -91,6 +91,7 @@ export default function PlanningGateway() {
     py: RawHistRow | null
     loaded: boolean
   }>({ cy: null, py: null, loaded: false })
+  const [, setCyclesReady] = useState(0) // força re-render após initPlanCycles resolver
   const histFetched = useRef(false)
 
   // ── Plano Oficial: macro projetado bottom-up (dos níveis inferiores aplicados) ─
@@ -105,6 +106,11 @@ export default function PlanningGateway() {
       sessionStorage.getItem("activeTenantId") ??
       (() => { try { return JSON.parse(sessionStorage.getItem("currentUser") ?? "{}").tenant_id } catch { return null } })()
     if (!tenantId) { setHistData(d => ({ ...d, loaded: true })); return }
+
+    // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+    // reload nesta tela lê getPlannedYears()/getPlanCycle() desatualizados
+    // (cycleState, handleReview) mesmo com ciclos salvos de verdade no banco.
+    initPlanCycles(tenantId).then(() => setCyclesReady(v => v + 1)).catch(() => {})
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Promise.resolve((supabase as any).rpc("get_sales_historical_summary", { p_tenant_id: tenantId }))

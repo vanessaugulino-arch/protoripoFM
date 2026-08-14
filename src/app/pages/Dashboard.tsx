@@ -191,6 +191,10 @@ export default function Dashboard() {
   }>({ products: 0, sales: 0, inventory: 0, orders: 0, loaded: false });
   const tour = useTour("dashboard");
 
+  // Não lido diretamente — só força um novo render quando initPlanCycles resolve,
+  // pra getPlannedYears()/getPlanCycle() (leitura síncrona do cache) refletirem
+  // o que acabou de ser recarregado do Supabase.
+  const [, setCyclesReady] = useState(0);
   const plannedYears = getPlannedYears();
   const [reviewedYears, setReviewedYears] = useState<number[]>([]);
   const [m3ActiveYears, setM3ActiveYears] = useState<number[]>([]);
@@ -222,6 +226,11 @@ export default function Dashboard() {
       const u = JSON.parse(storedUserStr);
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
       if (tid) {
+        // Cache de ciclos (M1) só é populado no login/PlanningSetup — em qualquer
+        // outra entrada nesta tela (reload, nova aba) ele está vazio e
+        // getPlannedYears()/getPlanCycle() ficam mudos até isto rodar de novo.
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
+
         // Carrega anos revisados (M2) e anos com M3 aplicado, do Supabase
         getReviewedYears(tid).then(setReviewedYears).catch(() => {});
         getM3AppliedYears(tid).then(setM3ActiveYears).catch(() => {});

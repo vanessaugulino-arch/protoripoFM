@@ -43,7 +43,7 @@ const CHANNEL_PLANNING_TOUR: TourStep[] = [
 import { exportToPDF } from "../../utils/exportPDF";
 import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   saveChannelScenario as dbSaveChannelScenario,
   listChannelScenarios as dbListChannelScenarios,
@@ -316,6 +316,7 @@ export default function ChannelPlanning() {
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
   const tour = useTour("channel-planning");
 
   useEffect(() => {
@@ -330,6 +331,10 @@ export default function ChannelPlanning() {
 
       // Carregar cenários, anos revisados e pedidos de aprovação do Supabase
       if (tid) {
+        // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+        // reload nesta tela faz hasM1Version ficar sempre falso mesmo com o
+        // M1 salvo de verdade no banco.
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
         // Carrega perfis históricos para inicializar proporções reais de canal
         getHistoricalProfiles(tid)
           .then(hp => setHistChannelProfiles(hp.channels))
