@@ -101,6 +101,7 @@ import {
   isValidPriceRange,
 } from "../types/module3";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
+import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
@@ -419,6 +420,7 @@ export default function Module3DivisionPlanning() {
   // ─── Hook do Módulo 3 ─────────────────────────────────────────────────────
   const {
     state,
+    touchedPrice,
     updateDivisionParticipation,
     updateIndicators,
     updatePriceRange,
@@ -524,6 +526,37 @@ export default function Module3DivisionPlanning() {
       }] as ImpactedIndicator[];
     });
   })();
+
+  // ── Compensação: quando a Margem (indicador-alvo do M1) diverge por causa da
+  // participação entre divisões, sugere o MKD% que fecha a conta de volta na
+  // meta — mesma lógica do M2, reaproveitando o motor de cluster por divisão
+  // (applyDivisionEdit já resolve "editar MKD → Margem absorve").
+  const divisionMarginCompensation = useMemo(() => {
+    const item = impactedMacroM3.find(i => i.key === "margemBruta");
+    if (!item) return null;
+    // Se o usuário já mexeu no PMV de alguma divisão envolvida, ele já
+    // escolheu outro caminho pra chegar na margem — não sugere MKD por cima.
+    if (divisionIds.some(divId => touchedPrice[divId])) return null;
+    const seasonRevenue = macroTargets.revenue;
+    const entities = divisionIds.map(divId => {
+      const block = state.divisions[divId];
+      const revDiv = seasonRevenue > 0
+        ? seasonRevenue * (block.participation / 100)
+        : (block.indicators.revenue ?? 0);
+      const lucroBrutoDiv = revDiv * (block.indicators.margin / 100);
+      const markdownDiv   = revDiv * (block.indicators.mkd / 100);
+      const cpv = block.volumeCoverage?.orcamento ?? Math.max(0, revDiv - lucroBrutoDiv - markdownDiv);
+      return { id: divId, receita: revDiv, cpv };
+    });
+    return computeMarginCompensationViaMkd(entities, item.planned);
+  }, [impactedMacroM3, divisionIds, state.divisions, macroTargets.revenue, touchedPrice]);
+
+  const handleApplyDivisionMarginCompensation = () => {
+    if (!divisionMarginCompensation) return;
+    for (const divId of divisionIds) {
+      updateIndicators(divId, { mkd: divisionMarginCompensation.mkdPctNew });
+    }
+  };
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -980,6 +1013,25 @@ export default function Module3DivisionPlanning() {
                         })}
                       </div>
                     </div>
+
+                    {/* Compensação sugerida: só para Margem, via MKD% (mesma hierarquia do M1) */}
+                    {divisionMarginCompensation && (
+                      <div className="mt-3 flex items-center gap-2 flex-wrap bg-white/60 border border-red-200 rounded-lg px-3 py-2">
+                        <span className="text-[12px] text-red-800">
+                          A participação entre divisões mudou a Margem para{" "}
+                          <strong>{getM3ConsolidatedValue("margemBruta", state.consolidated).toFixed(1)}%</strong>{" "}
+                          (meta: {impactedMacroM3.find(i => i.key === "margemBruta")?.planned.toFixed(1)}%).
+                          Compensar com <strong>MKD% {divisionMarginCompensation.mkdPctNew.toFixed(1)}%</strong>
+                          {divisionMarginCompensation.clamped ? " (mínimo possível — não alcança a meta só com MKD)" : ""}?
+                        </span>
+                        <button
+                          onClick={handleApplyDivisionMarginCompensation}
+                          className="text-[11px] font-semibold bg-red-600 text-white rounded-full px-3 py-1 hover:bg-red-700 transition-colors flex-shrink-0"
+                        >
+                          Aplicar sugestão
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

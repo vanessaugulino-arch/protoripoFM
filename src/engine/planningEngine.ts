@@ -340,19 +340,23 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // REGRA INDEPENDENTE DO FOCO — activeKeys NÃO influencia mais o cluster.
   //
   // Editar Margem%:
+  //   Custo ou PMV já tocados (sem Receita tocada) → força Receita
+  //     (o usuário já escolheu OUTRA alavanca — reduzir custo ou subir preço —
+  //     pra chegar na margem; o sistema não empurra o MKD por cima disso)
   //   MKD tocado & Custo não  → CustoMédio absorve
-  //   caso contrário          → MKD% absorve   (Custo protegido/soberano)
+  //   caso contrário          → MKD% absorve   (suposição padrão: "vou remarcar
+  //                              menos" — só vale quando nada mais foi tocado)
   // Editar MKD%:
   //   Margem tocada & Custo não → CustoMédio absorve (mantém margem)
   //   caso contrário            → Margem% absorve   (markdown reflete na margem)
   // Editar CustoMédio:
   //   nenhum outro tocado / MKD tocado → Margem% absorve
-  // Margem + Custo tocados (sem RL)     → força Receita (engenharia reversa)
   {
     const hasRL    = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasMarg  = touched.has('margemBruta')
     const hasCusto = touched.has('custoMedio')
     const hasMkd   = touched.has('mkdPct')
+    const hasPmv   = touched.has('pmv')
 
     const rl    = v.receitaLiquida ?? v.receitaBruta
     const pec   = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
@@ -393,14 +397,16 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
 
     if (canT3) {
-      if (hasMarg && hasCusto && !hasRL && v.margemBruta !== null && v.custoMedio) {
-        // Margem + Custo tocados → força Receita (CPV_total inclui markdown)
+      if (hasMarg && (hasCusto || hasPmv) && !hasRL && v.margemBruta !== null && v.custoMedio) {
+        // Margem tocada + (Custo ou PMV) tocados, sem Receita tocada → força
+        // Receita (CPV_total inclui markdown). O usuário já decidiu reduzir
+        // custo ou subir preço pra chegar na margem — o MKD fica como está.
         const cpvTotal   = v.custoMedio * pec! + mkdRS
         v.receitaLiquida = cpvTotal / (1 - v.margemBruta / 100)
         v.receitaBruta   = v.receitaLiquida + (v.devolucoes ?? 0)
         s.receitaLiquida = 'calculated'
         s.receitaBruta   = 'calculated'
-        // Margem e Custo foram EDITADOS → seguem livres; a Receita é derivada.
+        // Margem, Custo e/ou PMV foram EDITADOS → seguem livres; a Receita é derivada.
       } else if (hasMarg) {
         // Editou Margem → MKD% absorve por padrão; Custo absorve se MKD tocado e Custo não
         if (hasMkd && !hasCusto) custoAbsorve()

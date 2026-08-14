@@ -17,11 +17,12 @@ import {
   type PagamentoGatilho, type PagamentoModalidade, type PagamentoParcela, type TipoEntregaEtapa,
   listSupplyFornecedores, insertSupplyFornecedor, updateSupplyFornecedor,
   deleteSupplyFornecedor, replaceSupplyCategorias, replaceSupplyEtapas,
-  calcBudgetProjection, aggregateReceita, checkCompleteness,
+  calcBudgetProjection, aggregateReceita, checkCompleteness, getAvgPurchaseCost,
 } from "../../services/supabase/supplyService";
 import { parseFile } from "../../services/importService";
 import { fetchHierDistinct } from "../../services/supabase/productHierarchyService";
 import { getCycle, listScenarios } from "../../services/supabase/planningScenarioService";
+import { supabase } from "../../lib/supabase";
 
 // ── Tipos locais ───────────────────────────────────────────────────────────────
 
@@ -142,10 +143,24 @@ export default function MatrizAbastecimento() {
         if (applied) {
           const vals = applied.values as Record<string, unknown>;
           const plannedRevenue = vals?.plannedRevenue as Array<{ month: string; atacado: number; varejo: number; ecommerce: number }>;
-          const margemPct = (vals?.margemBruta as number) ?? 65;
           if (plannedRevenue?.length) {
             const { months, receita } = aggregateReceita(plannedRevenue);
-            const proj = calcBudgetProjection(months, receita, margemPct, fList);
+            // Prévia simplificada: essa tela não tem a curva de entrada em peças
+            // calculada (isso só existe no M4, com estoque/cobertura reais) —
+            // aproxima peças via PMV médio real do catálogo. O custo de compra
+            // segue a mesma fonte real do M4 (pedidos ou, na falta, estoque).
+            const { data: prodRows } = await supabase
+              .from("products")
+              .select("price_sale")
+              .eq("tenant_id", user.tenant_id)
+              .not("price_sale", "is", null)
+              .gt("price_sale", 0);
+            const avgPmv = prodRows && prodRows.length > 0
+              ? prodRows.reduce((s: number, r: { price_sale: number }) => s + r.price_sale, 0) / prodRows.length
+              : 0;
+            const pecas = avgPmv > 0 ? receita.map(r => r / avgPmv) : receita.map(() => 0);
+            const { value: custoCompra } = await getAvgPurchaseCost(user.tenant_id);
+            const proj = calcBudgetProjection(months, pecas, custoCompra, fList);
             setBudgetData(proj.map(p => ({ mes: p.mes, valor: p.valor })));
           }
         }

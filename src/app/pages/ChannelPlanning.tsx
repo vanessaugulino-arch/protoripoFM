@@ -17,6 +17,7 @@ import {
 } from "../../services/supabase/planApprovalService";
 import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
 import { recomputeOfficialMacro, advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -424,6 +425,13 @@ export default function ChannelPlanning() {
     () => initChannelData(macroReceita, macroRatesForChannels)
   );
 
+  // Rastreia PMV/Custo tocados manualmente por canal, nesta sessão de edição.
+  // Regra: markdown só absorve automaticamente a diferença de margem quando o
+  // usuário NÃO mexeu em preço/custo — se já mexeu, ele assumiu outro caminho
+  // pra chegar na margem (aumentar preço, baixar custo), e o sistema não deve
+  // sobrepor isso empurrando o markdown sozinho.
+  const [touchedPriceOrCost, setTouchedPriceOrCost] = useState<Partial<Record<ChannelId, true>>>({});
+
   useEffect(() => {
     const plan      = getPlanCycle(selectedYear);
     const vals      = plan?.versions?.[0]?.values ?? null;
@@ -473,6 +481,7 @@ export default function ChannelPlanning() {
     };
 
     setPercents(initPercents);
+    setTouchedPriceOrCost({});
 
     if (!tenantId) {
       setChannelData(initChannelData(newMacroR, newRates));
@@ -556,6 +565,9 @@ export default function ChannelPlanning() {
     const normalized = raw.replace(",", ".").replace(/[^0-9.]/g, "");
     const value = parseFloat(normalized);
     if (isNaN(value)) return;
+    if (field === "pmv" || field === "custoMedio") {
+      setTouchedPriceOrCost(prev => ({ ...prev, [ch]: true }));
+    }
     setChannelData(prev => {
       const updated: ChannelData = { ...prev[ch], [field]: value };
       return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
@@ -808,6 +820,43 @@ export default function ChannelPlanning() {
     }));
   }, [activeMacroKeys, macroValues, consolidated, visibleTotalPct]);
 
+  // ── Compensação: quando a Margem (indicador-alvo do M1) diverge por causa da
+  // participação, sugere o MKD% que fecha a conta de volta na meta — mesma
+  // hierarquia de cluster do M1 (Custo protegido, MKD absorve).
+  const marginCompensation = useMemo(() => {
+    const item = impactedMacro.find(i => i.key === "margemBruta");
+    if (!item) return null;
+    // Se o usuário já mexeu em preço/custo de algum canal envolvido, ele já
+    // escolheu outro caminho pra chegar na margem — o sistema não sugere
+    // mexer no markdown por cima disso.
+    if (visibleChannels.some(ch => touchedPriceOrCost[ch])) return null;
+    const entities = visibleChannels.map(ch => ({
+      id: ch,
+      receita: channelData[ch].receita,
+      cpv: channelData[ch].orcamento, // orcamento = producao × custoMedio = CPV do canal
+    }));
+    return computeMarginCompensationViaMkd(entities, item.planned);
+  }, [impactedMacro, visibleChannels, channelData, touchedPriceOrCost]);
+
+  const handleApplyMarginCompensation = () => {
+    if (!marginCompensation) return;
+    setChannelData(prev => {
+      const next = { ...prev };
+      for (const ch of visibleChannels) {
+        const result = marginCompensation.perEntity[ch];
+        if (!result) continue;
+        next[ch] = {
+          ...next[ch],
+          mkdPct: result.mkdPct,
+          markdown: result.markdown,
+          margemBrutaRS: result.margemBrutaRS,
+          margemBruta: result.margemBruta,
+        };
+      }
+      return next;
+    });
+  };
+
   // AJUSTE 2: per-channel impact — is this channel's value for this field pulling the avg the wrong way?
   const isChannelDragging = (ch: ChannelId, fieldKey: keyof ChannelData): boolean => {
     const macroKey = Object.entries(MACRO_TO_CHANNEL).find(([, ck]) => ck === fieldKey)?.[0];
@@ -1056,6 +1105,25 @@ export default function ChannelPlanning() {
                         </span>
                       ))}
                     </div>
+
+                    {/* Compensação sugerida: só para Margem, via MKD% (mesma hierarquia do M1) */}
+                    {marginCompensation && (
+                      <div className="mt-3 flex items-center gap-2 flex-wrap bg-white/60 border border-red-200 rounded-lg px-3 py-2">
+                        <span className="text-[12px] text-red-800">
+                          A participação mudou a Margem para <strong>{consolidated.margemBruta.toFixed(1)}%</strong>{" "}
+                          (meta: {impactedMacro.find(i => i.key === "margemBruta")?.planned.toFixed(1)}%).
+                          Compensar com{" "}
+                          <strong>MKD% {marginCompensation.mkdPctNew.toFixed(1)}%</strong>
+                          {marginCompensation.clamped ? " (mínimo possível — não alcança a meta só com MKD)" : ""}?
+                        </span>
+                        <button
+                          onClick={handleApplyMarginCompensation}
+                          className="text-[11px] font-semibold bg-red-600 text-white rounded-full px-3 py-1 hover:bg-red-700 transition-colors flex-shrink-0"
+                        >
+                          Aplicar sugestão
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </>
               )}

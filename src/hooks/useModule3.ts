@@ -122,6 +122,12 @@ export function useModule3(options: UseModule3Options) {
     error: undefined,
   }));
 
+  // Rastreia PMV tocado manualmente por divisão, nesta sessão de edição.
+  // Regra: markdown só absorve automaticamente a diferença de margem quando o
+  // usuário NÃO mexeu em preço — se já mexeu, ele escolheu outro caminho pra
+  // chegar na margem (subir preço), e o sistema não sobrepõe empurrando o MKD.
+  const [touchedPrice, setTouchedPrice] = useState<Record<string, true>>({});
+
   // Re-inicializar quando a temporada muda OU quando as divisões reais do tenant
   // chegam (elas são buscadas assincronamente — no primeiro render costumam
   // estar vazias).
@@ -137,6 +143,7 @@ export function useModule3(options: UseModule3Options) {
       activeScenarioId: undefined,
       consolidated: buildInitialConsolidated(options.macroTargets),
     }));
+    setTouchedPrice({});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.seasonId, divisionIdsKey]);
 
@@ -274,6 +281,9 @@ export function useModule3(options: UseModule3Options) {
   // ─── Atualizar Indicadores Comerciais ─────────────────────────────────────
   const updateIndicators = useCallback(
     (divisionId: BusinessDivisionId, indicators: Partial<CommercialIndicators>) => {
+      if (indicators.avgPrice !== undefined) {
+        setTouchedPrice(prev => ({ ...prev, [divisionId]: true }));
+      }
       setState((prev) => {
         const block = prev.divisions[divisionId];
         // Receita da divisão (para o motor): receita_macro × participação, ou a
@@ -438,6 +448,7 @@ export function useModule3(options: UseModule3Options) {
 
   return {
     state,
+    touchedPrice,
     updateDivisionParticipation,
     updateIndicators,
     updatePriceRange,
