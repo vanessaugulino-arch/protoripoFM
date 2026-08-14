@@ -32,6 +32,7 @@ import {
   hasPendingRequest,
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
+import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
@@ -269,6 +270,9 @@ export default function CycleValidation() {
 
   const [user, setUser]           = useState<CurrentUser | null>(null);
   const [tenantId, setTenantId]   = useState<string>("");
+  // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
+  // do Dashboard (que é decorativo e não impede acesso direto à tela).
+  const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
 
   // Seasons
   const [seasons, setSeasons]                     = useState<Temporada[]>([]);
@@ -334,6 +338,8 @@ export default function CycleValidation() {
     if (!tid) return;
 
     const db = supabase as any;
+
+    getReviewedYears(tid).then(setM2ReviewedYears).catch(() => {});
 
     hasPendingRequest(tid, 4, new Date().getFullYear())
       .then(has => setAlreadyPending(has)).catch(() => {});
@@ -837,11 +843,15 @@ export default function CycleValidation() {
 
   const handleApplyMetas = async () => {
     if (appliedScenarioId) return;
+    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
+    if (!m2ReviewedYears.includes(year)) {
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 4.`);
+      return;
+    }
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
     // Plano Oficial: o M4 validou a distribuição temporal → avança o nível para 4.
     // O macro anual não muda (o IPF preserva os totais); só reafirma o rollup e o nível.
-    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
     if (tenantId) {
       try {
         await recomputeMacroFromDivisions(tenantId, year);

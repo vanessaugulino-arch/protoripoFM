@@ -101,6 +101,7 @@ import {
   isValidPriceRange,
 } from "../types/module3";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
+import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getPlanCycle, getPlannedYears } from "../types/planCycle";
 import {
   applyModule3Scenario,
@@ -348,6 +349,14 @@ export default function Module3DivisionPlanning() {
   }, [tenantId]);
 
   const divisionIds = useMemo(() => realDivisions.map((d) => d.id), [realDivisions]);
+
+  // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
+  // do Dashboard (que é decorativo e não impede acesso direto à tela).
+  const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
+  useEffect(() => {
+    if (!tenantId) return;
+    getReviewedYears(tenantId).then(setM2ReviewedYears).catch(() => {});
+  }, [tenantId]);
   const divisionLabels = useMemo(
     () => Object.fromEntries(realDivisions.map((d) => [d.id, d.label])) as Record<string, string>,
     [realDivisions],
@@ -565,13 +574,17 @@ export default function Module3DivisionPlanning() {
   };
 
   const handleApplyMetas = async () => {
+    const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
+    if (!m2ReviewedYears.includes(year)) {
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 3.`);
+      return;
+    }
     const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
     if (chosen) {
       applyModule3Scenario(selectedSeasonId, chosen.id);
       setScenarioListVersion(v => v + 1);
       // Plano Oficial: aguarda a gravação do is_applied e recalcula o macro
       // bottom-up (divisão → mês → ano fiscal), avançando o nível para 3.
-      const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
       if (tenantId) {
         try {
           await applyDivisionScenario(tenantId, selectedSeasonId, chosen.id);

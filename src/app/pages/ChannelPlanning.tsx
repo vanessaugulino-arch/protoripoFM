@@ -370,6 +370,10 @@ export default function ChannelPlanning() {
   const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
 
   const planCycle    = getPlanCycle(selectedYear);
+  // Trava real (não só a do card do Dashboard): sem M1 salvo para este ano,
+  // o M2 não pode aplicar nada — evita canal aplicado "no vácuo", destravando
+  // M3/M4 sem o macro que deveriam refinar.
+  const hasM1Version = Boolean(planCycle?.versions?.length);
   const macroValues: Record<string, unknown> | null = planCycle?.versions?.[0]?.values ?? null;
   const macroReceita: number = (macroValues?.receitaBruta as number | null) ?? 3_120_000;
 
@@ -612,6 +616,10 @@ export default function ChannelPlanning() {
 
   const handleApplyMetas = async () => {
     if (!tenantId) return;
+    if (!hasM1Version) {
+      showToast(`O Planejamento Estratégico (M1) de ${selectedYear} ainda não foi salvo. Complete o M1 antes de aplicar as metas por canal.`);
+      return;
+    }
     const last = savedScenarios[savedScenarios.length - 1];
     if (last) {
       // Aguarda a aplicação para então recalcular o macro oficial (bottom-up).
@@ -1239,10 +1247,10 @@ export default function ChannelPlanning() {
             {impactedMacro.length === 0 ? (
               /* 0 desvios → Aplicar normal */
               <button onClick={handleApplyMetas}
-                disabled={totalPercent !== 100 || savedScenarios.length === 0}
-                title={totalPercent !== 100 ? "Participação deve somar 100%" : savedScenarios.length === 0 ? "Salve um cenário antes de aplicar" : "Aplicar metas e concluir revisão"}
+                disabled={totalPercent !== 100 || savedScenarios.length === 0 || !hasM1Version}
+                title={!hasM1Version ? `Complete o Planejamento Estratégico (M1) de ${selectedYear} antes de aplicar` : totalPercent !== 100 ? "Participação deve somar 100%" : savedScenarios.length === 0 ? "Salve um cenário antes de aplicar" : "Aplicar metas e concluir revisão"}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
-                  totalPercent === 100 && savedScenarios.length > 0
+                  totalPercent === 100 && savedScenarios.length > 0 && hasM1Version
                     ? "bg-[#28071C] text-[#F6F3AA] hover:opacity-90"
                     : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
                 }`}>

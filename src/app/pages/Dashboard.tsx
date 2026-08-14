@@ -228,7 +228,11 @@ export default function Dashboard() {
 
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
-          supabase.from("sales_history").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+          // sales_history costuma ter centenas de milhares de linhas — count "exact"
+          // nessa escala é a prática não recomendada pelo Supabase para tabelas
+          // grandes (retorno inconsistente/zerado observado em produção aqui).
+          // "estimated" usa estatística do planner, muito mais previsível em escala.
+          supabase.from("sales_history").select("id", { count: "estimated", head: true }).eq("tenant_id", tid),
           supabase.from("inventory_snapshots").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
           supabase.from("purchase_orders").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
         ]).then(([p, s, i, o]) => {
