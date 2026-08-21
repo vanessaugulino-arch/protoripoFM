@@ -176,6 +176,17 @@ const HIGHER_IS_BETTER: Partial<Record<keyof ChannelData, boolean>> = {
   custoMedio:  false, // lower is better
 };
 
+// Atalho curto de "qual campo editar" pra campos calculados que desviam da
+// meta — a tela mostrava o desvio em vermelho num campo travado (não-driver)
+// sem indicar por onde resolver; o tooltip completo existe mas só aparece
+// depois de 2s de hover, fácil de não notar.
+const ADJUST_HINT: Partial<Record<keyof ChannelData, string>> = {
+  margemBrutaRS: "ajuste Margem Bruta (%)",
+  orcamento:     "ajuste Custo Médio",
+  producao:      "ajuste PMV",
+  receita:       "ajuste a participação (%)",
+};
+
 // Tooltips para campos calculados (não-driver)
 const COMPUTED_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   margemBrutaRS:     "Calculado: Receita × Margem Bruta %. Para alterar, edite a Margem Bruta (%).",
@@ -1359,6 +1370,7 @@ export default function ChannelPlanning() {
                       {macroTarget != null && (
                         <span className="text-[9px] text-red-400 font-mono leading-tight mt-0.5">
                           meta {fmt(macroTarget, field.format)}
+                          {!field.isDriver && ADJUST_HINT[field.key] && ` — ${ADJUST_HINT[field.key]}`}
                         </span>
                       )}
                     </div>
