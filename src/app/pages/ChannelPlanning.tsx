@@ -546,6 +546,11 @@ export default function ChannelPlanning() {
   const [showSaveDialog, setShowSaveDialog]         = useState(false);
   const [saveNameInput, setSaveNameInput]           = useState("");
   const [toast, setToast]                           = useState<string | null>(null);
+  // Cenário salvo atualmente carregado na edição — null quando o draft em tela
+  // é novo/não corresponde a nenhum cenário salvo. Aplicar/Submeter sempre usa
+  // o último cenário salvo por padrão, mas o usuário pode voltar a qualquer
+  // cenário anterior sem precisar criar um novo pra continuar de onde parou.
+  const [loadedScenarioId, setLoadedScenarioId]     = useState<string | null>(null);
 
   // Estado de célula em edição — exibe valor cru enquanto foca, formatado ao sair
   const [focusedCell, setFocusedCell] = useState<{ ch: ChannelId; key: keyof ChannelData } | null>(null);
@@ -635,6 +640,24 @@ export default function ChannelPlanning() {
     setEditingValue("");
   };
 
+  // Carrega um cenário salvo de volta pra edição — não precisa criar um novo
+  // pra continuar de onde parou num cenário já salvo.
+  const handleLoadScenario = (sc: ChannelScenario) => {
+    const raw = sc.channel_data as unknown as Record<ChannelId, ChannelData>;
+    const channels = visibleChannels.length > 0 ? visibleChannels : (["atacado", "varejo", "ecommerce"] as ChannelId[]);
+    const data: Record<ChannelId, ChannelData> = {} as any;
+    for (const ch of channels) {
+      const chData = raw[ch];
+      if (chData) data[ch] = applyRevenue(chData, chData.receita);
+    }
+    setChannelData(data);
+    setPercents(prev => ({ ...prev, ...(sc.percents as Record<ChannelId, number>) }));
+    setLoadedScenarioId(sc.id);
+    setTouchedLevers({});
+    touchedChannelFieldsRef.current = {};
+    showToast(`Cenário "${sc.name}" carregado para edição.`);
+  };
+
   const handleConfirmSave = () => {
     if (!tenantId) return;
     const name = saveNameInput.trim() || `Cenário ${new Date().toLocaleDateString("pt-BR")}`;
@@ -643,6 +666,7 @@ export default function ChannelPlanning() {
       user?.email
     ).then(sc => {
       setSavedScenarios(prev => [...prev, sc]);
+      setLoadedScenarioId(sc.id);
       showToast(`Cenário "${sc.name}" salvo.`);
     }).catch(err => showToast("Erro ao salvar: " + err.message));
     setShowSaveDialog(false);
@@ -693,14 +717,16 @@ export default function ChannelPlanning() {
       showToast(`O Planejamento Estratégico (M1) de ${selectedYear} ainda não foi salvo. Complete o M1 antes de aplicar as metas por canal.`);
       return;
     }
-    const last = savedScenarios[savedScenarios.length - 1];
-    if (last) {
+    // Aplica o cenário carregado na edição — se nenhum foi explicitamente
+    // carregado/salvo nesta sessão, cai no mais recente salvo.
+    const target = savedScenarios.find(sc => sc.id === loadedScenarioId) ?? savedScenarios[savedScenarios.length - 1];
+    if (target) {
       // A aplicação do cenário precisa mesmo funcionar — se falhar, avisa e
       // PARA aqui (antes só o recompute era tolerante a falha; um catch único
       // também engolia erro real de applyChannelScenario e mostrava "sucesso"
       // mesmo sem nada ter sido aplicado).
       try {
-        await applyChannelScenario(tenantId, selectedYear, last.id);
+        await applyChannelScenario(tenantId, selectedYear, target.id);
       } catch (err) {
         showToast(`Não foi possível aplicar as metas: ${err instanceof Error ? err.message : "erro desconhecido"}`);
         return;
@@ -736,7 +762,7 @@ export default function ChannelPlanning() {
         proposedData:        consolidated as unknown as Record<string, unknown>,
         originalData:        (macroValues ?? {}) as Record<string, unknown>,
         impactedIndicators:  impactedMacro as ImpactedIndicator[],
-        scenarioId:          savedScenarios[savedScenarios.length - 1]?.id,
+        scenarioId:          (savedScenarios.find(sc => sc.id === loadedScenarioId) ?? savedScenarios[savedScenarios.length - 1])?.id,
       });
       setAlreadyPending(true);
       showToast("Solicitação de revisão enviada ao responsável pelo plano macro.");
@@ -1348,14 +1374,23 @@ export default function ChannelPlanning() {
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden mb-5">
             <div className="px-5 py-3 border-b border-[#28071C]/8">
               <h3 className="text-[#28071C] font-semibold text-sm">Cenários Salvos — {selectedYear}</h3>
+              <p className="text-[10px] text-[#28071C]/40 mt-0.5">Clique num cenário pra carregá-lo de volta na edição — não precisa criar um novo pra continuar de onde parou.</p>
             </div>
             <div className="px-5 py-3 flex flex-wrap gap-2">
               {savedScenarios.map(sc => (
-                <div key={sc.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 bg-white border-[#28071C]/10 text-[#28071C]/65">
+                <button
+                  key={sc.id}
+                  onClick={() => handleLoadScenario(sc)}
+                  title="Carregar este cenário para edição"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 transition-colors ${
+                    loadedScenarioId === sc.id
+                      ? "bg-[#7598CF]/12 border-[#7598CF] text-[#28071C]"
+                      : "bg-white border-[#28071C]/10 text-[#28071C]/65 hover:border-[#7598CF]/50"
+                  }`}>
                   <Check className="w-3 h-3 text-[#7598CF]" />
                   <span className="font-medium">{sc.name}</span>
                   <span className="text-[10px] text-[#28071C]/30">{new Date(sc.saved_at).toLocaleDateString("pt-BR")}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
