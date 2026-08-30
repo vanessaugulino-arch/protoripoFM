@@ -1,0 +1,28 @@
+# Mesma lista do .gitignore — sem isso, `vercel deploy` sobe TODO o
+# diretório local (inclusive .local/, estado de ferramentas de dev, que
+# sozinho tem 40k+ arquivos e estourava o limite de 15000 itens da API).
+node_modules
+.pnpm-debug.log
+
+dist
+.vercel
+.turbo
+
+.env
+.env.local
+.env.*.local
+
+.replit
+replit.nix
+.local
+.agents
+.config
+.claude
+
+attached_assets/
+
+.vscode
+.DS_Store
+
+npm-debug.log*
+__pycache__
