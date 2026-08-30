@@ -29,3 +29,8 @@ src/imports/Captura_de_Tela*
 
 # Logs
 npm-debug.log*
+
+# Lixo de OS/ferramentas
+__pycache__/
+*.pyc
+~$*.xlsx
