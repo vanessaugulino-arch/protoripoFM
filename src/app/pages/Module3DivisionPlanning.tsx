@@ -599,6 +599,18 @@ export default function Module3DivisionPlanning() {
     setIsResolvingApproval(true);
     try {
       await resolveApproval(req.id, decision, user.email);
+      // Se aprovado, reafirma o Plano Oficial a partir das divisões aplicadas —
+      // mesma chamada que o próprio M3 já faz ao aplicar sem desvio. Sem isso,
+      // o pedido do M5 (Sortimento) ficava "aprovado" só no banco, sem nunca
+      // refletir no plano — e quem submeteu não conseguia avançar.
+      if (decision === "approved" && tenantId) {
+        try {
+          await recomputeMacroFromDivisions(tenantId, req.year);
+          await advanceDetailLevel(tenantId, req.year, 5);
+        } catch {
+          // recompute não bloqueia a resolução do pedido
+        }
+      }
       setIncomingApprovals(prev => prev.filter(r => r.id !== req.id));
       const next = incomingApprovals.find(r => r.id !== req.id) ?? null;
       setActiveIncoming(next);
