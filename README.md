@@ -1,11 +1,23 @@
+# Fashion Mind
 
-  # Fashion Mind-PlanoV7
+Aplicação de planejamento de coleções e estoque (React + Vite + Supabase).
 
-  This is a code bundle for Fashion Mind-PlanoV7. The original project is available at https://www.figma.com/design/UyxhLuK1ZN1L43X7M29h7B/Fashion-Mind-PlanoV7.
+## Rodando localmente
 
-  ## Running the code
+```bash
+pnpm install
+pnpm dev
+```
 
-  Run `npm i` to install the dependencies.
+## Build de produção
 
-  Run `npm run dev` to start the development server.
-  
+```bash
+pnpm build
+```
+
+Gera os arquivos estáticos em `dist/`.
+
+## Deploy
+
+Configurado para deploy via Netlify (`netlify.toml`), lendo `VITE_SUPABASE_URL` e
+`VITE_SUPABASE_ANON_KEY` das variáveis de ambiente do host.

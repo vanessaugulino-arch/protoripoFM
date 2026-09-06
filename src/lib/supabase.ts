@@ -7,7 +7,7 @@ const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 if (!supabaseUrl || !supabaseKey) {
   console.warn(
     "[FashionMind] VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY não configuradas. " +
-    "Adicione as variáveis nas configurações do projeto no Vercel. " +
+    "Adicione as variáveis de ambiente nas configurações do host de deploy. " +
     "O app continuará funcionando com dados locais enquanto isso."
   );
 }
