@@ -4,7 +4,7 @@ node_modules
 
 # Build outputs
 dist
-.vercel
+.netlify
 .turbo
 
 # Local env files
@@ -20,12 +20,20 @@ replit.nix
 # Replit attached assets (não fazem parte do app)
 attached_assets/
 
+# Extraído do app — Fechamento de Ciclo vai virar outro projeto
+cycle-closing-extraido/
+
 # Screenshots não usados no código
 src/imports/Captura_de_Tela*
 
 # IDEs
 .vscode
 .DS_Store
+Icon?
 
 # Logs
 npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
