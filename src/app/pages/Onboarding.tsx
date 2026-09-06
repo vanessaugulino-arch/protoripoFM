@@ -38,7 +38,7 @@ import {
 import {
   MONTHS, DEFAULT_REGRA, computeMesFim,
 } from '../../services/temporadaService'
-import { saveRegraDefaultDb, upsertCanalRegraDefaultDb, autoGenerateForYearDb, listSeasonsDb, propagateRegraToSeasonsDb } from '../../services/supabase/seasonService'
+import { getRegraDefaultDb, saveRegraDefaultDb, upsertCanalRegraDefaultDb, autoGenerateForYearDb, listSeasonsDb, propagateRegraToSeasonsDb } from '../../services/supabase/seasonService'
 import { supabase } from '../../lib/supabase'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -362,6 +362,23 @@ export default function Onboarding() {
   useEffect(() => { setInvernoFim(computeMesFim(veraoInicio))  }, [veraoInicio])
   useEffect(() => { setVeraoFim(computeMesFim(invernoInicio))  }, [invernoInicio])
 
+  // Pré-carrega a regra JÁ configurada no tenant (se houver), em vez de sempre
+  // partir do DEFAULT_REGRA. Sem isso, reabrir o onboarding num tenant que já
+  // tinha a regra definida mostrava as datas padrão — e confirmar essa etapa
+  // sobrescrevia (via propagateRegraToSeasonsDb) o calendário real do cliente
+  // com valores default. getRegraDefaultDb já retorna DEFAULT_REGRA quando não
+  // há nada salvo, então isso é seguro também para tenants novos.
+  useEffect(() => {
+    const tenantId = sessionStorage.getItem('activeTenantId')
+    if (!tenantId) return
+    getRegraDefaultDb(tenantId)
+      .then(regra => {
+        setVeraoInicio(regra.verao.mesInicio)
+        setInvernoInicio(regra.inverno.mesInicio)
+      })
+      .catch(() => { /* mantém DEFAULT_REGRA já usado no useState inicial */ })
+  }, [])
+
   // ── Balão hier_concept — aparece após 2s e habilita o botão Avançar ───────
   useEffect(() => {
     if (currentStepId !== 'hier_concept') {
@@ -521,10 +538,16 @@ export default function Onboarding() {
           console.warn('Erro ao salvar/gerar temporadas:', err)
         }
 
-        for (const r of canalVendaRegras) {
-          upsertCanalRegraDefaultDb(tenantId, r.canal_id, r.tipo, r.mes_inicio, r.mes_fim)
-            .catch(err => console.warn('Erro ao salvar regra de canal:', err))
-        }
+        // AGUARDA os pedidos antes de navegar — mesmo motivo do perfil acima:
+        // sem o await, a navegação cancela as requisições em voo e as regras
+        // por canal somem silenciosamente (usuário via "Concluído!" sem elas
+        // terem sido de fato salvas).
+        await Promise.all(
+          canalVendaRegras.map(r =>
+            upsertCanalRegraDefaultDb(tenantId, r.canal_id, r.tipo, r.mes_inicio, r.mes_fim)
+              .catch(err => console.warn('Erro ao salvar regra de canal:', err))
+          )
+        )
       }
     } else {
       console.warn('activeTenantId ausente na conclusão do onboarding — perfil salvo apenas localmente')
