@@ -221,10 +221,72 @@ export async function replaceSupplyEtapas(
  * @param fornecedores   Lista de fornecedores com categorias carregadas
  * @param filtroDivisao  Opcional: filtra categorias por divisão específica
  */
+// ── Custo de compra real (não custo de venda) ──────────────────────────────────
+// Fonte 1: purchase_orders.unit_cost — pedidos reais importados, é o custo de
+// compra de fato pago, que pode divergir do custo assumido na precificação de
+// venda (depende da assertividade de compra).
+// Fonte 2 (fallback, quando não há pedidos importados): custo médio do estoque
+// mais recente (inventory_snapshots.value_cost / quantity) — não é o custo de
+// compra real, mas é a melhor aproximação disponível a partir de dado real.
+
+export interface AvgPurchaseCost {
+  value: number;
+  source: "purchase_orders" | "inventory_snapshots" | "none";
+}
+
+export async function getAvgPurchaseCost(tenantId: string): Promise<AvgPurchaseCost> {
+  const { data: po } = await db
+    .from("purchase_orders")
+    .select("unit_cost, quantity_ordered")
+    .eq("tenant_id", tenantId)
+    .not("unit_cost", "is", null)
+    .gt("unit_cost", 0);
+
+  if (po && po.length > 0) {
+    const totalQty = po.reduce((s: number, r: { quantity_ordered: number | null }) => s + (r.quantity_ordered ?? 0), 0);
+    const totalVal = po.reduce(
+      (s: number, r: { unit_cost: number | null; quantity_ordered: number | null }) =>
+        s + (r.unit_cost ?? 0) * (r.quantity_ordered ?? 0),
+      0,
+    );
+    if (totalQty > 0) return { value: totalVal / totalQty, source: "purchase_orders" };
+  }
+
+  // Sem pedidos utilizáveis — cai pro custo médio do snapshot de estoque mais recente.
+  const { data: dates } = await db
+    .from("inventory_snapshots")
+    .select("snapshot_date")
+    .eq("tenant_id", tenantId)
+    .order("snapshot_date", { ascending: false })
+    .limit(1);
+  const lastDate = dates?.[0]?.snapshot_date;
+  if (!lastDate) return { value: 0, source: "none" };
+
+  const { data: inv } = await db
+    .from("inventory_snapshots")
+    .select("value_cost, quantity")
+    .eq("tenant_id", tenantId)
+    .eq("snapshot_date", lastDate)
+    .not("value_cost", "is", null);
+
+  const totalQty = (inv ?? []).reduce((s: number, r: { quantity: number | null }) => s + (r.quantity ?? 0), 0);
+  const totalVal = (inv ?? []).reduce((s: number, r: { value_cost: number | null }) => s + (r.value_cost ?? 0), 0);
+  if (totalQty > 0) return { value: totalVal / totalQty, source: "inventory_snapshots" };
+
+  return { value: 0, source: "none" };
+}
+
+/**
+ * Projeta o orçamento de compra por mês a partir das PEÇAS que precisam
+ * entrar em estoque (curva de entrada calculada na aba "Curva de Receita" —
+ * quanto é necessário ter disponível no início do mês pra sustentar a venda
+ * planejada com a cobertura definida), multiplicadas pelo custo de compra
+ * real — não pela receita de venda do mês.
+ */
 export function calcBudgetProjection(
   months: string[],
-  receita: number[],
-  margemPct: number,
+  entradaPecas: number[],
+  custoCompra: number,
   fornecedores: SupplyFornecedor[],
   filtroDivisao?: string
 ): OrcamentoPorPeriodo[] {
@@ -242,8 +304,6 @@ export function calcBudgetProjection(
 
   // Pré-inicializa todos os meses do ciclo
   for (let i = 0; i < n; i++) getBucket(i);
-
-  const margemFator = 1 - margemPct / 100;
 
   for (const forn of fornecedores) {
     if (!forn.ativo) continue;
@@ -263,10 +323,10 @@ export function calcBudgetProjection(
 
     // Para cada mês de entrega no ciclo
     for (let m = 0; m < n; m++) {
-      const receitaMes = receita[m] ?? 0;
-      if (receitaMes <= 0) continue;
+      const pecasMes = entradaPecas[m] ?? 0;
+      if (pecasMes <= 0) continue;
 
-      const custo = receitaMes * margemFator;
+      const custo = pecasMes * custoCompra;
       const valorForn = custo * pctCusto;
       if (valorForn <= 0) continue;
 

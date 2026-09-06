@@ -2,6 +2,7 @@
 // Hierarquia derivada dos produtos reais — busca, migração e importação
 
 import { supabase } from "../../lib/supabase";
+import { normalizeDivision } from "./historicalProfileService";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -89,6 +90,56 @@ export async function fetchHierarchyPaths(tenantId: string): Promise<HierarchyPa
     }
   }
   return Array.from(map.values());
+}
+
+// ─── Divisões reais do tenant (para o Módulo 3) ───────────────────────────────
+// Substitui a antiga lista fixa ["feminino","masculino","acessorios","infantil"].
+// `id` é normalizado (minúsculo, sem acento — usado como chave interna/rota) e
+// `label` é o valor real como está cadastrado em products.division (para exibição).
+
+export interface TenantDivision {
+  id: string;
+  label: string;
+}
+
+export async function fetchTenantDivisions(tenantId: string): Promise<TenantDivision[]> {
+  const { data, error } = await supabase
+    .from("products")
+    .select("division")
+    .eq("tenant_id", tenantId)
+    .not("division", "is", null);
+
+  if (error) throw error;
+
+  const labels = Array.from(
+    new Set((data ?? []).map((r) => (r.division as string | null)?.trim()).filter((v): v is string => !!v)),
+  );
+
+  return labels
+    .map((label) => ({ id: normalizeDivision(label), label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+}
+
+// ─── Categorias reais de uma divisão (para a Pirâmide de Preço) ───────────────
+// Substitui o CATEGORIES_BY_DIVISION hardcoded do PricePyramid.tsx — só mostra
+// categorias que o tenant realmente tem cadastradas naquela divisão.
+
+export async function fetchCategoriesForDivision(
+  tenantId: string,
+  divisionLabel: string,
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("products")
+    .select("category")
+    .eq("tenant_id", tenantId)
+    .eq("division", divisionLabel)
+    .not("category", "is", null);
+
+  if (error) throw error;
+
+  return Array.from(
+    new Set((data ?? []).map((r) => (r.category as string | null)?.trim()).filter((v): v is string => !!v)),
+  ).sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
 // ─── Buscar valores distintos para comboboxes ─────────────────────────────────

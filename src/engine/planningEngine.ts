@@ -339,20 +339,29 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // Hierarquia: CustoMédio > Margem% > MKD%  (MKD absorve por padrão).
   // REGRA INDEPENDENTE DO FOCO — activeKeys NÃO influencia mais o cluster.
   //
-  // Editar Margem%:
-  //   MKD tocado & Custo não  → CustoMédio absorve
-  //   caso contrário          → MKD% absorve   (Custo protegido/soberano)
+  // Editar Margem%: existem 3 alavancas pra chegar nela — MKD, PMV, Custo.
+  // MKD é a alavanca padrão (prioridade). O usuário pode tocar MAIS UMA
+  // alavanca (ex: preço) que o MKD ainda recalcula pra reconciliar — só
+  // quando DUAS das três alavancas (além da própria margem) já foram
+  // tocadas pelo usuário é que o MKD fica sem folga pra absorver sozinho,
+  // e a Receita passa a absorver (o MKD fica travado no valor que tinha).
+  //   2 alavancas tocadas (Custo+PMV, Custo+MKD ou PMV+MKD) → força Receita
+  //   MKD tocado & Custo não (0 ou 1 alavanca) → CustoMédio absorve
+  //   caso contrário (0 ou 1 alavanca)         → MKD% absorve
   // Editar MKD%:
   //   Margem tocada & Custo não → CustoMédio absorve (mantém margem)
   //   caso contrário            → Margem% absorve   (markdown reflete na margem)
   // Editar CustoMédio:
   //   nenhum outro tocado / MKD tocado → Margem% absorve
-  // Margem + Custo tocados (sem RL)     → força Receita (engenharia reversa)
   {
     const hasRL    = touched.has('receitaBruta') || touched.has('receitaLiquida')
     const hasMarg  = touched.has('margemBruta')
     const hasCusto = touched.has('custoMedio')
     const hasMkd   = touched.has('mkdPct')
+    const hasPmv   = touched.has('pmv')
+    // Alavancas tocadas além da própria margem — MKD só perde a folga de
+    // absorver quando 2 das 3 já foram fixadas pelo usuário.
+    const leversTouched = [hasCusto, hasPmv, hasMkd].filter(Boolean).length
 
     const rl    = v.receitaLiquida ?? v.receitaBruta
     const pec   = v.pecasVendidas ?? (rl && v.pmv && v.pmv > 0 ? rl / v.pmv : null)
@@ -393,16 +402,19 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     }
 
     if (canT3) {
-      if (hasMarg && hasCusto && !hasRL && v.margemBruta !== null && v.custoMedio) {
-        // Margem + Custo tocados → força Receita (CPV_total inclui markdown)
+      if (hasMarg && leversTouched >= 2 && !hasRL && v.margemBruta !== null && v.custoMedio) {
+        // Margem tocada + 2 das 3 alavancas (Custo/PMV/MKD) já tocadas, sem
+        // Receita tocada → sem mais folga pra nenhuma alavanca absorver
+        // sozinha → força Receita (CPV_total inclui markdown).
         const cpvTotal   = v.custoMedio * pec! + mkdRS
         v.receitaLiquida = cpvTotal / (1 - v.margemBruta / 100)
         v.receitaBruta   = v.receitaLiquida + (v.devolucoes ?? 0)
         s.receitaLiquida = 'calculated'
         s.receitaBruta   = 'calculated'
-        // Margem e Custo foram EDITADOS → seguem livres; a Receita é derivada.
+        // Margem, Custo, PMV e/ou MKD foram EDITADOS → seguem livres; a Receita é derivada.
       } else if (hasMarg) {
-        // Editou Margem → MKD% absorve por padrão; Custo absorve se MKD tocado e Custo não
+        // Editou Margem, no máx. 1 alavanca tocada → ainda há folga.
+        // MKD tocado sozinho (sem Custo) → Custo absorve; caso contrário MKD absorve.
         if (hasMkd && !hasCusto) custoAbsorve()
         else                     mkdAbsorve()
       } else if (hasMkd) {

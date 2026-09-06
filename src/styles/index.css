@@ -1,3 +1,15 @@
 @import './fonts.css';
 @import './tailwind.css';
 @import './theme.css';
+
+/* Remove o spinner nativo de input[type=number] em toda a aplicação — a
+   combinação de setinhas minúsculas + scroll-to-change é fonte recorrente
+   de erro de digitação em campos numéricos. */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}

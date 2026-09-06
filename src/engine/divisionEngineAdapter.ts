@@ -18,7 +18,12 @@ import {
   type PlanningValues,
 } from './planningEngine'
 
-/** Indicadores comerciais da divisão que o motor conhece. */
+/**
+ * Indicadores comerciais que o motor conhece — usado tanto pela divisão (M3)
+ * quanto pelo canal (M2). custoMedio é opcional porque o M3 não expõe esse
+ * campo na tela (é derivado internamente); quando ausente, o motor deriva o
+ * custo a partir de margem/mkd/pmv, preservando o comportamento do M3.
+ */
 export interface DivisionIndicators {
   avgPrice:    number  // PMV
   margin:      number  // %
@@ -26,15 +31,22 @@ export interface DivisionIndicators {
   gmroi:       number
   sellThrough: number  // % — fora dos clusters
   revenue?:    number
+  custoMedio?: number  // R$ — quando presente (M2), é a fonte de verdade; senão é derivado
 }
 
-/** Campo do M3 → campo do motor. Sell-Through não tem correspondente. */
+/** Campo → campo do motor. Sell-Through não tem correspondente. */
 const FIELD_MAP: Record<string, FieldKey | undefined> = {
   avgPrice:    'pmv',
   margin:      'margemBruta',
   mkd:         'mkdPct',
   gmroi:       'gmroi',
   sellThrough: undefined,
+  custoMedio:  'custoMedio',
+}
+
+/** Expõe o mapeamento campo M3 → campo do motor pro chamador acumular `touched`. */
+export function mapToEngineField(field: keyof DivisionIndicators): FieldKey | undefined {
+  return FIELD_MAP[field as string]
 }
 
 /**
@@ -44,6 +56,10 @@ const FIELD_MAP: Record<string, FieldKey | undefined> = {
  * @param revenue     receita da divisão em R$ (receita_macro × participação, ou indicators.revenue)
  * @param editedField campo editado ('avgPrice' | 'margin' | 'mkd' | 'gmroi' | 'sellThrough')
  * @param editedValue novo valor
+ * @param touchedSoFar campos do motor já tocados pelo usuário nesta divisão,
+ *   antes desta edição (persistido pelo chamador entre chamadas) — sem isso,
+ *   a regra "MKD só trava depois de 2 alavancas tocadas" não tem memória e
+ *   trava (ou nunca trava) incorretamente a cada edição isolada.
  * @returns indicadores atualizados após a absorção dos clusters
  */
 export function applyDivisionEdit(
@@ -51,6 +67,7 @@ export function applyDivisionEdit(
   revenue: number,
   editedField: keyof DivisionIndicators,
   editedValue: number,
+  touchedSoFar?: Set<FieldKey>,
 ): DivisionIndicators {
   // Sell-Through (e revenue) não passam pelo motor — grava direto.
   const engineField = FIELD_MAP[editedField as string]
@@ -63,7 +80,8 @@ export function applyDivisionEdit(
   const pecas = rev > 0 && pmv > 0 ? rev / pmv : 0
   const lucro = rev * (current.margin / 100)
   const mkdRS = rev * (current.mkd / 100)
-  const custo = pecas > 0 ? Math.max(0, (rev - lucro - mkdRS) / pecas) : 0
+  // M2 tem custoMedio real (fonte de verdade); M3 não expõe o campo — deriva.
+  const custo = current.custoMedio ?? (pecas > 0 ? Math.max(0, (rev - lucro - mkdRS) / pecas) : 0)
   const estoque = current.gmroi > 0 ? lucro / current.gmroi : 0
 
   // Baseline do motor a partir dos indicadores atuais da divisão.
@@ -80,7 +98,8 @@ export function applyDivisionEdit(
   }
 
   const base = buildStateFromBaseline(baseline)
-  const touched = new Set<FieldKey>([engineField])
+  const touched = new Set<FieldKey>(touchedSoFar)
+  touched.add(engineField)
   const next = recalculate(
     { ...base, values: { ...base.values, [engineField]: editedValue }, touched },
   )
@@ -92,6 +111,80 @@ export function applyDivisionEdit(
     margin:      v.margemBruta ?? current.margin,
     mkd:         v.mkdPct      ?? current.mkd,
     gmroi:       v.gmroi       ?? current.gmroi,
+    // custoMedio só é devolvido quando a entrada já o tinha (M2) — no M3,
+    // onde o campo é derivado internamente, current.custoMedio é undefined
+    // e o resultado também fica undefined (comportamento inalterado do M3).
+    custoMedio:  current.custoMedio !== undefined ? (v.custoMedio ?? current.custoMedio) : undefined,
     // sellThrough e revenue inalterados por edições que passam pelo motor
   }
+}
+
+// ─── Cluster Giro × Cobertura × Estoque Médio (Bloco 4 — Volume/Orçamento) ────
+// Diferente do T3 (Custo > Margem > MKD, hierarquia fixa), este cluster não tem
+// prioridade fixa: as 3 pontas são equivalentes, e a última editada vira o
+// driver — as outras duas se ajustam. Nunca dá pra editar duas pontas ao mesmo
+// tempo, porque Giro e Cobertura são reciprocamente definidos pelo mesmo par
+// (Vendas Esperadas, dias da temporada), e Estoque Médio decorre de qualquer
+// um dos dois.
+//
+//   Giro (vezes na temporada)     = diasDaTemporada / Cobertura
+//   Cobertura (dias)              = diasDaTemporada / Giro
+//   Estoque Médio (peças)         = Vendas Esperadas / Giro
+//
+// Estoque Inicial é fato real (protegido, nunca recalculado por este cluster).
+// Reposições absorve pra fechar a conta de estoque médio clássica:
+//   Estoque Médio ≈ Estoque Inicial + (Reposições − Vendas Esperadas) / 2
+//   → Reposições = 2 × (Estoque Médio − Estoque Inicial) + Vendas Esperadas
+
+export interface VolumeClusterInputs {
+  vendasEsperadas: number  // peças — âncora do cluster
+  estoqueInicial:  number  // peças — protegido, fato real
+  diasDaTemporada: number
+}
+
+export interface VolumeClusterResult {
+  giro:           number
+  coverage:       number
+  estoqueMedio:   number
+  replenishments: number
+}
+
+export function applyVolumeCoverageEdit(
+  editedField: 'giro' | 'coverage' | 'estoqueMedio',
+  editedValue: number,
+  inputs: VolumeClusterInputs,
+): VolumeClusterResult {
+  const { vendasEsperadas, estoqueInicial, diasDaTemporada } = inputs
+  let giro = 0, coverage = 0, estoqueMedio = 0
+
+  if (editedField === 'giro') {
+    giro         = Math.max(0.01, editedValue)
+    coverage     = diasDaTemporada / giro
+    estoqueMedio = vendasEsperadas / giro
+  } else if (editedField === 'coverage') {
+    coverage     = Math.max(0, editedValue)
+    giro         = coverage > 0 ? diasDaTemporada / coverage : 0
+    estoqueMedio = diasDaTemporada > 0 ? (vendasEsperadas * coverage) / diasDaTemporada : 0
+  } else {
+    estoqueMedio = Math.max(0, editedValue)
+    giro         = estoqueMedio > 0 ? vendasEsperadas / estoqueMedio : 0
+    coverage     = giro > 0 ? diasDaTemporada / giro : 0
+  }
+
+  const replenishments = Math.max(0, 2 * (estoqueMedio - estoqueInicial) + vendasEsperadas)
+
+  return { giro, coverage, estoqueMedio, replenishments }
+}
+
+/**
+ * Recalcula Estoque Médio + Reposições quando Vendas Esperadas ou Estoque
+ * Inicial mudam — mantém a Cobertura atual como referência (é a ponta mais
+ * "assentada" do cluster), já que essas duas edições não fazem parte do
+ * round-robin do cluster, mas ainda precisam refletir nele.
+ */
+export function recalcVolumeClusterFromAnchor(
+  currentCoverage: number,
+  inputs: VolumeClusterInputs,
+): VolumeClusterResult {
+  return applyVolumeCoverageEdit('coverage', currentCoverage, inputs)
 }

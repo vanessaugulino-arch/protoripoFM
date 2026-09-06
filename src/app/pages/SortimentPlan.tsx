@@ -82,6 +82,7 @@ import type { Temporada } from "../../services/temporadaService";
 import {
   getPlanCycle,
   getPlannedYears,
+  initPlanCycles,
   STRATEGIC_FOCUS_LABELS,
   STRATEGIC_FOCUS_ICONS,
   STRATEGIC_FOCUS_COLORS,
@@ -617,8 +618,14 @@ export default function SortimentPlan() {
       const parsed = JSON.parse(u);
       setUser(parsed);
       if (parsed.tenant_id) {
-        listSeasonsDb(parsed.tenant_id)
-          .then(list => {
+        // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+        // reload nesta tela faz getPlanCycle(t.anoFiscal) voltar null pra toda
+        // temporada, mesmo com o M1 salvo de verdade no banco (planned fica vazio).
+        Promise.all([
+          initPlanCycles(parsed.tenant_id),
+          listSeasonsDb(parsed.tenant_id),
+        ])
+          .then(([, list]) => {
             setTemporadas(list);
             // Apenas temporadas com planejamento Módulo 1 completo
             const planned = list.filter(t => t.anoFiscal != null && getPlanCycle(t.anoFiscal) !== null);

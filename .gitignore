@@ -34,6 +34,7 @@ Icon?
 # Logs
 npm-debug.log*
 
-# Python
+# Python / lixo de OS/ferramentas
 __pycache__/
 *.pyc
+~$*.xlsx

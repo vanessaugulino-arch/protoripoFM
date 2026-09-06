@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { ArrowLeft, Check, X } from "lucide-react";
-import { BusinessDivisionId, DEFAULT_DIVISIONS } from "../types/module3";
+import { BusinessDivisionId } from "../types/module3";
 import { CategoryPricePlan, PriceTierId, TierConfig, TierPlan } from "../types/pricePyramid";
 import {
   fetchHistoricalTierAvgs,
@@ -28,6 +28,7 @@ import {
   type TierHistoricalAvg,
   type TierRange,
 } from "../../services/supabase/pricePyramidService";
+import { fetchCategoriesForDivision } from "../../services/supabase/productHierarchyService";
 
 // ─── Dados estáticos (ranges vêm de OperationSettings no futuro) ───────────
 
@@ -47,35 +48,6 @@ const TIER_RANGES: Record<PriceTierId, TierRange> = {
   p1: { min: TIER_CONFIG.p1.rangeMin, max: TIER_CONFIG.p1.rangeMax },
   p2: { min: TIER_CONFIG.p2.rangeMin, max: TIER_CONFIG.p2.rangeMax },
   p3: { min: TIER_CONFIG.p3.rangeMin, max: TIER_CONFIG.p3.rangeMax },
-};
-
-// TODO: Substituir por categorias vindas das Configurações de Operação
-const CATEGORIES_BY_DIVISION: Record<BusinessDivisionId, Array<{ id: string; label: string }>> = {
-  feminino:   [
-    { id: "vestidos",   label: "Vestidos" },
-    { id: "blusas",     label: "Blusas" },
-    { id: "calcas",     label: "Calças" },
-    { id: "saias",      label: "Saias" },
-    { id: "moda_praia", label: "Moda Praia" },
-  ],
-  masculino:  [
-    { id: "camisas",   label: "Camisas" },
-    { id: "calcas_m",  label: "Calças" },
-    { id: "bermudas",  label: "Bermudas" },
-    { id: "moletons",  label: "Moletons" },
-  ],
-  acessorios: [
-    { id: "bolsas",     label: "Bolsas" },
-    { id: "cintos",     label: "Cintos" },
-    { id: "bijuterias", label: "Bijuterias" },
-    { id: "calcados",   label: "Calçados" },
-  ],
-  infantil:   [
-    { id: "conjuntos",  label: "Conjuntos" },
-    { id: "vestidos_i", label: "Vestidos" },
-    { id: "camisetas",  label: "Camisetas" },
-    { id: "calcas_i",   label: "Calças" },
-  ],
 };
 
 // ─── Helpers de cálculo ───────────────────────────────────────────────────────
@@ -104,10 +76,10 @@ function calcCategoryPmv(
   }, 0);
 }
 
-function buildDefaults(divId: BusinessDivisionId): CategoryPricePlan[] {
-  return (CATEGORIES_BY_DIVISION[divId] ?? []).map((cat) => ({
-    categoryId: cat.id,
-    label:      cat.label,
+function buildDefaults(categoryLabels: string[]): CategoryPricePlan[] {
+  return categoryLabels.map((label) => ({
+    categoryId: label,
+    label,
     tiers: {
       p1: { participation: 33 },
       p2: { participation: 34 },
@@ -129,6 +101,7 @@ export default function PricePyramid() {
     seasonId?: string;
     referenceSeasonId?: string;
     tenantId?: string;
+    divisionLabel?: string;
   } | null);
 
   const plannedAvgPrice  = navState?.plannedAvgPrice;
@@ -141,55 +114,63 @@ export default function PricePyramid() {
   })();
 
   const divId = divisionId as BusinessDivisionId;
+  // products.division guarda o rótulo real ("Feminino") — divisionId da rota é
+  // o id normalizado ("feminino"). Sem o rótulo real (acesso direto por URL,
+  // sem passar pelo M3), cai no id como melhor esforço.
+  const divisionLabel = navState?.divisionLabel ?? divisionId ?? "";
 
   // ── Estado ─────────────────────────────────────────────────────────────────
   const [categories, setCategories]           = useState<CategoryPricePlan[]>([]);
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [historicalAvg, setHistoricalAvg]     = useState<TierHistoricalAvg>({ p1: null, p2: null, p3: null });
   const [categoryRangesMap, setCategoryRangesMap] = useState<Map<string, CategoryTierRanges>>(new Map());
   const [globalTierRanges, setGlobalTierRanges]   = useState<Record<PriceTierId, TierRange>>(TIER_RANGES);
   const [loading, setLoading]                 = useState(true);
 
-  // ── Carga inicial: tier config → plano + médias históricas ───────────────
-  // Sequência intencional: carrega ranges do OperationSettings antes de buscar
-  // médias históricas, para filtrar produtos com os ranges corretos do tenant.
+  // ── Carga inicial: categorias reais → tier config → plano + médias históricas
+  // Categorias vêm do catálogo real (products.category) — uma divisão sem
+  // produtos cadastrados simplesmente não mostra nenhuma categoria, em vez de
+  // uma lista fixa que não bate com o que o cliente realmente vende.
   useEffect(() => {
-    if (!divisionId) return;
+    if (!divisionId || !tenantId) return;
     setLoading(true);
-    const defaults = buildDefaults(divId);
+    setCategoriesLoaded(false);
 
-    // 1. Ranges dinâmicos (fallback: TIER_RANGES hardcoded)
-    const tierCfgPromise = tenantId
-      ? loadDivisionTierConfig(tenantId, divId)
-      : Promise.resolve(null);
+    fetchCategoriesForDivision(tenantId, divisionLabel).then((categoryLabels) => {
+      const defaults = buildDefaults(categoryLabels);
+      setCategoriesLoaded(true);
 
-    tierCfgPromise.then((tierCfg) => {
-      const ranges = tierCfg?.global ?? TIER_RANGES;
-      if (tierCfg) {
-        setCategoryRangesMap(new Map(tierCfg.byCategory.map((c) => [c.categoryLabel, c])));
-        setGlobalTierRanges(tierCfg.global);
-      }
-
-      // 2. Plano salvo + médias históricas com ranges corretos
-      Promise.all([
-        tenantId && seasonId
-          ? loadPyramidPlan(tenantId, seasonId, divisionId)
-          : Promise.resolve(null),
-        tenantId
-          ? fetchHistoricalTierAvgs(tenantId, divisionId, ranges)
-          : Promise.resolve<TierHistoricalAvg>({ p1: null, p2: null, p3: null }),
-      ]).then(([savedPlan, avgs]: [CategoryPricePlan[] | null, TierHistoricalAvg]) => {
-        setHistoricalAvg(avgs);
-        if (savedPlan && savedPlan.length > 0) {
-          // Mescla: garante que categorias novas apareçam mesmo em planos antigos
-          const saved = new Map(savedPlan.map((c) => [c.categoryId, c]));
-          setCategories(defaults.map((d) => saved.get(d.categoryId) ?? d));
-        } else {
-          setCategories(defaults);
+      // 1. Ranges dinâmicos (fallback: TIER_RANGES hardcoded)
+      loadDivisionTierConfig(tenantId, divId).then((tierCfg) => {
+        const ranges = tierCfg?.global ?? TIER_RANGES;
+        if (tierCfg) {
+          setCategoryRangesMap(new Map(tierCfg.byCategory.map((c) => [c.categoryLabel, c])));
+          setGlobalTierRanges(tierCfg.global);
         }
-      }).finally(() => setLoading(false));
+
+        // 2. Plano salvo + médias históricas com ranges corretos
+        Promise.all([
+          seasonId
+            ? loadPyramidPlan(tenantId, seasonId, divisionId)
+            : Promise.resolve(null),
+          fetchHistoricalTierAvgs(tenantId, divisionLabel, ranges),
+        ]).then(([savedPlan, avgs]: [CategoryPricePlan[] | null, TierHistoricalAvg]) => {
+          setHistoricalAvg(avgs);
+          if (savedPlan && savedPlan.length > 0) {
+            // Mescla: garante que categorias novas apareçam mesmo em planos antigos
+            const saved = new Map(savedPlan.map((c) => [c.categoryId, c]));
+            setCategories(defaults.map((d) => saved.get(d.categoryId) ?? d));
+          } else {
+            setCategories(defaults);
+          }
+        }).finally(() => setLoading(false));
+      });
+    }).catch(() => {
+      setCategoriesLoaded(true);
+      setLoading(false);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [divisionId, seasonId, tenantId]);
+  }, [divisionId, divisionLabel, seasonId, tenantId]);
 
   // ── Persistência: debounce write-through → Supabase ───────────────────────
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,7 +221,7 @@ export default function PricePyramid() {
     return Math.abs(total - 100) < 0.01;
   }).length;
 
-  if (!divisionId || !CATEGORIES_BY_DIVISION[divId]) {
+  if (!divisionId) {
     return (
       <div className="min-h-screen bg-[#F2F2F2] flex items-center justify-center">
         <p className="text-[#28071C] font-semibold">Divisão não encontrada.</p>
@@ -248,7 +229,27 @@ export default function PricePyramid() {
     );
   }
 
-  const divisionName = DEFAULT_DIVISIONS[divId] ?? divisionId;
+  if (categoriesLoaded && categories.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#F2F2F2] flex items-center justify-center px-6">
+        <div className="text-center max-w-md">
+          <p className="text-[#28071C] font-semibold mb-2">Nenhuma categoria encontrada em {divisionLabel}.</p>
+          <p className="text-[#28071C]/60 text-sm mb-4">
+            A Pirâmide de Preço mostra apenas categorias que existem no catálogo de produtos importado.
+            Importe o catálogo com a categoria de cada produto preenchida para planejar as faixas de preço aqui.
+          </p>
+          <button
+            onClick={() => navigate("/module3-division-planning")}
+            className="text-[#7598CF] font-semibold text-sm underline"
+          >
+            Voltar ao Módulo 3
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const divisionName = divisionLabel || divisionId;
 
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">

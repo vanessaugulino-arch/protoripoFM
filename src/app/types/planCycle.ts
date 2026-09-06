@@ -163,16 +163,23 @@ export function getPlanCycle(year: number): AnnualPlanCycle | null {
   return _cycleCache.get(year) ?? null
 }
 
-// ─── Escrita: cache + Supabase write-through (fire-and-forget) ────────────────
+// ─── Escrita: cache + Supabase write-through ──────────────────────────────────
+// Antes era fire-and-forget: se o upsert falhasse (RLS, rede, o que for), o
+// erro só ia pro console — a tela mostrava "salvo" mesmo sem nada persistir.
+// Agora devolve o resultado; quem chama pode (e deve) tratar a falha.
 
-export function savePlanCycle(cycle: AnnualPlanCycle): void {
+export interface SaveResult { ok: boolean; error?: string }
+
+export async function savePlanCycle(cycle: AnnualPlanCycle): Promise<SaveResult> {
   cycle.lastModifiedAt = new Date().toISOString()
   _cycleCache.set(cycle.year, cycle)
 
-  if (!_currentTenantId) return
+  if (!_currentTenantId) {
+    return { ok: false, error: 'Sem tenant identificado — não foi possível salvar.' }
+  }
   const tenantId = _currentTenantId
 
-  supabase
+  const { error } = await supabase
     .from('annual_plan_cycles')
     .upsert(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -188,18 +195,23 @@ export function savePlanCycle(cycle: AnnualPlanCycle): void {
       } as any,
       { onConflict: 'tenant_id,year' }
     )
-    .then(({ error }) => {
-      if (error) console.warn('[planCycle] savePlanCycle erro:', error.message)
-    })
+
+  if (error) {
+    console.warn('[planCycle] savePlanCycle erro:', error.message)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
 }
 
-export function addVersionToCycle(
+export async function addVersionToCycle(
   year: number,
   scenarioName: string,
   values: Record<string, number | null>,
-): void {
+): Promise<SaveResult> {
   const cycle = getPlanCycle(year)
-  if (!cycle) return
+  if (!cycle) {
+    return { ok: false, error: `Ciclo de ${year} não encontrado no cache — recarregue a página e tente de novo.` }
+  }
   const version: AnnualPlanVersion = {
     versionId: `v${Date.now()}`,
     savedAt: new Date().toISOString(),
@@ -207,7 +219,7 @@ export function addVersionToCycle(
     values,
   }
   cycle.versions = [version, ...cycle.versions].slice(0, 20)
-  savePlanCycle(cycle)
+  return savePlanCycle(cycle)
 }
 
 // ─── Mapeamento DB row → AnnualPlanCycle ─────────────────────────────────────

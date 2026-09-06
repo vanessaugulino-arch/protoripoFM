@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
@@ -17,6 +17,9 @@ import {
 } from "../../services/supabase/planApprovalService";
 import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
 import { recomputeOfficialMacro, recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
+import { applyDivisionEdit, mapToEngineField, type DivisionIndicators } from "../../engine/divisionEngineAdapter";
+import type { FieldKey } from "../../engine/planningEngine";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -43,7 +46,7 @@ const CHANNEL_PLANNING_TOUR: TourStep[] = [
 import { exportToPDF } from "../../utils/exportPDF";
 import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   saveChannelScenario as dbSaveChannelScenario,
   listChannelScenarios as dbListChannelScenarios,
@@ -171,6 +174,17 @@ const HIGHER_IS_BETTER: Partial<Record<keyof ChannelData, boolean>> = {
   cobertura:   false, // lower is safer (less stock risk)
   mkdPct:      false, // lower is better (less discount)
   custoMedio:  false, // lower is better
+};
+
+// Atalho curto de "qual campo editar" pra campos calculados que desviam da
+// meta — a tela mostrava o desvio em vermelho num campo travado (não-driver)
+// sem indicar por onde resolver; o tooltip completo existe mas só aparece
+// depois de 2s de hover, fácil de não notar.
+const ADJUST_HINT: Partial<Record<keyof ChannelData, string>> = {
+  margemBrutaRS: "ajuste Margem Bruta (%)",
+  orcamento:     "ajuste Custo Médio",
+  producao:      "ajuste PMV",
+  receita:       "ajuste a participação (%)",
 };
 
 // Tooltips para campos calculados (não-driver)
@@ -318,6 +332,7 @@ export default function ChannelPlanning() {
   const routeYear = (location.state as { year?: number } | null)?.year;
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
   const tour = useTour("channel-planning");
 
   useEffect(() => {
@@ -332,6 +347,10 @@ export default function ChannelPlanning() {
 
       // Carregar cenários, anos revisados e pedidos de aprovação do Supabase
       if (tid) {
+        // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+        // reload nesta tela faz hasM1Version ficar sempre falso mesmo com o
+        // M1 salvo de verdade no banco.
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
         // Carrega perfis históricos para inicializar proporções reais de canal
         getHistoricalProfiles(tid)
           .then(hp => setHistChannelProfiles(hp.channels))
@@ -372,6 +391,10 @@ export default function ChannelPlanning() {
   const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
 
   const planCycle    = getPlanCycle(selectedYear);
+  // Trava real (não só a do card do Dashboard): sem M1 salvo para este ano,
+  // o M2 não pode aplicar nada — evita canal aplicado "no vácuo", destravando
+  // M3/M4 sem o macro que deveriam refinar.
+  const hasM1Version = Boolean(planCycle?.versions?.length);
   const macroValues: Record<string, unknown> | null = planCycle?.versions?.[0]?.values ?? null;
   const macroReceita: number = (macroValues?.receitaBruta as number | null) ?? 3_120_000;
 
@@ -416,6 +439,20 @@ export default function ChannelPlanning() {
   const [channelData, setChannelData] = useState<Record<ChannelId, ChannelData>>(
     () => initChannelData(macroReceita, macroRatesForChannels)
   );
+
+  // Rastreia quais das 3 alavancas não-margem (PMV, Custo, MKD) foram tocadas
+  // manualmente por canal, nesta sessão de edição. Regra: MKD é a alavanca
+  // padrão pra fechar a margem — o usuário pode tocar MAIS UMA alavanca (ex:
+  // preço) que a sugestão de compensação via MKD continua disponível. Só
+  // quando DUAS das três alavancas já foram tocadas é que ele esgotou a
+  // folga (já escolheu outro caminho pra margem) e a sugestão para de aparecer.
+  const [touchedLevers, setTouchedLevers] = useState<Partial<Record<ChannelId, Set<"pmv" | "custoMedio" | "mkdPct">>>>({});
+
+  // Campos do motor (pmv, margemBruta, mkdPct, custoMedio) já tocados por
+  // canal, acumulados entre edições — alimenta o mesmo motor de clusters do
+  // M1/M3 (applyDivisionEdit) pra que Margem/MKD/PMV/Custo se recalculem
+  // sozinhos aqui também, com a mesma regra "trava depois de 2 alavancas".
+  const touchedChannelFieldsRef = useRef<Partial<Record<ChannelId, Set<FieldKey>>>>({});
 
   useEffect(() => {
     const plan      = getPlanCycle(selectedYear);
@@ -466,6 +503,8 @@ export default function ChannelPlanning() {
     };
 
     setPercents(initPercents);
+    setTouchedLevers({});
+    touchedChannelFieldsRef.current = {};
 
     if (!tenantId) {
       setChannelData(initChannelData(newMacroR, newRates));
@@ -520,6 +559,11 @@ export default function ChannelPlanning() {
   const [showSaveDialog, setShowSaveDialog]         = useState(false);
   const [saveNameInput, setSaveNameInput]           = useState("");
   const [toast, setToast]                           = useState<string | null>(null);
+  // Cenário salvo atualmente carregado na edição — null quando o draft em tela
+  // é novo/não corresponde a nenhum cenário salvo. Aplicar/Submeter sempre usa
+  // o último cenário salvo por padrão, mas o usuário pode voltar a qualquer
+  // cenário anterior sem precisar criar um novo pra continuar de onde parou.
+  const [loadedScenarioId, setLoadedScenarioId]     = useState<string | null>(null);
 
   // Estado de célula em edição — exibe valor cru enquanto foca, formatado ao sair
   const [focusedCell, setFocusedCell] = useState<{ ch: ChannelId; key: keyof ChannelData } | null>(null);
@@ -543,14 +587,63 @@ export default function ChannelPlanning() {
     setEditingValue(isNaN(rawVal) ? "" : String(rawVal));
   };
 
+  // Campo do canal → campo do motor de clusters (mesmo quarteto do M1/M3).
+  // Giro/Cobertura/GMROI ficam de fora por ora — não fazem parte da regra
+  // Margem/MKD/PMV/Custo em discussão.
+  const CHANNEL_FIELD_TO_INDICATOR: Partial<Record<keyof ChannelData, keyof DivisionIndicators>> = {
+    margemBruta: "margin",
+    pmv:         "avgPrice",
+    mkdPct:      "mkd",
+    custoMedio:  "custoMedio",
+  };
+
   const handleDriverChange = (ch: ChannelId, field: keyof ChannelData, raw: string) => {
     // Permite digitar livremente, incluindo ponto/vírgula intermediários
     setEditingValue(raw);
     const normalized = raw.replace(",", ".").replace(/[^0-9.]/g, "");
     const value = parseFloat(normalized);
     if (isNaN(value)) return;
+    if (field === "pmv" || field === "custoMedio" || field === "mkdPct") {
+      setTouchedLevers(prev => {
+        const next = new Set(prev[ch]);
+        next.add(field);
+        return { ...prev, [ch]: next };
+      });
+    }
+
+    const indicatorField = CHANNEL_FIELD_TO_INDICATOR[field];
+
     setChannelData(prev => {
-      const updated: ChannelData = { ...prev[ch], [field]: value };
+      let updated: ChannelData = { ...prev[ch], [field]: value };
+
+      if (indicatorField) {
+        // Passa pelo mesmo motor de clusters do M1/M3 — Margem/MKD/PMV/Custo
+        // se recalculam entre si com a regra "MKD trava depois de 2 alavancas".
+        const current: DivisionIndicators = {
+          avgPrice:    prev[ch].pmv,
+          margin:      prev[ch].margemBruta,
+          mkd:         prev[ch].mkdPct,
+          custoMedio:  prev[ch].custoMedio,
+          gmroi:       prev[ch].gmroi,
+          sellThrough: 0,
+          revenue:     prev[ch].receita,
+        };
+        const touchedSoFar = touchedChannelFieldsRef.current[ch] ?? new Set<FieldKey>();
+        const nextInd = applyDivisionEdit(current, prev[ch].receita, indicatorField, value, touchedSoFar);
+        const engineField = mapToEngineField(indicatorField);
+        if (engineField) {
+          touchedSoFar.add(engineField);
+          touchedChannelFieldsRef.current = { ...touchedChannelFieldsRef.current, [ch]: touchedSoFar };
+        }
+        updated = {
+          ...updated,
+          margemBruta: nextInd.margin,
+          pmv:         nextInd.avgPrice,
+          mkdPct:      nextInd.mkd,
+          custoMedio:  nextInd.custoMedio ?? updated.custoMedio,
+        };
+      }
+
       return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
     });
   };
@@ -558,6 +651,24 @@ export default function ChannelPlanning() {
   const handleDriverBlur = () => {
     setFocusedCell(null);
     setEditingValue("");
+  };
+
+  // Carrega um cenário salvo de volta pra edição — não precisa criar um novo
+  // pra continuar de onde parou num cenário já salvo.
+  const handleLoadScenario = (sc: ChannelScenario) => {
+    const raw = sc.channel_data as unknown as Record<ChannelId, ChannelData>;
+    const channels = visibleChannels.length > 0 ? visibleChannels : (["atacado", "varejo", "ecommerce"] as ChannelId[]);
+    const data: Record<ChannelId, ChannelData> = {} as any;
+    for (const ch of channels) {
+      const chData = raw[ch];
+      if (chData) data[ch] = applyRevenue(chData, chData.receita);
+    }
+    setChannelData(data);
+    setPercents(prev => ({ ...prev, ...(sc.percents as Record<ChannelId, number>) }));
+    setLoadedScenarioId(sc.id);
+    setTouchedLevers({});
+    touchedChannelFieldsRef.current = {};
+    showToast(`Cenário "${sc.name}" carregado para edição.`);
   };
 
   const handleConfirmSave = () => {
@@ -568,6 +679,7 @@ export default function ChannelPlanning() {
       user?.email
     ).then(sc => {
       setSavedScenarios(prev => [...prev, sc]);
+      setLoadedScenarioId(sc.id);
       showToast(`Cenário "${sc.name}" salvo.`);
     }).catch(err => showToast("Erro ao salvar: " + err.message));
     setShowSaveDialog(false);
@@ -614,11 +726,25 @@ export default function ChannelPlanning() {
 
   const handleApplyMetas = async () => {
     if (!tenantId) return;
-    const last = savedScenarios[savedScenarios.length - 1];
-    if (last) {
-      // Aguarda a aplicação para então recalcular o macro oficial (bottom-up).
+    if (!hasM1Version) {
+      showToast(`O Planejamento Estratégico (M1) de ${selectedYear} ainda não foi salvo. Complete o M1 antes de aplicar as metas por canal.`);
+      return;
+    }
+    // Aplica o cenário carregado na edição — se nenhum foi explicitamente
+    // carregado/salvo nesta sessão, cai no mais recente salvo.
+    const target = savedScenarios.find(sc => sc.id === loadedScenarioId) ?? savedScenarios[savedScenarios.length - 1];
+    if (target) {
+      // A aplicação do cenário precisa mesmo funcionar — se falhar, avisa e
+      // PARA aqui (antes só o recompute era tolerante a falha; um catch único
+      // também engolia erro real de applyChannelScenario e mostrava "sucesso"
+      // mesmo sem nada ter sido aplicado).
       try {
-        await applyChannelScenario(tenantId, selectedYear, last.id);
+        await applyChannelScenario(tenantId, selectedYear, target.id);
+      } catch (err) {
+        showToast(`Não foi possível aplicar as metas: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+        return;
+      }
+      try {
         // Plano Oficial: recalcula o macro a partir do canal aplicado (primazia
         // dos absolutos, na função Postgres) e avança o nível de detalhe para 2.
         await recomputeOfficialMacro(tenantId, selectedYear);
@@ -649,7 +775,7 @@ export default function ChannelPlanning() {
         proposedData:        consolidated as unknown as Record<string, unknown>,
         originalData:        (macroValues ?? {}) as Record<string, unknown>,
         impactedIndicators:  impactedMacro as ImpactedIndicator[],
-        scenarioId:          savedScenarios[savedScenarios.length - 1]?.id,
+        scenarioId:          (savedScenarios.find(sc => sc.id === loadedScenarioId) ?? savedScenarios[savedScenarios.length - 1])?.id,
       });
       setAlreadyPending(true);
       showToast("Solicitação de revisão enviada ao responsável pelo plano macro.");
@@ -808,6 +934,43 @@ export default function ChannelPlanning() {
       isRate: RATE_MACRO_FIELDS.has(key),
     }));
   }, [activeMacroKeys, macroValues, consolidated, visibleTotalPct]);
+
+  // ── Compensação: quando a Margem (indicador-alvo do M1) diverge por causa da
+  // participação, sugere o MKD% que fecha a conta de volta na meta — mesma
+  // hierarquia de cluster do M1 (Custo protegido, MKD absorve).
+  const marginCompensation = useMemo(() => {
+    const item = impactedMacro.find(i => i.key === "margemBruta");
+    if (!item) return null;
+    // Se o usuário já tocou 2 das 3 alavancas (PMV/Custo/MKD) de algum canal
+    // envolvido, ele já esgotou a folga pra chegar na margem por outro
+    // caminho — o sistema não sugere mexer no markdown por cima disso.
+    if (visibleChannels.some(ch => (touchedLevers[ch]?.size ?? 0) >= 2)) return null;
+    const entities = visibleChannels.map(ch => ({
+      id: ch,
+      receita: channelData[ch].receita,
+      cpv: channelData[ch].orcamento, // orcamento = producao × custoMedio = CPV do canal
+    }));
+    return computeMarginCompensationViaMkd(entities, item.planned);
+  }, [impactedMacro, visibleChannels, channelData, touchedLevers]);
+
+  const handleApplyMarginCompensation = () => {
+    if (!marginCompensation) return;
+    setChannelData(prev => {
+      const next = { ...prev };
+      for (const ch of visibleChannels) {
+        const result = marginCompensation.perEntity[ch];
+        if (!result) continue;
+        next[ch] = {
+          ...next[ch],
+          mkdPct: result.mkdPct,
+          markdown: result.markdown,
+          margemBrutaRS: result.margemBrutaRS,
+          margemBruta: result.margemBruta,
+        };
+      }
+      return next;
+    });
+  };
 
   // AJUSTE 2: per-channel impact — is this channel's value for this field pulling the avg the wrong way?
   const isChannelDragging = (ch: ChannelId, fieldKey: keyof ChannelData): boolean => {
@@ -1057,6 +1220,25 @@ export default function ChannelPlanning() {
                         </span>
                       ))}
                     </div>
+
+                    {/* Compensação sugerida: só para Margem, via MKD% (mesma hierarquia do M1) */}
+                    {marginCompensation && (
+                      <div className="mt-3 flex items-center gap-2 flex-wrap bg-white/60 border border-red-200 rounded-lg px-3 py-2">
+                        <span className="text-[12px] text-red-800">
+                          A participação mudou a Margem para <strong>{consolidated.margemBruta.toFixed(1)}%</strong>{" "}
+                          (meta: {impactedMacro.find(i => i.key === "margemBruta")?.planned.toFixed(1)}%).
+                          Compensar com{" "}
+                          <strong>MKD% {marginCompensation.mkdPctNew.toFixed(1)}%</strong>
+                          {marginCompensation.clamped ? " (mínimo possível — não alcança a meta só com MKD)" : ""}?
+                        </span>
+                        <button
+                          onClick={handleApplyMarginCompensation}
+                          className="text-[11px] font-semibold bg-red-600 text-white rounded-full px-3 py-1 hover:bg-red-700 transition-colors flex-shrink-0"
+                        >
+                          Aplicar sugestão
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -1202,6 +1384,7 @@ export default function ChannelPlanning() {
                       {macroTarget != null && (
                         <span className="text-[9px] text-red-400 font-mono leading-tight mt-0.5">
                           meta {fmt(macroTarget, field.format)}
+                          {!field.isDriver && ADJUST_HINT[field.key] && ` — ${ADJUST_HINT[field.key]}`}
                         </span>
                       )}
                     </div>
@@ -1217,14 +1400,23 @@ export default function ChannelPlanning() {
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden mb-5">
             <div className="px-5 py-3 border-b border-[#28071C]/8">
               <h3 className="text-[#28071C] font-semibold text-sm">Cenários Salvos — {selectedYear}</h3>
+              <p className="text-[10px] text-[#28071C]/40 mt-0.5">Clique num cenário pra carregá-lo de volta na edição — não precisa criar um novo pra continuar de onde parou.</p>
             </div>
             <div className="px-5 py-3 flex flex-wrap gap-2">
               {savedScenarios.map(sc => (
-                <div key={sc.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 bg-white border-[#28071C]/10 text-[#28071C]/65">
+                <button
+                  key={sc.id}
+                  onClick={() => handleLoadScenario(sc)}
+                  title="Carregar este cenário para edição"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border-2 transition-colors ${
+                    loadedScenarioId === sc.id
+                      ? "bg-[#7598CF]/12 border-[#7598CF] text-[#28071C]"
+                      : "bg-white border-[#28071C]/10 text-[#28071C]/65 hover:border-[#7598CF]/50"
+                  }`}>
                   <Check className="w-3 h-3 text-[#7598CF]" />
                   <span className="font-medium">{sc.name}</span>
                   <span className="text-[10px] text-[#28071C]/30">{new Date(sc.saved_at).toLocaleDateString("pt-BR")}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -1253,10 +1445,10 @@ export default function ChannelPlanning() {
             {impactedMacro.length === 0 ? (
               /* 0 desvios → Aplicar normal */
               <button onClick={handleApplyMetas}
-                disabled={totalPercent !== 100 || savedScenarios.length === 0}
-                title={totalPercent !== 100 ? "Participação deve somar 100%" : savedScenarios.length === 0 ? "Salve um cenário antes de aplicar" : "Aplicar metas e concluir revisão"}
+                disabled={totalPercent !== 100 || savedScenarios.length === 0 || !hasM1Version}
+                title={!hasM1Version ? `Complete o Planejamento Estratégico (M1) de ${selectedYear} antes de aplicar` : totalPercent !== 100 ? "Participação deve somar 100%" : savedScenarios.length === 0 ? "Salve um cenário antes de aplicar" : "Aplicar metas e concluir revisão"}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm ${
-                  totalPercent === 100 && savedScenarios.length > 0
+                  totalPercent === 100 && savedScenarios.length > 0 && hasM1Version
                     ? "bg-[#28071C] text-[#F6F3AA] hover:opacity-90"
                     : "bg-[#28071C]/15 text-[#28071C]/35 cursor-not-allowed"
                 }`}>

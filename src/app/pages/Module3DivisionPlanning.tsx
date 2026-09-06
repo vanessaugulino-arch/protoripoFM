@@ -97,11 +97,14 @@ import {
   PriceRange,
   RiskMatrix,
   VolumeAndCoverage,
-  DEFAULT_DIVISIONS,
   isValidRiskMatrix,
   isValidPriceRange,
 } from "../types/module3";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
+import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
+import { applyVolumeCoverageEdit, recalcVolumeClusterFromAnchor } from "../../engine/divisionEngineAdapter";
+import { getReviewedYears } from "../../services/supabase/channelScenarioService";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   applyModule3Scenario,
   cloneModule3Scenario,
@@ -257,6 +260,10 @@ export default function Module3DivisionPlanning() {
   const tour     = useTour("module3-division");
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
+  // Divisões reais do tenant (products.division) — substitui a lista fixa de 4.
+  const [realDivisions, setRealDivisions] = useState<TenantDivision[]>([]);
+  const [divisionsLoaded, setDivisionsLoaded] = useState(false);
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
@@ -298,6 +305,10 @@ export default function Module3DivisionPlanning() {
 
       // Pedidos de aprovação direcionados ao M3 (vindos do M5 — Sortimento)
       if (tid) {
+        // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+        // reload nesta tela lê macroTargets/M1 desatualizados (deriveSeasonMacroTarget
+        // depende de getPlanCycle/getPlannedYears).
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
         const isCeoOrAdmin = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
         getPendingApprovalsForUser(tid, 3, userData.email, isCeoOrAdmin)
           .then(reqs => {
@@ -333,9 +344,41 @@ export default function Module3DivisionPlanning() {
     setIsLoading(false);
   }, [navigate]);
 
+  // ─── Divisões reais do tenant (products.division) ─────────────────────────
+  // Antes: lista fixa ["feminino","masculino","acessorios","infantil"] pra
+  // qualquer cliente. Agora: só aparece o que o tenant realmente tem no catálogo.
+  useEffect(() => {
+    if (!tenantId) return;
+    fetchTenantDivisions(tenantId)
+      .then(setRealDivisions)
+      .catch(() => setRealDivisions([]))
+      .finally(() => setDivisionsLoaded(true));
+  }, [tenantId]);
+
+  const divisionIds = useMemo(() => realDivisions.map((d) => d.id), [realDivisions]);
+
+  // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
+  // do Dashboard (que é decorativo e não impede acesso direto à tela).
+  const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
+  useEffect(() => {
+    if (!tenantId) return;
+    getReviewedYears(tenantId).then(setM2ReviewedYears).catch(() => {});
+  }, [tenantId]);
+  const divisionLabels = useMemo(
+    () => Object.fromEntries(realDivisions.map((d) => [d.id, d.label])) as Record<string, string>,
+    [realDivisions],
+  );
+
   // ─── Metas macro derivadas do Módulo 1 ───────────────────────────────────
   const selectedTemporada = temporadas.find((t) => String(t.id) === selectedSeasonId);
   const referenceTemporada = temporadas.find((t) => String(t.id) === referenceSeasonId);
+
+  // Base real do cluster Giro/Cobertura/Estoque Médio (Bloco 4): dias da
+  // temporada de verdade, não um "365" genérico. 30 dias/mês, mesma convenção
+  // já usada em outros lugares do app (ex: prazo de fornecedor em supplyService).
+  const diasDaTemporada = selectedTemporada
+    ? countSeasonMonths(selectedTemporada.mesInicio, selectedTemporada.mesFim) * 30
+    : 180;
 
   const macroTargets: MacroTarget = useMemo(() => {
     if (!selectedTemporada) {
@@ -385,6 +428,7 @@ export default function Module3DivisionPlanning() {
   // ─── Hook do Módulo 3 ─────────────────────────────────────────────────────
   const {
     state,
+    touchedPrice,
     updateDivisionParticipation,
     updateIndicators,
     updatePriceRange,
@@ -397,6 +441,7 @@ export default function Module3DivisionPlanning() {
     seasonId: selectedSeasonId,
     referenceSeasonId,
     macroTargets,
+    divisionIds,
   });
 
   const meetsTarget = validateAgainstMacro();
@@ -415,30 +460,30 @@ export default function Module3DivisionPlanning() {
 
       // Aplica proporções históricas somente quando não há cenário salvo para a temporada
       const existingScenarios = listModule3Scenarios(selectedSeasonId);
-      if (existingScenarios.length === 0 && profiles.hasData) {
-        const validDivisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
-        const histPcts = normalizeDivisionPcts(profiles.divisions, validDivisions);
-        validDivisions.forEach(divId => {
+      if (existingScenarios.length === 0 && profiles.hasData && divisionIds.length > 0) {
+        const histPcts = normalizeDivisionPcts(profiles.divisions, divisionIds);
+        divisionIds.forEach(divId => {
           if ((histPcts[divId] ?? 0) > 0) {
             updateDivisionParticipation(divId, histPcts[divId]);
           }
         });
       }
     }).catch(() => {});
-  }, [tenantId, selectedSeasonId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenantId, selectedSeasonId, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Busca médias históricas por faixa para todas as divisões — usadas na compact card view.
   // Carrega os ranges dinâmicos do OperationSettings antes de filtrar os produtos;
   // cai no fallback hardcoded se o tenant ainda não configurou as faixas.
   useEffect(() => {
-    if (!tenantId) return;
-    const divisions: BusinessDivisionId[] = ["feminino", "masculino", "acessorios", "infantil"];
+    if (!tenantId || divisionIds.length === 0) return;
 
     loadAllDivisionGlobalRanges(tenantId).then(divRanges => {
       Promise.all(
-        divisions.map(divId => {
+        divisionIds.map(divId => {
           const ranges = divRanges?.[divId] ?? M3_TIER_RANGES_FALLBACK;
-          return fetchHistoricalTierAvgs(tenantId, divId, ranges)
+          // products.division guarda o rótulo real ("Feminino"), não o id normalizado.
+          const realLabel = divisionLabels[divId] ?? divId;
+          return fetchHistoricalTierAvgs(tenantId, realLabel, ranges)
             .then(avgs => [divId, avgs] as [BusinessDivisionId, TierHistoricalAvg])
             .catch(() => [divId, { p1: null, p2: null, p3: null }] as [BusinessDivisionId, TierHistoricalAvg]);
         }),
@@ -446,7 +491,7 @@ export default function Module3DivisionPlanning() {
         setHistoricalAvgs(Object.fromEntries(results) as Record<BusinessDivisionId, TierHistoricalAvg>);
       });
     });
-  }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenantId, divisionIds, divisionLabels]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalParticipation = Object.values(state.divisions).reduce(
     (sum, d) => sum + d.participation,
@@ -489,6 +534,41 @@ export default function Module3DivisionPlanning() {
       }] as ImpactedIndicator[];
     });
   })();
+
+  // ── Compensação: quando a Margem (indicador-alvo do M1) diverge por causa da
+  // participação entre divisões, sugere o MKD% que fecha a conta de volta na
+  // meta — mesma lógica do M2, reaproveitando o motor de cluster por divisão
+  // (applyDivisionEdit já resolve "editar MKD → Margem absorve").
+  // Não é hook (por isso pode vir depois do early return, junto de impactedMacroM3
+  // acima) — precisou virar IIFE simples porque um useMemo aqui, condicionado ao
+  // "if (!user || isLoading) return null" logo acima, quebra a contagem de hooks
+  // entre renders (React error #310) assim que user/isLoading mudam.
+  const divisionMarginCompensation = (() => {
+    const item = impactedMacroM3.find(i => i.key === "margemBruta");
+    if (!item) return null;
+    // Se o usuário já mexeu no PMV de alguma divisão envolvida, ele já
+    // escolheu outro caminho pra chegar na margem — não sugere MKD por cima.
+    if (divisionIds.some(divId => touchedPrice[divId])) return null;
+    const seasonRevenue = macroTargets.revenue;
+    const entities = divisionIds.map(divId => {
+      const block = state.divisions[divId];
+      const revDiv = seasonRevenue > 0
+        ? seasonRevenue * (block.participation / 100)
+        : (block.indicators.revenue ?? 0);
+      const lucroBrutoDiv = revDiv * (block.indicators.margin / 100);
+      const markdownDiv   = revDiv * (block.indicators.mkd / 100);
+      const cpv = block.volumeCoverage?.orcamento ?? Math.max(0, revDiv - lucroBrutoDiv - markdownDiv);
+      return { id: divId, receita: revDiv, cpv };
+    });
+    return computeMarginCompensationViaMkd(entities, item.planned);
+  })();
+
+  const handleApplyDivisionMarginCompensation = () => {
+    if (!divisionMarginCompensation) return;
+    for (const divId of divisionIds) {
+      updateIndicators(divId, { mkd: divisionMarginCompensation.mkdPctNew });
+    }
+  };
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -544,16 +624,28 @@ export default function Module3DivisionPlanning() {
   };
 
   const handleApplyMetas = async () => {
+    const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
+    if (!m2ReviewedYears.includes(year)) {
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 3.`);
+      return;
+    }
     const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
     if (chosen) {
       applyModule3Scenario(selectedSeasonId, chosen.id);
       setScenarioListVersion(v => v + 1);
       // Plano Oficial: aguarda a gravação do is_applied e recalcula o macro
       // bottom-up (divisão → mês → ano fiscal), avançando o nível para 3.
-      const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
       if (tenantId) {
+        // A aplicação do cenário precisa mesmo funcionar — se falhar, avisa e
+        // PARA aqui (antes um catch único também engolia erro real de
+        // applyDivisionScenario e mostrava "sucesso" sem nada aplicado).
         try {
           await applyDivisionScenario(tenantId, selectedSeasonId, chosen.id);
+        } catch (err) {
+          alert(`Não foi possível aplicar o plano por divisão: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+          return;
+        }
+        try {
           await recomputeMacroFromDivisions(tenantId, year);
           await advanceDetailLevel(tenantId, year, 3);
         } catch {
@@ -790,9 +882,20 @@ export default function Module3DivisionPlanning() {
               </span>
             </div>
           )}
+          {divisionsLoaded && divisionIds.length === 0 && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-900 mt-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>
+                Nenhuma divisão encontrada no catálogo de produtos. Importe seu catálogo (com a divisão de cada produto preenchida) para planejar o Módulo 3.{" "}
+                <button onClick={() => navigate("/operation-settings")} className="underline font-semibold">
+                  Ir para Configurações de Operação
+                </button>
+              </span>
+            </div>
+          )}
         </div>
 
-        {selectedSeasonId && (
+        {selectedSeasonId && divisionIds.length > 0 && (
           <>
             {/* ══════════════════════════════════════════════════════════════ */}
             {/* PARTE B — MENSAGEM DE ORIENTAÇÃO                              */}
@@ -831,14 +934,14 @@ export default function Module3DivisionPlanning() {
                     )}
                   </div>
                 </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => {
+                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(divisionIds.length, 1)}, minmax(0, 1fr))` }}>
+                  {divisionIds.map((divId) => {
                     const block = state.divisions[divId];
                     if (!block) return null;
                     return (
                       <div key={divId} className="bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-lg px-3 py-2">
                         <div className="text-[10px] uppercase tracking-wide text-[#28071C]/60 mb-1 font-semibold">
-                          {DEFAULT_DIVISIONS[divId]}
+                          {divisionLabels[divId] ?? divId}
                         </div>
                         <div className="flex items-center gap-1 mb-1">
                           <input
@@ -909,14 +1012,11 @@ export default function Module3DivisionPlanning() {
                           const planned   = macroM1Extras.values[key] ?? 0;
                           const projected = getM3ConsolidatedValue(key, state.consolidated);
                           const gap       = projected - planned;
-                          const band      = APPROVAL_BANDS_M3[key];
-                          // "meets" usa threshold de 95% para indicadores ↑ melhor,
-                          // e banda positiva para indicadores ↓ melhor
-                          const meets     = planned === 0 || (
-                            band?.higherIsBetter === false
-                              ? gap <= band.badPos
-                              : projected >= planned * 0.95
-                          );
+                          // Mesma régua do banner/botão de aprovação (bandas bilaterais
+                          // do PRD, Seção 5.2) — antes era uma conta solta de ">=95% da
+                          // meta" que não existe no PRD e discordava do banner (um cartão
+                          // podia aparecer verde com o indicador fora da banda de verdade).
+                          const meets     = planned === 0 || !isOutsideBandM3(key, planned, projected);
                           return (
                             <div key={key} className={`rounded-lg px-2.5 py-1.5 border bg-white/80 ${
                               meets ? "border-green-200" : "border-red-200"
@@ -942,6 +1042,25 @@ export default function Module3DivisionPlanning() {
                         })}
                       </div>
                     </div>
+
+                    {/* Compensação sugerida: só para Margem, via MKD% (mesma hierarquia do M1) */}
+                    {divisionMarginCompensation && (
+                      <div className="mt-3 flex items-center gap-2 flex-wrap bg-white/60 border border-red-200 rounded-lg px-3 py-2">
+                        <span className="text-[12px] text-red-800">
+                          A participação entre divisões mudou a Margem para{" "}
+                          <strong>{getM3ConsolidatedValue("margemBruta", state.consolidated).toFixed(1)}%</strong>{" "}
+                          (meta: {impactedMacroM3.find(i => i.key === "margemBruta")?.planned.toFixed(1)}%).
+                          Compensar com <strong>MKD% {divisionMarginCompensation.mkdPctNew.toFixed(1)}%</strong>
+                          {divisionMarginCompensation.clamped ? " (mínimo possível — não alcança a meta só com MKD)" : ""}?
+                        </span>
+                        <button
+                          onClick={handleApplyDivisionMarginCompensation}
+                          className="text-[11px] font-semibold bg-red-600 text-white rounded-full px-3 py-1 hover:bg-red-700 transition-colors flex-shrink-0"
+                        >
+                          Aplicar sugestão
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -952,12 +1071,16 @@ export default function Module3DivisionPlanning() {
             {/* PARTE D — BLOCOS POR DIVISÃO (4 colunas, cards empilhados)    */}
             {/* ══════════════════════════════════════════════════════════════ */}
 
-            <div id="tour-m3-divisions" className="grid grid-cols-4 gap-3">
-              {(["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).map((divId) => (
+            <div id="tour-m3-divisions" className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(divisionIds.length, 1)}, minmax(0, 1fr))` }}>
+              {divisionIds.map((divId) => {
+                const block = state.divisions[divId];
+                if (!block) return null;
+                return (
                 <DivisionBlockCard
                   key={divId}
                   divId={divId}
-                  block={state.divisions[divId]}
+                  divisionLabel={divisionLabels[divId] ?? divId}
+                  block={block}
                   expanded={true}
                   onExpand={() => {}}
                   onUpdateIndicators={(ind) => updateIndicators(divId, ind)}
@@ -967,8 +1090,10 @@ export default function Module3DivisionPlanning() {
                   referenceSeasonId={referenceSeasonId}
                   tenantId={tenantId}
                   historicalAvgs={historicalAvgs}
+                  diasDaTemporada={diasDaTemporada}
                 />
-              ))}
+                );
+              })}
             </div>
 
             {/* ══════════════════════════════════════════════════════════════ */}
@@ -1499,6 +1624,7 @@ export default function Module3DivisionPlanning() {
 
 interface DivisionBlockCardProps {
   divId: BusinessDivisionId;
+  divisionLabel: string;
   block: DivisionPlanBlock;
   expanded: boolean;
   onExpand: () => void;
@@ -1509,10 +1635,12 @@ interface DivisionBlockCardProps {
   referenceSeasonId: string;
   tenantId: string;
   historicalAvgs: Partial<Record<BusinessDivisionId, TierHistoricalAvg>>;
+  diasDaTemporada: number;
 }
 
 function DivisionBlockCard({
   divId,
+  divisionLabel,
   block,
   onUpdateIndicators,
   onUpdateRiskMatrix,
@@ -1521,6 +1649,7 @@ function DivisionBlockCard({
   referenceSeasonId,
   tenantId,
   historicalAvgs,
+  diasDaTemporada,
 }: DivisionBlockCardProps) {
   const navigate = useNavigate();
   const [isProducer, setIsProducer] = useState(true);
@@ -1529,7 +1658,25 @@ function DivisionBlockCard({
   const riskValid = isValidRiskMatrix(block.riskMatrix);
   const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
 
-  const divisionName = DEFAULT_DIVISIONS[divId];
+  const divisionName = divisionLabel;
+
+  // ── Cluster Giro × Cobertura × Estoque Médio — só uma ponta por vez ────────
+  const volumeClusterInputs = {
+    vendasEsperadas: block.volumeCoverage.unitsExpectedSold,
+    estoqueInicial:  block.volumeCoverage.initialStock,
+    diasDaTemporada,
+  };
+  const handleVolumeClusterEdit = (field: "giro" | "coverage" | "estoqueMedio", value: number) => {
+    const r = applyVolumeCoverageEdit(field, value, volumeClusterInputs);
+    onUpdateVolume({ giro: r.giro, coverage: r.coverage, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
+  };
+  // Vendas Esp. e Est. Inicial não fazem parte do round-robin, mas ainda
+  // precisam refletir nele — mantém a Cobertura atual como referência.
+  const handleAnchorEdit = (patch: Partial<VolumeAndCoverage>) => {
+    const nextInputs = { ...volumeClusterInputs, ...patch };
+    const r = recalcVolumeClusterFromAnchor(block.volumeCoverage.coverage, nextInputs);
+    onUpdateVolume({ ...patch, giro: r.giro, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
+  };
 
   return (
     <div className="space-y-2">
@@ -1565,6 +1712,7 @@ function DivisionBlockCard({
                       seasonId,
                       referenceSeasonId,
                       tenantId,
+                      divisionLabel,
                     },
                   });
                 }}
@@ -1632,7 +1780,7 @@ function DivisionBlockCard({
       {/* Cabeçalho do segmento */}
       <div className="bg-[#28071C] rounded-xl px-3 py-2">
         <div className="text-[#F6F3AA] text-[11px] font-bold uppercase tracking-wide">
-          {DEFAULT_DIVISIONS[divId]}
+          {divisionLabel}
         </div>
         <div className="text-[#F6F3AA]/55 text-[10px] mt-0.5">
           {block.participation}% · PMV R${block.indicators.avgPrice.toFixed(0)} · M {block.indicators.margin.toFixed(0)}% · ST {block.indicators.sellThrough.toFixed(0)}%
@@ -1788,24 +1936,50 @@ function DivisionBlockCard({
             />
           )}
           <CompactField
-            label="Cobertura (d)"
-            value={block.volumeCoverage.coverage}
-            onChange={(v) => onUpdateVolume({ coverage: v })}
-            tooltip="Quantos dias o estoque disponível cobre as vendas planejadas. Cobertura alta aumenta risco de sobrestoque e capital parado."
+            label="Vendas Esp."
+            value={block.volumeCoverage.unitsExpectedSold}
+            onChange={(v) => handleAnchorEdit({ unitsExpectedSold: v })}
+            tooltip="Peças esperadas a vender na temporada. É a âncora do cluster Giro/Cobertura/Estoque Médio abaixo — mudar aqui recalcula os três mantendo a Cobertura atual como referência."
           />
           <CompactField
             label="Est. Inicial"
             value={block.volumeCoverage.initialStock}
-            onChange={(v) => onUpdateVolume({ initialStock: v })}
-            tooltip="Quantidade de peças em estoque no início da temporada para esta divisão."
+            onChange={(v) => handleAnchorEdit({ initialStock: v })}
+            tooltip="Quantidade de peças em estoque no início da temporada — fato real, não é recalculado pelo cluster abaixo. Mudar aqui ajusta as Reposições pra manter o Estoque Médio consistente."
           />
-          <CompactField
-            label="Reposições"
-            value={block.volumeCoverage.replenishments}
-            onChange={(v) => onUpdateVolume({ replenishments: v })}
-            tooltip="Quantidade de peças de reposição previstas para recebimento ao longo da temporada."
-          />
-          <CompactField label="Vendas Esp."     value={block.volumeCoverage.unitsExpectedSold} onChange={(v) => onUpdateVolume({ unitsExpectedSold: v })} />
+
+          {/* Cluster Giro × Cobertura × Estoque Médio — edite UMA ponta por vez;
+              as outras duas se recalculam automaticamente. */}
+          <div className="pt-1 border-t border-[#28071C]/10 space-y-1.5">
+            <CompactField
+              label="Giro"
+              value={block.volumeCoverage.giro ?? 0}
+              onChange={(v) => handleVolumeClusterEdit("giro", v)}
+              suffix="x"
+              tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula Cobertura e Estoque Médio — as três pontas nunca são editadas juntas."
+            />
+            <CompactField
+              label="Cobertura (d)"
+              value={block.volumeCoverage.coverage}
+              onChange={(v) => handleVolumeClusterEdit("coverage", v)}
+              tooltip="Quantos dias o estoque médio cobre as vendas planejadas. Editar aqui recalcula Giro e Estoque Médio."
+            />
+            <CompactField
+              label="Estoque Médio"
+              value={block.volumeCoverage.estoqueMedio ?? 0}
+              onChange={(v) => handleVolumeClusterEdit("estoqueMedio", v)}
+              tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula Giro e Cobertura."
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
+            <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
+              Reposições (calc.)
+            </label>
+            <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">
+              {Math.round(block.volumeCoverage.replenishments).toLocaleString("pt-BR")}
+            </div>
+          </div>
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
             <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">ST Calc.</label>
             <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">

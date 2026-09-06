@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
+import { getM3AppliedYears } from "../../services/supabase/divisionScenarioService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 
@@ -166,7 +167,7 @@ function isModuleUnlocked(
   card: ModuleCard,
   selectedYear: number,
   reviewedYears: number[],
-  hasActiveM3: boolean,
+  m3ActiveYears: number[],
   isDemoMode: boolean,
 ): boolean {
   if (card.id === 1) return true;
@@ -176,7 +177,10 @@ function isModuleUnlocked(
   return card.requiresModules.every((req) => {
     if (req === 1) return Boolean(getPlanCycle(selectedYear)?.versions?.length);
     if (req === 2) return reviewedYears.includes(selectedYear);
-    if (req === 3) return hasActiveM3;
+    // M3 só conta como "ativo" se o cenário aplicado for do MESMO ciclo/ano que
+    // está sendo avaliado — um M3 aplicado num ano anterior não pode liberar
+    // M5 para um ciclo novo que ainda não passou por M3.
+    if (req === 3) return m3ActiveYears.includes(selectedYear);
     return true;
   });
 }
@@ -190,14 +194,17 @@ export default function Dashboard() {
   }>({ products: 0, sales: 0, inventory: 0, orders: 0, loaded: false });
   const tour = useTour("dashboard");
 
+  // Não lido diretamente — só força um novo render quando initPlanCycles resolve,
+  // pra getPlannedYears()/getPlanCycle() (leitura síncrona do cache) refletirem
+  // o que acabou de ser recarregado do Supabase.
+  const [, setCyclesReady] = useState(0);
   const plannedYears = getPlannedYears();
   const [selectedYear, setSelectedYear] = useState<number>(() =>
     plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1
   );
   const [yearTouched, setYearTouched] = useState(false);
-  const [tenantId, setTenantId] = useState<string>("");
   const [reviewedYears, setReviewedYears] = useState<number[]>([]);
-  const [hasM3Active, setHasM3Active] = useState(false);
+  const [m3ActiveYears, setM3ActiveYears] = useState<number[]>([]);
 
   // Modo Desenvolvimento: bypassa todos os locks — disponível para client_admin e support
   const [devMode, setDevMode] = useState<boolean>(() => {
@@ -226,11 +233,22 @@ export default function Dashboard() {
       const u = JSON.parse(storedUserStr);
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
       if (tid) {
-        setTenantId(tid);
+        // Cache de ciclos (M1) só é populado no login/PlanningSetup — em qualquer
+        // outra entrada nesta tela (reload, nova aba) ele está vazio e
+        // getPlannedYears()/getPlanCycle() ficam mudos até isto rodar de novo.
+        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
+
+        // Carrega anos revisados (M2) e anos com M3 aplicado, do Supabase
+        getReviewedYears(tid).then(setReviewedYears).catch(() => {});
+        getM3AppliedYears(tid).then(setM3ActiveYears).catch(() => {});
 
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
-          supabase.from("sales_history").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
+          // sales_history costuma ter centenas de milhares de linhas — count "exact"
+          // nessa escala é a prática não recomendada pelo Supabase para tabelas
+          // grandes (retorno inconsistente/zerado observado em produção aqui).
+          // "estimated" usa estatística do planner, muito mais previsível em escala.
+          supabase.from("sales_history").select("id", { count: "estimated", head: true }).eq("tenant_id", tid),
           supabase.from("inventory_snapshots").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
           supabase.from("purchase_orders").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
         ]).then(([p, s, i, o]) => {
@@ -257,43 +275,6 @@ export default function Dashboard() {
     }
   }, [plannedYears, selectedYear, yearTouched]);
 
-  // Anos revisados (M2) e cenário ativo M3 — recarrega sempre que o ano
-  // selecionado no dashboard mudar, para que a liberação dos módulos reflita
-  // o ano que o usuário está de fato tentando abrir (não sempre o mais novo).
-  useEffect(() => {
-    if (!tenantId) return;
-
-    getReviewedYears(tenantId).then(setReviewedYears).catch(() => setReviewedYears([]));
-
-    // fiscal_year ainda não está nos tipos gerados do Supabase (coluna real,
-    // já usada em produção por officialPlanService.ts com o mesmo cast).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = supabase as any;
-    db
-      .from("seasons")
-      .select("id")
-      .eq("tenant_id", tenantId)
-      .eq("fiscal_year", selectedYear)
-      .then(
-        ({ data: seasonRows }: { data: { id: string }[] | null }) => {
-          const seasonIds = (seasonRows ?? []).map((s) => s.id);
-          if (seasonIds.length === 0) { setHasM3Active(false); return; }
-          db
-            .from("division_scenarios")
-            .select("id")
-            .eq("tenant_id", tenantId)
-            .eq("is_applied", true)
-            .in("season_id", seasonIds)
-            .limit(1)
-            .then(
-              ({ data }: { data: { id: string }[] | null }) => setHasM3Active((data ?? []).length > 0),
-              () => setHasM3Active(false),
-            );
-        },
-        () => setHasM3Active(false),
-      );
-  }, [tenantId, selectedYear]);
-
   const handleLogout = () => {
     sessionStorage.clear();
     navigate("/");
@@ -315,7 +296,7 @@ export default function Dashboard() {
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, selectedYear, reviewedYears, hasM3Active, allUnlocked)) return;
+    if (!isModuleUnlocked(card, selectedYear, reviewedYears, m3ActiveYears, allUnlocked)) return;
     navigate(card.route, { state: { year: selectedYear } });
   };
 
@@ -470,7 +451,7 @@ export default function Dashboard() {
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, selectedYear, reviewedYears, hasM3Active, allUnlocked);
+            const unlocked = isModuleUnlocked(card, selectedYear, reviewedYears, m3ActiveYears, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;

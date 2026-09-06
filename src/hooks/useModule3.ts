@@ -13,7 +13,6 @@ import {
   PriceRange,
   VolumeAndCoverage,
   SeasonConsolidated,
-  DEFAULT_PARTICIPATION,
   calculateSellThrough,
 } from "../app/types/module3";
 import {
@@ -21,12 +20,15 @@ import {
   listModule3Scenarios,
   calculateScenarioConsolidated,
 } from "../services/module3ScenarioService";
-import { applyDivisionEdit, type DivisionIndicators } from "../engine/divisionEngineAdapter";
+import { applyDivisionEdit, mapToEngineField, type DivisionIndicators } from "../engine/divisionEngineAdapter";
+import type { FieldKey } from "../engine/planningEngine";
 
 export interface UseModule3Options {
   seasonId: string;
   referenceSeasonId: string;
   macroTargets: MacroTarget;
+  // Divisões reais do tenant (vindas de fetchTenantDivisions) — nunca uma lista fixa.
+  divisionIds: string[];
 }
 
 function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated {
@@ -53,13 +55,17 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * produz EXATAMENTE os valores do M1.
  * O usuário depois ajusta por divisão; desvios disparam o fluxo de aprovação.
  */
-function initializeDivisions(macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
+function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
   const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
+  // Bootstrap com divisão igualitária — o efeito de proporções históricas reais
+  // (Module3DivisionPlanning, via getHistoricalProfiles) corrige isso logo em
+  // seguida quando não há cenário salvo ainda.
+  const equalShare = divisionIds.length > 0 ? 100 / divisionIds.length : 0;
 
-  (["feminino", "masculino", "acessorios", "infantil"] as BusinessDivisionId[]).forEach((divId) => {
+  divisionIds.forEach((divId) => {
     divisions[divId] = {
       divisionId: divId,
-      participation: DEFAULT_PARTICIPATION[divId],
+      participation: equalShare,
       indicators: {
         // Lê do M1; fallback para valores de referência quando M1 não tem o indicador
         avgPrice:    195,
@@ -86,6 +92,12 @@ function initializeDivisions(macroTargets?: MacroTarget): Record<BusinessDivisio
         initialStock: 1000,
         replenishments: 500,
         unitsExpectedSold: 1200,
+        // Bootstrap do cluster Giro/Cobertura/Estoque Médio — placeholder até o
+        // usuário tocar em qualquer ponta (aí sim vira a conta real, com os
+        // dias reais da temporada). 180 dias ~ 6 meses fiscais, mesmo fallback
+        // usado quando a temporada ainda não carregou.
+        giro: 180 / 45,
+        estoqueMedio: 1200 / (180 / 45),
       },
       meetsTarget: true,
       status: "draft",
@@ -109,7 +121,7 @@ export function useModule3(options: UseModule3Options) {
   const [state, setState] = useState<Module3State>(() => ({
     selectedSeasonId: options.seasonId,
     referenceSeasonId: options.referenceSeasonId,
-    divisions: initializeDivisions(options.macroTargets),
+    divisions: initializeDivisions(options.divisionIds, options.macroTargets),
     scenarios: options.seasonId ? listModule3Scenarios(options.seasonId) : [],
     activeScenarioId: undefined,
     consolidated: buildInitialConsolidated(options.macroTargets),
@@ -117,20 +129,38 @@ export function useModule3(options: UseModule3Options) {
     error: undefined,
   }));
 
-  // Re-inicializar quando a temporada muda
+  // Rastreia PMV tocado manualmente por divisão, nesta sessão de edição.
+  // Regra: markdown só absorve automaticamente a diferença de margem quando o
+  // usuário NÃO mexeu em preço — se já mexeu, ele escolheu outro caminho pra
+  // chegar na margem (subir preço), e o sistema não sobrepõe empurrando o MKD.
+  const [touchedPrice, setTouchedPrice] = useState<Record<string, true>>({});
+
+  // Campos do motor (avgPrice/PMV, mkd) já tocados por divisão, acumulados
+  // entre edições — sem isso, o motor trata cada edição como um toque
+  // isolado e a regra "MKD só trava depois de 2 alavancas tocadas" nunca
+  // dispara. Não precisa re-renderizar sozinho (só alimenta o motor), por
+  // isso é ref e não state.
+  const touchedDivisionFieldsRef = useRef<Record<string, Set<FieldKey>>>({});
+
+  // Re-inicializar quando a temporada muda OU quando as divisões reais do tenant
+  // chegam (elas são buscadas assincronamente — no primeiro render costumam
+  // estar vazias).
+  const divisionIdsKey = options.divisionIds.join(",");
   useEffect(() => {
-    if (!options.seasonId) return;
+    if (!options.seasonId || options.divisionIds.length === 0) return;
     setState((prev) => ({
       ...prev,
       selectedSeasonId: options.seasonId,
       referenceSeasonId: options.referenceSeasonId,
-      divisions: initializeDivisions(options.macroTargets),
+      divisions: initializeDivisions(options.divisionIds, options.macroTargets),
       scenarios: listModule3Scenarios(options.seasonId),
       activeScenarioId: undefined,
       consolidated: buildInitialConsolidated(options.macroTargets),
     }));
+    setTouchedPrice({});
+    touchedDivisionFieldsRef.current = {};
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.seasonId]);
+  }, [options.seasonId, divisionIdsKey]);
 
   // Propagação delta: quando as taxas do M1 mudam dentro da mesma temporada,
   // cada divisão tem sua taxa multiplicada pelo mesmo fator k.
@@ -266,6 +296,9 @@ export function useModule3(options: UseModule3Options) {
   // ─── Atualizar Indicadores Comerciais ─────────────────────────────────────
   const updateIndicators = useCallback(
     (divisionId: BusinessDivisionId, indicators: Partial<CommercialIndicators>) => {
+      if (indicators.avgPrice !== undefined) {
+        setTouchedPrice(prev => ({ ...prev, [divisionId]: true }));
+      }
       setState((prev) => {
         const block = prev.divisions[divisionId];
         // Receita da divisão (para o motor): receita_macro × participação, ou a
@@ -285,10 +318,14 @@ export function useModule3(options: UseModule3Options) {
           sellThrough: block.indicators.sellThrough,
           revenue:     block.indicators.revenue,
         };
+        const touchedSoFar = touchedDivisionFieldsRef.current[divisionId] ?? new Set<FieldKey>();
         for (const [field, value] of Object.entries(indicators)) {
           if (typeof value !== "number") { nextInd = { ...nextInd, [field]: value as never }; continue; }
-          nextInd = applyDivisionEdit(nextInd, revenue, field as keyof DivisionIndicators, value);
+          nextInd = applyDivisionEdit(nextInd, revenue, field as keyof DivisionIndicators, value, touchedSoFar);
+          const engineField = mapToEngineField(field as keyof DivisionIndicators);
+          if (engineField) touchedSoFar.add(engineField);
         }
+        touchedDivisionFieldsRef.current = { ...touchedDivisionFieldsRef.current, [divisionId]: touchedSoFar };
 
         const divisions = {
           ...prev.divisions,
@@ -430,6 +467,7 @@ export function useModule3(options: UseModule3Options) {
 
   return {
     state,
+    touchedPrice,
     updateDivisionParticipation,
     updateIndicators,
     updatePriceRange,

@@ -340,7 +340,7 @@ export default function PlanningSetup() {
   }
 
   // ── Confirm ────────────────────────────────────────────────────────────────
-  const handleStart = () => {
+  const handleStart = async () => {
     if (!focus) return
     const fieldPriorities: PlanFieldPriority[] = [
       // Active indicators in order
@@ -374,19 +374,29 @@ export default function PlanningSetup() {
       createdAt: new Date().toISOString(),
       lastModifiedAt: new Date().toISOString(),
     }
-    savePlanCycle(cycle)
+    const saveResult = await savePlanCycle(cycle)
+    if (!saveResult.ok) {
+      alert(`O ciclo não foi salvo no banco: ${saveResult.error}\n\nTente novamente — se persistir, avise o suporte.`)
+      return
+    }
     // Gera automaticamente as 2 temporadas padrão para o ano fiscal, se ainda não existirem
     const tenantId = sessionStorage.getItem("activeTenantId") ?? user?.tenant_id ?? ""
     if (tenantId) {
-      autoGenerateForYear(tenantId, year).catch(err =>
-        console.warn("Erro ao gerar temporadas automáticas:", err)
-      )
-      // Persiste ciclo no Supabase (fire-and-forget)
-      saveCycle(tenantId, year, {
-        focus,
-        mode: (isReview ? "review" : "new") as PlanMode,
-        field_priorities: Object.fromEntries(fieldPriorities.map(fp => [fp.key, fp])),
-      }).catch(err => console.warn("Erro ao salvar ciclo no Supabase:", err))
+      const [seasonResult, cycleResult] = await Promise.allSettled([
+        autoGenerateForYear(tenantId, year),
+        saveCycle(tenantId, year, {
+          focus,
+          mode: (isReview ? "review" : "new") as PlanMode,
+          field_priorities: Object.fromEntries(fieldPriorities.map(fp => [fp.key, fp])),
+        }),
+      ])
+      if (seasonResult.status === "rejected") {
+        console.warn("Erro ao gerar temporadas automáticas:", seasonResult.reason)
+        alert(`As temporadas de ${year} não foram criadas automaticamente: ${seasonResult.reason instanceof Error ? seasonResult.reason.message : seasonResult.reason}\n\nVocê pode criá-las manualmente em Configurações de Operação → Temporadas.`)
+      }
+      if (cycleResult.status === "rejected") {
+        console.warn("Erro ao salvar ciclo no Supabase:", cycleResult.reason)
+      }
     }
     navigate("/planning", { state: {
       year,

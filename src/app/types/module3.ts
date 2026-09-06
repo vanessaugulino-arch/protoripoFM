@@ -6,7 +6,11 @@
  */
 
 // ─── Divisões de Negócio ──────────────────────────────────────────────────────
-export type BusinessDivisionId = "feminino" | "masculino" | "acessorios" | "infantil";
+// Antes era um union fixo ("feminino" | "masculino" | "acessorios" | "infantil"),
+// mostrando 4 divisões pra qualquer tenant independente do catálogo real. Agora
+// é dinâmico — as divisões vêm de productHierarchyService.fetchTenantDivisions,
+// que lê os valores reais de products.division do tenant.
+export type BusinessDivisionId = string;
 
 export interface BusinessDivision {
   id: BusinessDivisionId;
@@ -65,9 +69,15 @@ export interface VolumeAndCoverage {
   
   // Comum
   coverage: number;                 // Dias de cobertura de estoque
-  initialStock: number;             // Estoque inicial em peças
-  replenishments: number;           // Total de reposições no período
+  initialStock: number;             // Estoque inicial em peças — fato real, protegido
+  replenishments: number;           // Total de reposições no período — calculado (absorve)
   unitsExpectedSold: number;        // Peças esperadas a vender (base para sell-through)
+
+  // Cluster Giro × Cobertura × Estoque Médio — o usuário só edita UMA ponta por
+  // vez; as outras duas são recalculadas (ver applyVolumeCoverageEdit). Nenhuma
+  // combinação de duas pontas ao mesmo tempo é permitida.
+  giro?: number;                    // Vezes que o estoque "vira" na temporada
+  estoqueMedio?: number;             // Peças — ponto médio entre estoque inicial e final
 }
 
 // ─── Bloco de Planejamento por Divisão ──────────────────────────────────────
@@ -230,18 +240,3 @@ export function isValidPriceRange(priceRange: PriceRange): boolean {
   return Math.abs(total - 100) < 0.01;
 }
 
-// ─── Divisões Padrão ──────────────────────────────────────────────────────
-export const DEFAULT_DIVISIONS: Record<BusinessDivisionId, string> = {
-  feminino: "Feminino Adulto",
-  masculino: "Masculino Adulto",
-  acessorios: "Acessórios",
-  infantil: "Infantil",
-};
-
-// ─── Participações Iniciais Padrão ────────────────────────────────────────
-export const DEFAULT_PARTICIPATION: Record<BusinessDivisionId, number> = {
-  feminino: 45,
-  masculino: 35,
-  acessorios: 15,
-  infantil: 5,
-};

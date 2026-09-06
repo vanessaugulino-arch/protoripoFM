@@ -2,10 +2,10 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
 import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
-import { getPlanCycle, getPlannedYears } from "../types/planCycle";
+import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
-  listSupplyFornecedores, calcBudgetProjection, aggregateReceita,
-  type SupplyFornecedor, type TipoFornecedorV2,
+  listSupplyFornecedores, calcBudgetProjection, getAvgPurchaseCost,
+  type SupplyFornecedor, type TipoFornecedorV2, type AvgPurchaseCost,
 } from "../../services/supabase/supplyService";
 import {
   getDivisionSeasonality,
@@ -32,6 +32,7 @@ import {
   hasPendingRequest,
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
+import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
@@ -269,11 +270,19 @@ export default function CycleValidation() {
 
   const [user, setUser]           = useState<CurrentUser | null>(null);
   const [tenantId, setTenantId]   = useState<string>("");
+  // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
+  // do Dashboard (que é decorativo e não impede acesso direto à tela).
+  const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
+  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
 
   // Seasons
   const [seasons, setSeasons]                     = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId]   = useState("");
-  const [canalConfigs, setCanalConfigs]             = useState<CanalConfig[]>([]);
+  // Configuração real vinda do banco (canal_temporada_config) — o fallback
+  // (períodos unificados por canal do tenant) é derivado, não guardado aqui,
+  // pra nunca ficar preso a uma corrida entre este fetch, as temporadas e os
+  // canais do tenant (3 efeitos assíncronos independentes).
+  const [dbCanalConfigs, setDbCanalConfigs]         = useState<CanalConfig[]>([]);
   const [tenantCanalIds, setTenantCanalIds]         = useState<string[]>([]);
   const [isLoadingData, setIsLoadingData]           = useState(false);
 
@@ -305,7 +314,7 @@ export default function CycleValidation() {
 
   // Supply
   const [supplyFornecedores, setSupplyFornecedores] = useState<SupplyFornecedor[]>([]);
-  const [margemOrc, setMargemOrc]                   = useState(45);
+  const [avgPurchaseCost, setAvgPurchaseCost] = useState<AvgPurchaseCost>({ value: 0, source: "none" });
 
   // Scenarios
   const [scenarios, setScenarios]                 = useState<Scenario[]>([]);
@@ -334,6 +343,14 @@ export default function CycleValidation() {
     if (!tid) return;
 
     const db = supabase as any;
+
+    // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
+    // reload nesta tela lê m1Values/macroMeta desatualizados (ou "?? 45"/
+    // "?? 0" fallback) mesmo com o M1 salvo de verdade no banco.
+    initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
+
+    getReviewedYears(tid).then(setM2ReviewedYears).catch(() => {});
+    getAvgPurchaseCost(tid).then(setAvgPurchaseCost).catch(() => {});
 
     hasPendingRequest(tid, 4, new Date().getFullYear())
       .then(has => setAlreadyPending(has)).catch(() => {});
@@ -485,18 +502,8 @@ export default function CycleValidation() {
     const season = seasons.find(s => s.id === selectedSeasonId);
 
     listCanalConfigDb(tenantId, selectedSeasonId)
-      .then(configs => {
-        if (configs.length > 0) {
-          setCanalConfigs(configs);
-        } else if (season) {
-          // Fallback: unified period for all tenant canals
-          const fallback: CanalConfig[] = tenantCanalIds.map(cid => ({
-            id: `fallback-${cid}`, canal_id: cid,
-            mes_inicio: season.mesInicio, mes_fim: season.mesFim,
-          }));
-          setCanalConfigs(fallback);
-        }
-      }).catch(() => {});
+      .then(setDbCanalConfigs)
+      .catch(() => {});
 
     // Prev year revenue
     if (season) {
@@ -531,6 +538,19 @@ export default function CycleValidation() {
     () => seasons.find(s => s.id === selectedSeasonId) ?? null,
     [seasons, selectedSeasonId],
   );
+
+  // Config real do banco quando existe; senão, período unificado da temporada
+  // pra cada canal do tenant. Derivado a cada render — nunca fica travado numa
+  // versão vazia por causa da ordem em que os 3 fetches (config, temporadas,
+  // canais do tenant) terminam.
+  const canalConfigs = useMemo((): CanalConfig[] => {
+    if (dbCanalConfigs.length > 0) return dbCanalConfigs;
+    if (!selectedSeason) return [];
+    return tenantCanalIds.map(cid => ({
+      id: `fallback-${cid}`, canal_id: cid,
+      mes_inicio: selectedSeason.mesInicio, mes_fim: selectedSeason.mesFim,
+    }));
+  }, [dbCanalConfigs, selectedSeason, tenantCanalIds]);
 
   const activeCanals = useMemo(() => {
     const activeCids = new Set(tenantCanalIds);
@@ -837,11 +857,15 @@ export default function CycleValidation() {
 
   const handleApplyMetas = async () => {
     if (appliedScenarioId) return;
+    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
+    if (!m2ReviewedYears.includes(year)) {
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 4.`);
+      return;
+    }
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
     // Plano Oficial: o M4 validou a distribuição temporal → avança o nível para 4.
     // O macro anual não muda (o IPF preserva os totais); só reafirma o rollup e o nível.
-    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
     if (tenantId) {
       try {
         await recomputeMacroFromDivisions(tenantId, year);
@@ -1502,19 +1526,26 @@ export default function CycleValidation() {
             </>)}
 
             {/* ── Orçamento view ── */}
-            {activeModuleView === "orcamento" && (
-              <OrcamentoAbastecimentoView
-                plannedRevenue={canalCalcResults.map(c => ({
-                  month: c.canalId,
-                  atacado:   c.canalId === "atacado"   ? c.totalReceita : 0,
-                  varejo:    c.canalId === "varejo"    ? c.totalReceita : 0,
-                  ecommerce: c.canalId === "ecommerce" ? c.totalReceita : 0,
-                }))}
-                supplyFornecedores={supplyFornecedores}
-                margemPct={margemOrc}
-                onMargemChange={setMargemOrc}
-              />
-            )}
+            {activeModuleView === "orcamento" && (() => {
+              // Peças que precisam entrar em estoque por mês (soma de todos os
+              // canais) — a mesma curva de entrada já calculada na aba 1, não
+              // uma reconta a partir da receita.
+              const entradaPorMes: Record<string, number> = {};
+              for (const canal of canalCalcResults) {
+                for (const m of canal.months) {
+                  entradaPorMes[m.month] = (entradaPorMes[m.month] ?? 0) + m.entrada;
+                }
+              }
+              const entradaPecas = consolidatedMonths.map(m => entradaPorMes[m] ?? 0);
+              return (
+                <OrcamentoAbastecimentoView
+                  months={consolidatedMonths}
+                  entradaPecas={entradaPecas}
+                  supplyFornecedores={supplyFornecedores}
+                  avgPurchaseCost={avgPurchaseCost}
+                />
+              );
+            })()}
       {/* ──────────────────────────────────────────────────────────────────────
           VIEW 3: PLANO POR DIVISÃO
           Matrix Division × Mês com calibração bi-proporcional.
@@ -2039,21 +2070,22 @@ const fmtM = (v: number) =>
   : v > 0        ? `R$ ${v.toFixed(0)}`
   : "—";
 
-interface MonthRevenueLegacy { month: string; atacado: number; varejo: number; ecommerce: number; }
-
 function OrcamentoAbastecimentoView({
-  plannedRevenue, supplyFornecedores, margemPct, onMargemChange,
+  months, entradaPecas, supplyFornecedores, avgPurchaseCost,
 }: {
-  plannedRevenue: MonthRevenueLegacy[];
+  months: string[];
+  entradaPecas: number[];
   supplyFornecedores: SupplyFornecedor[];
-  margemPct: number;
-  onMargemChange: (v: number) => void;
+  avgPurchaseCost: AvgPurchaseCost;
 }) {
-  const { months, receita } = aggregateReceita(plannedRevenue);
-  const projection   = useMemo(() => calcBudgetProjection(months, receita, margemPct, supplyFornecedores), [months, receita, margemPct, supplyFornecedores]);
-  const totalOrc     = projection.reduce((s, p) => s + p.valor, 0);
-  const totalReceita = receita.reduce((s, v) => s + v, 0);
-  const custoPrevisto = totalReceita * (1 - margemPct / 100);
+  const custoCompra = avgPurchaseCost.value;
+  const projection   = useMemo(
+    () => calcBudgetProjection(months, entradaPecas, custoCompra, supplyFornecedores),
+    [months, entradaPecas, custoCompra, supplyFornecedores],
+  );
+  const totalOrc      = projection.reduce((s, p) => s + p.valor, 0);
+  const totalPecas    = entradaPecas.reduce((s, v) => s + v, 0);
+  const custoPrevisto = totalPecas * custoCompra;
 
   const byTipo = useMemo(() => {
     const map: Record<TipoFornecedorV2, number> = { materia_prima: 0, servico: 0, produto_acabado: 0 };
@@ -2064,24 +2096,33 @@ function OrcamentoAbastecimentoView({
   const hasFornecedores = supplyFornecedores.length > 0;
   const hasScope        = supplyFornecedores.some(f => (f.categorias ?? []).length > 0);
 
+  const fonteLabel = avgPurchaseCost.source === "purchase_orders"
+    ? "pedidos de compra reais"
+    : avgPurchaseCost.source === "inventory_snapshots"
+    ? "custo médio do estoque (sem pedidos importados)"
+    : "sem dado disponível";
+
   return (
     <div className="space-y-5">
       <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <h3 className="text-[#28071C] font-semibold text-base mb-0.5">Orçamento de Abastecimento</h3>
-            <p className="text-xs text-[#28071C]/50">Projeção de quando o caixa precisará de verba, cruzando receita e matriz de fornecedores.</p>
+            <p className="text-xs text-[#28071C]/50">Projeção de quando o caixa precisará de verba, cruzando a curva de entrada em peças com a matriz de fornecedores.</p>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-xs text-[#28071C]/50 font-medium">Margem bruta do ciclo:</label>
-            <div className="flex items-center gap-1.5">
-              <input type="number" min="0" max="100" step="0.1" value={margemPct}
-                onChange={e => onMargemChange(parseFloat(e.target.value) || 0)}
-                className="w-20 border border-[#28071C]/20 rounded-lg px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40" />
-              <span className="text-xs text-[#28071C]/50">%</span>
+            <label className="text-xs text-[#28071C]/50 font-medium">Custo de compra médio:</label>
+            <div className="text-sm font-semibold text-[#28071C]">
+              {custoCompra > 0 ? `R$ ${custoCompra.toFixed(2)}` : "—"} <span className="text-[#28071C]/40 font-normal">/ peça</span>
             </div>
+            <span className="text-[10px] text-[#28071C]/40 italic">({fonteLabel})</span>
           </div>
         </div>
+        {avgPurchaseCost.source === "none" && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
+            Nenhum pedido de compra importado e nenhum snapshot de estoque com custo disponível — não é possível projetar o orçamento ainda.
+          </p>
+        )}
       </div>
 
       {!hasFornecedores && (
@@ -2103,11 +2144,11 @@ function OrcamentoAbastecimentoView({
       {hasFornecedores && hasScope && (<>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-[#28071C] rounded-2xl p-4 text-center">
-            <p className="text-[10px] text-white/50 font-medium uppercase tracking-wider mb-1">Receita Total Planejada</p>
-            <p className="text-xl font-bold text-[#F6F3AA]">{fmtM(totalReceita)}</p>
+            <p className="text-[10px] text-white/50 font-medium uppercase tracking-wider mb-1">Peças a Repor no Ciclo</p>
+            <p className="text-xl font-bold text-[#F6F3AA]">{Math.round(totalPecas).toLocaleString("pt-BR")}</p>
           </div>
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">
-            <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Custo Previsto ({(100 - margemPct).toFixed(0)}%)</p>
+            <p className="text-[10px] text-[#28071C]/50 font-medium uppercase tracking-wider mb-1">Custo Previsto</p>
             <p className="text-xl font-bold text-[#28071C]">{fmtM(custoPrevisto)}</p>
           </div>
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 text-center border border-[#28071C]/8">

@@ -17,6 +17,22 @@ export interface DivisionScenarioRow {
   created_by: string | null;
 }
 
+// ─── Anos com cenário de divisão aplicado (para desbloqueio do M5) ────────────
+// Usado pelo Dashboard: M5 só libera para o ANO cujo M3 foi de fato aplicado —
+// sem isso, um M3 aplicado num ciclo antigo "vazava" e liberava M5 para sempre,
+// em qualquer ciclo/ano seguinte, mesmo sem M3 aplicado ali.
+
+export async function getM3AppliedYears(tenantId: string): Promise<number[]> {
+  const { data, error } = await supabase
+    .from("division_scenarios")
+    .select("year")
+    .eq("tenant_id", tenantId)
+    .eq("is_applied", true);
+
+  if (error) throw error;
+  return [...new Set((data ?? []).map((r: { year: number }) => r.year))];
+}
+
 // ─── Listar cenários de uma temporada ─────────────────────────────────────────
 
 export async function listDivisionScenarios(
