@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useLocation } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
   Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown, HelpCircle,
@@ -16,7 +16,7 @@ import {
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
 import { applyChannelScenario } from "../../services/supabase/channelScenarioService";
-import { recomputeOfficialMacro, advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { recomputeOfficialMacro, recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
 
 const CHANNEL_PLANNING_TOUR: TourStep[] = [
   {
@@ -314,6 +314,8 @@ function computeConsolidatedFromRaw(
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function ChannelPlanning() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const routeYear = (location.state as { year?: number } | null)?.year;
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
   const tour = useTour("channel-planning");
@@ -364,7 +366,7 @@ export default function ChannelPlanning() {
 
   const profile      = getStoredProfile();
   const plannedYears = getPlannedYears();
-  const defaultYear  = plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1;
+  const defaultYear  = routeYear ?? (plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1);
   const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
   const [reviewedYears, setReviewedYears]       = useState<number[]>([]);
   const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
@@ -664,6 +666,18 @@ export default function ChannelPlanning() {
     setIsResolvingApproval(true);
     try {
       await resolveApproval(req.id, decision, user.email);
+      // Se aprovado, reafirma o Plano Oficial a partir das divisões aplicadas —
+      // mesma chamada que o M4 (Validação de Ciclo) já faz quando aplica sem
+      // desvio. Sem isso, o macro oficial nunca mudava e quem submeteu ficava
+      // preso num loop (aprovado no banco, mas sem refletir no plano).
+      if (decision === 'approved' && tenantId) {
+        try {
+          await recomputeMacroFromDivisions(tenantId, req.year);
+          await advanceDetailLevel(tenantId, req.year, 4);
+        } catch {
+          // recompute não bloqueia a resolução do pedido
+        }
+      }
       setIncomingApprovals(prev => prev.filter(r => r.id !== req.id));
       const next = incomingApprovals.find(r => r.id !== req.id) ?? null;
       setActiveIncoming(next);

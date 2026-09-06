@@ -154,12 +154,17 @@ const MODULE_CARDS: ModuleCard[] = [
 // Regras de desbloqueio por módulo:
 // Card 1         → sempre liberado (ponto de entrada)
 // isDemoMode     → sem planos salvos: navegação livre com dados mock
-// req 1          → Estratégico aplicado (tem versão salva)
-// req 2          → Metas por Canal aplicadas (ano revisado via channelScenario)
-// req 3          → Planejamento por Divisão aplicado (cenário ativo no M3)
+// req 1          → Estratégico aplicado (tem versão salva) NO ANO SELECIONADO
+// req 2          → Metas por Canal aplicadas (ano revisado via channelScenario) NO ANO SELECIONADO
+// req 3          → Planejamento por Divisão aplicado (cenário ativo no M3) NO ANO SELECIONADO
+//
+// Tudo é avaliado contra `selectedYear` (escolhido no seletor de ano do
+// dashboard), não mais sempre contra o ano mais recente — assim um ciclo já
+// fechado (ex.: 2028) abre direto em modo revisão, mesmo que exista um ciclo
+// mais novo ainda não avançado.
 function isModuleUnlocked(
   card: ModuleCard,
-  plannedYears: number[],
+  selectedYear: number,
   reviewedYears: number[],
   hasActiveM3: boolean,
   isDemoMode: boolean,
@@ -168,11 +173,9 @@ function isModuleUnlocked(
   if (isDemoMode) return true;
   if (card.requiresModules.length === 0) return true;
 
-  const latestYear = Math.max(...plannedYears);
-
   return card.requiresModules.every((req) => {
-    if (req === 1) return Boolean(getPlanCycle(latestYear)?.versions?.length);
-    if (req === 2) return reviewedYears.includes(latestYear);
+    if (req === 1) return Boolean(getPlanCycle(selectedYear)?.versions?.length);
+    if (req === 2) return reviewedYears.includes(selectedYear);
     if (req === 3) return hasActiveM3;
     return true;
   });
@@ -188,6 +191,11 @@ export default function Dashboard() {
   const tour = useTour("dashboard");
 
   const plannedYears = getPlannedYears();
+  const [selectedYear, setSelectedYear] = useState<number>(() =>
+    plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1
+  );
+  const [yearTouched, setYearTouched] = useState(false);
+  const [tenantId, setTenantId] = useState<string>("");
   const [reviewedYears, setReviewedYears] = useState<number[]>([]);
   const [hasM3Active, setHasM3Active] = useState(false);
 
@@ -218,18 +226,7 @@ export default function Dashboard() {
       const u = JSON.parse(storedUserStr);
       const tid = sessionStorage.getItem("activeTenantId") ?? u.tenant_id ?? "";
       if (tid) {
-        // Carrega anos revisados (M2) e cenário ativo M3 do Supabase
-        getReviewedYears(tid).then(setReviewedYears).catch(() => {});
-        supabase
-          .from("division_scenarios")
-          .select("id")
-          .eq("tenant_id", tid)
-          .eq("is_applied", true)
-          .limit(1)
-          .then(
-            ({ data }: { data: { id: string }[] | null }) => setHasM3Active((data ?? []).length > 0),
-            () => {},
-          );
+        setTenantId(tid);
 
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
@@ -248,6 +245,54 @@ export default function Dashboard() {
       }
     }
   }, [navigate]);
+
+  // initPlanCycles (chamado no Login) não é aguardado — plannedYears pode
+  // chegar vazio no primeiro render e só popular depois. Enquanto o usuário
+  // não escolher manualmente um ano, acompanha o mais recente assim que os
+  // dados chegam, em vez de travar no ano+1 calculado antes de carregar.
+  useEffect(() => {
+    if (yearTouched) return;
+    if (plannedYears.length > 0 && !plannedYears.includes(selectedYear)) {
+      setSelectedYear(Math.max(...plannedYears));
+    }
+  }, [plannedYears, selectedYear, yearTouched]);
+
+  // Anos revisados (M2) e cenário ativo M3 — recarrega sempre que o ano
+  // selecionado no dashboard mudar, para que a liberação dos módulos reflita
+  // o ano que o usuário está de fato tentando abrir (não sempre o mais novo).
+  useEffect(() => {
+    if (!tenantId) return;
+
+    getReviewedYears(tenantId).then(setReviewedYears).catch(() => setReviewedYears([]));
+
+    // fiscal_year ainda não está nos tipos gerados do Supabase (coluna real,
+    // já usada em produção por officialPlanService.ts com o mesmo cast).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = supabase as any;
+    db
+      .from("seasons")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("fiscal_year", selectedYear)
+      .then(
+        ({ data: seasonRows }: { data: { id: string }[] | null }) => {
+          const seasonIds = (seasonRows ?? []).map((s) => s.id);
+          if (seasonIds.length === 0) { setHasM3Active(false); return; }
+          db
+            .from("division_scenarios")
+            .select("id")
+            .eq("tenant_id", tenantId)
+            .eq("is_applied", true)
+            .in("season_id", seasonIds)
+            .limit(1)
+            .then(
+              ({ data }: { data: { id: string }[] | null }) => setHasM3Active((data ?? []).length > 0),
+              () => setHasM3Active(false),
+            );
+        },
+        () => setHasM3Active(false),
+      );
+  }, [tenantId, selectedYear]);
 
   const handleLogout = () => {
     sessionStorage.clear();
@@ -270,8 +315,8 @@ export default function Dashboard() {
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked)) return;
-    navigate(card.route);
+    if (!isModuleUnlocked(card, selectedYear, reviewedYears, hasM3Active, allUnlocked)) return;
+    navigate(card.route, { state: { year: selectedYear } });
   };
 
   if (!user) return null;
@@ -396,12 +441,36 @@ export default function Dashboard() {
           </p>
         </div>
 
+        {/* Seletor de ano — controla quais módulos aparecem liberados abaixo.
+            Sem isso, um ciclo já fechado (ex.: 2028) ficava travado sempre que
+            existia um ciclo mais novo ainda não avançado. */}
+        {plannedYears.length > 1 && (
+          <div id="tour-year-selector" className="flex items-center justify-center gap-2 mb-4">
+            <span className="text-white/60 text-xs uppercase tracking-wide">Ano de planejamento:</span>
+            <div className="flex gap-1.5">
+              {plannedYears.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => { setSelectedYear(y); setYearTouched(true); }}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                    selectedYear === y
+                      ? "bg-[#F6F3AA] text-[#28071C]"
+                      : "bg-white/15 text-white/70 hover:bg-white/25"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Module Cards — 3 colunas, tamanho compacto */}
         <div className="grid grid-cols-3 gap-4 max-w-4xl mx-auto">
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, plannedYears, reviewedYears, hasM3Active, allUnlocked);
+            const unlocked = isModuleUnlocked(card, selectedYear, reviewedYears, hasM3Active, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;
