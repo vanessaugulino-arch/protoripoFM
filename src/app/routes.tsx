@@ -20,7 +20,6 @@ import PlanningSetup from "./pages/PlanningSetup";
 import ProfileAdjust from "./pages/ProfileAdjust";
 import MatrizAbastecimento from "./pages/MatrizAbastecimento";
 // Fase 2 — acessíveis apenas pelo usuário Suporte
-import CycleClosing from "./pages/CycleClosing";
 import CollectionPlanning from "./pages/CollectionPlanning";
 import ProductMix from "./pages/ProductMix";
 import TrackingCreative from "./pages/TrackingCreative";
@@ -124,10 +123,6 @@ export const router = createBrowserRouter([
   {
     element: <SuporteRoute />,
     children: [
-      {
-        path: "/preview/cycle-closing",
-        Component: CycleClosing,
-      },
       {
         path: "/preview/collection-planning",
         Component: CollectionPlanning,
