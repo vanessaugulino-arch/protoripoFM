@@ -3,6 +3,7 @@
 
 import { supabase } from "../../lib/supabase";
 import type { StrategicFocus, PlanMode, PlanFieldPriority } from "../../app/types/planCycle";
+import { expandSeasonMonths } from "../../engine/seasonMonths";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -191,4 +192,57 @@ export async function applyScenario(
     .update({ applied_at: new Date().toISOString(), applied_by: appliedBy })
     .eq("id", cycleId)
     .eq("tenant_id", tenantId);
+}
+
+// ─── Fase 3 — Sazonalidade aplicada por ano fiscal ───────────────────────────
+// Uma temporada de Verão (ago-fev) cruza dois anos fiscais. Consideramos um
+// ano fiscal Y "com Sazonalidade completa" quando TODAS as temporadas que
+// COMEÇAM nesse ano (ex.: Inverno-Y e Verão-Y) já foram aplicadas — não
+// rastreamos mês a mês, só por temporada (is_applied em
+// planning_scenarios.values.seasonId, gravado em CycleValidation.tsx).
+//
+// Usado pelo gate do M4-Divisão: uma temporada só pode ser planejada por
+// divisão quando TODOS os anos fiscais que ela toca (1 ou 2, se cruza o ano)
+// já estiverem com a Sazonalidade completa.
+
+/**
+ * Anos fiscais tocados por uma temporada — 1 item se não cruza o ano, 2 se
+ * cruza (ex.: Verão ago-fev). Reaproveita expandSeasonMonths (engine/seasonMonths.ts),
+ * que já trata esse cruzamento corretamente em outros pontos do motor.
+ */
+export function seasonFiscalYearsTouched(
+  mesInicio: string,
+  mesFim: string,
+  fiscalYear: number,
+): number[] {
+  const months = expandSeasonMonths(mesInicio, mesFim, fiscalYear);
+  return Array.from(new Set(months.map((m) => m.year))).sort((a, b) => a - b);
+}
+
+export async function getSazonalidadeCompletedYears(tenantId: string): Promise<number[]> {
+  const db = supabase as any;
+  const [{ data: seasonRows }, { data: scenarioRows }] = await Promise.all([
+    db.from("seasons").select("id, fiscal_year").eq("tenant_id", tenantId),
+    db.from("planning_scenarios").select("values").eq("tenant_id", tenantId).eq("is_applied", true),
+  ]);
+
+  const appliedSeasonIds = new Set(
+    ((scenarioRows ?? []) as { values: { seasonId?: string } }[])
+      .map((r) => r.values?.seasonId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  const seasonsByYear = new Map<number, string[]>();
+  for (const s of (seasonRows ?? []) as { id: string; fiscal_year: number | null }[]) {
+    if (s.fiscal_year == null) continue;
+    const list = seasonsByYear.get(s.fiscal_year) ?? [];
+    list.push(s.id);
+    seasonsByYear.set(s.fiscal_year, list);
+  }
+
+  const completedYears: number[] = [];
+  for (const [year, ids] of seasonsByYear.entries()) {
+    if (ids.length > 0 && ids.every((id) => appliedSeasonIds.has(id))) completedYears.push(year);
+  }
+  return completedYears.sort((a, b) => a - b);
 }

@@ -10,6 +10,7 @@ import {
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getM3AppliedYears } from "../../services/supabase/divisionScenarioService";
+import { getSazonalidadeCompletedYears } from "../../services/supabase/planningScenarioService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
 
@@ -31,13 +32,13 @@ const DASHBOARD_TOUR: TourStep[] = [
   },
   {
     targetId: "tour-module-3",
-    title: "Planejamento por Divisão",
-    content: "Cada canal se divide por linha de produto e Coleção. Você define a pirâmide de preço de cada divisão e visualiza o risco antes de aprovar a distribuição.",
+    title: "Sazonalidade",
+    content: "Aqui você valida o ritmo da coleção: distribua a receita mês a mês por canal e confira se a curva está alinhada ao calendário da temporada. A distribuição mensal ancora o planejamento de abastecimento e previne rupturas.",
   },
   {
     targetId: "tour-module-4",
-    title: "Sazonalidade",
-    content: "Aqui você valida o ritmo da coleção: distribua a receita mês a mês por canal e confira se a curva está alinhada ao calendário da temporada. A distribuição mensal ancora o planejamento de abastecimento e previne rupturas.",
+    title: "Planejamento por Divisão",
+    content: "Cada canal se divide por linha de produto e Coleção, já com a curva mensal da Sazonalidade definida. Você define a pirâmide de preço de cada divisão e visualiza o risco antes de aprovar a distribuição.",
   },
   {
     targetId: "tour-module-5",
@@ -103,19 +104,10 @@ const MODULE_CARDS: ModuleCard[] = [
     requiresModules: [1],
   },
   {
+    // Fase 3: Sazonalidade agora é M3 (era M4) — vem logo depois do Canal,
+    // antes da Divisão. Distribui a receita mês a mês por canal antes de
+    // detalhar por divisão.
     id: 3,
-    title: "Planejamento por Divisão",
-    level: "Tático",
-    levelColor: "text-[#9B8CD8]",
-    icon: BarChart3,
-    description: "Quebre a meta por divisão de negócio e temporada. Configure faixa de preço e matriz de risco por divisão.",
-    cta: "Planejar por divisão",
-    route: "/module3-division-planning",
-    ceoOnly: true,
-    requiresModules: [2],
-  },
-  {
-    id: 4,
     title: "Sazonalidade",
     level: "Tático",
     levelColor: "text-[#9B8CD8]",
@@ -127,6 +119,20 @@ const MODULE_CARDS: ModuleCard[] = [
     requiresModules: [2],
   },
   {
+    // Fase 3: Divisão agora é M4 (era M3) — só libera depois que a Sazonalidade
+    // (M3) da temporada estiver aplicada (e aprovada, se houve desvio).
+    id: 4,
+    title: "Planejamento por Divisão",
+    level: "Tático",
+    levelColor: "text-[#9B8CD8]",
+    icon: BarChart3,
+    description: "Quebre a meta por divisão de negócio e temporada, já com a curva mensal da Sazonalidade definida. Configure faixa de preço e matriz de risco por divisão.",
+    cta: "Planejar por divisão",
+    route: "/module3-division-planning",
+    ceoOnly: true,
+    requiresModules: [3],
+  },
+  {
     id: 5,
     title: "Plano de Sortimento",
     level: "Operacional",
@@ -136,7 +142,7 @@ const MODULE_CARDS: ModuleCard[] = [
     cta: "Acessar sortimento",
     route: "/sortiment-plan",
     ceoOnly: false,
-    requiresModules: [3],
+    requiresModules: [4],
   },
   {
     id: 6,
@@ -152,12 +158,13 @@ const MODULE_CARDS: ModuleCard[] = [
   },
 ];
 
-// Regras de desbloqueio por módulo:
+// Regras de desbloqueio por módulo (números = id do card, nova ordem pós-Fase 3):
 // Card 1         → sempre liberado (ponto de entrada)
 // isDemoMode     → sem planos salvos: navegação livre com dados mock
 // req 1          → Estratégico aplicado (tem versão salva) NO ANO SELECIONADO
 // req 2          → Metas por Canal aplicadas (ano revisado via channelScenario) NO ANO SELECIONADO
-// req 3          → Planejamento por Divisão aplicado (cenário ativo no M3) NO ANO SELECIONADO
+// req 3          → Sazonalidade completa (as temporadas do ano aplicadas) NO ANO SELECIONADO
+// req 4          → Planejamento por Divisão aplicado (cenário ativo) NO ANO SELECIONADO
 //
 // Tudo é avaliado contra `selectedYear` (escolhido no seletor de ano do
 // dashboard), não mais sempre contra o ano mais recente — assim um ciclo já
@@ -167,7 +174,8 @@ function isModuleUnlocked(
   card: ModuleCard,
   selectedYear: number,
   reviewedYears: number[],
-  m3ActiveYears: number[],
+  divisaoActiveYears: number[],
+  sazonalidadeCompletedYears: number[],
   isDemoMode: boolean,
 ): boolean {
   if (card.id === 1) return true;
@@ -177,10 +185,14 @@ function isModuleUnlocked(
   return card.requiresModules.every((req) => {
     if (req === 1) return Boolean(getPlanCycle(selectedYear)?.versions?.length);
     if (req === 2) return reviewedYears.includes(selectedYear);
-    // M3 só conta como "ativo" se o cenário aplicado for do MESMO ciclo/ano que
-    // está sendo avaliado — um M3 aplicado num ano anterior não pode liberar
-    // M5 para um ciclo novo que ainda não passou por M3.
-    if (req === 3) return m3ActiveYears.includes(selectedYear);
+    // Sazonalidade só conta como "completa" se as temporadas que começam
+    // NESTE ano fiscal já foram aplicadas — ver getSazonalidadeCompletedYears.
+    if (req === 3) return sazonalidadeCompletedYears.includes(selectedYear);
+    // Divisão só conta como "ativa" se o cenário aplicado for do MESMO
+    // ciclo/ano que está sendo avaliado — uma Divisão aplicada num ano
+    // anterior não pode liberar Sortimento para um ciclo novo que ainda não
+    // passou por ela.
+    if (req === 4) return divisaoActiveYears.includes(selectedYear);
     return true;
   });
 }
@@ -204,7 +216,8 @@ export default function Dashboard() {
   );
   const [yearTouched, setYearTouched] = useState(false);
   const [reviewedYears, setReviewedYears] = useState<number[]>([]);
-  const [m3ActiveYears, setM3ActiveYears] = useState<number[]>([]);
+  const [divisaoActiveYears, setDivisaoActiveYears] = useState<number[]>([]);
+  const [sazonalidadeCompletedYears, setSazonalidadeCompletedYears] = useState<number[]>([]);
 
   // Modo Desenvolvimento: bypassa todos os locks — disponível para client_admin e support
   const [devMode, setDevMode] = useState<boolean>(() => {
@@ -238,9 +251,11 @@ export default function Dashboard() {
         // getPlannedYears()/getPlanCycle() ficam mudos até isto rodar de novo.
         initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
 
-        // Carrega anos revisados (M2) e anos com M3 aplicado, do Supabase
+        // Carrega anos revisados (M2), anos com Divisão aplicada e anos com
+        // Sazonalidade completa, do Supabase
         getReviewedYears(tid).then(setReviewedYears).catch(() => {});
-        getM3AppliedYears(tid).then(setM3ActiveYears).catch(() => {});
+        getM3AppliedYears(tid).then(setDivisaoActiveYears).catch(() => {});
+        getSazonalidadeCompletedYears(tid).then(setSazonalidadeCompletedYears).catch(() => {});
 
         Promise.all([
           supabase.from("products").select("id", { count: "exact", head: true }).eq("tenant_id", tid),
@@ -296,7 +311,7 @@ export default function Dashboard() {
 
   const handleCardClick = (card: ModuleCard) => {
     if (!card.route) return;
-    if (!isModuleUnlocked(card, selectedYear, reviewedYears, m3ActiveYears, allUnlocked)) return;
+    if (!isModuleUnlocked(card, selectedYear, reviewedYears, divisaoActiveYears, sazonalidadeCompletedYears, allUnlocked)) return;
     navigate(card.route, { state: { year: selectedYear } });
   };
 
@@ -451,7 +466,7 @@ export default function Dashboard() {
           {MODULE_CARDS.map((card) => {
             const IconComponent = card.icon;
             const hasRoute = card.route !== null;
-            const unlocked = isModuleUnlocked(card, selectedYear, reviewedYears, m3ActiveYears, allUnlocked);
+            const unlocked = isModuleUnlocked(card, selectedYear, reviewedYears, divisaoActiveYears, sazonalidadeCompletedYears, allUnlocked);
             // Desbloqueado = acessível para clique; apenas route=null permanece desabilitado
             const isLocked = hasRoute && !unlocked;
             const isDisabled = !hasRoute || !unlocked;

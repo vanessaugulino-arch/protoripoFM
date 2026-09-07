@@ -8,15 +8,8 @@ import {
   type SupplyFornecedor, type TipoFornecedorV2, type AvgPurchaseCost,
 } from "../../services/supabase/supplyService";
 import {
-  getDivisionSeasonality,
-  buildDivisionMonthRevenue,
   applyBiproportional,
-  type DivisionMonthProfile,
 } from "../../services/supabase/divisionSeasonalityService";
-import {
-  listModule3Scenarios,
-  initModule3Scenarios,
-} from "../../services/module3ScenarioService";
 import {
   listSeasonsDb,
   listCanalConfigDb,
@@ -47,7 +40,7 @@ import { Badge } from "../components/ui/badge";
 const CYCLE_VALIDATION_TOUR: TourStep[] = [
   {
     targetId: "tour-cv-header",
-    title: "Sazonalidade — Módulo 4",
+    title: "Sazonalidade — Módulo 3",
     content: "Valide o ritmo mensal da coleção por canal. A curva de entrada é calculada automaticamente para garantir a cobertura de estoque que você definir.",
   },
   {
@@ -170,8 +163,6 @@ interface Scenario {
   coverageTarget: Record<string, number>;
   estoqueColeçãoPassada: number;
   totalPlanned: number; avgCoverage: number;
-  /** Plano mensal por divisão — Tab 3 do M4 */
-  divisionMonthPlan?: Record<string, Record<string, number>>;
 }
 
 // ── Formatters ──────────────────────────────────────────────────────────────────
@@ -300,17 +291,14 @@ export default function CycleValidation() {
   const [macroMeta, setMacroMeta] = useState({ metaReceita: 0, margemMeta: 45, orcamento: 0 });
 
   // Module view
-  const [activeModuleView, setActiveModuleView] = useState<"curva" | "orcamento" | "divisao">("curva");
+  // Fase 3: a aba "Plano por Divisão" foi removida daqui — dependia da
+  // participação anual do M3-antigo (Divisão), que agora só existe DEPOIS da
+  // Sazonalidade no fluxo, então nunca mais teria dado real pra mostrar. O
+  // insight equivalente (mês reforçado na Sazonalidade → participação sugerida
+  // da divisão que mais vende nele) agora vive em Module3DivisionPlanning.tsx.
+  const [activeModuleView, setActiveModuleView] = useState<"curva" | "orcamento">("curva");
   const [channelView, setChannelView]           = useState<string>("Consolidado");
   const [showDetails, setShowDetails]           = useState(false);
-
-  // ── Tab 3: Plano por Divisão ──────────────────────────────────────────────
-  const [divSeasonality, setDivSeasonality]         = useState<DivisionMonthProfile[]>([]);
-  const [divRevenue, setDivRevenue]                 = useState<Record<string, Record<string, number>>>({});
-  const [divPmv, setDivPmv]                         = useState<Record<string, number>>({});
-  const [divM3Pcts, setDivM3Pcts]                   = useState<Record<string, number>>({});
-  const [divLoadingSeasonality, setDivLoadingSeasonality] = useState(false);
-  const [divInitializedFor, setDivInitializedFor]   = useState<string>(""); // seasonId que já foi inicializado
 
   // Supply
   const [supplyFornecedores, setSupplyFornecedores] = useState<SupplyFornecedor[]>([]);
@@ -460,7 +448,6 @@ export default function CycleValidation() {
             estoqueColeçãoPassada: v?.estoqueColeçãoPassada ?? 500,
             totalPlanned: v?.totalPlanned ?? 0,
             avgCoverage: v?.avgCoverage ?? 0,
-            divisionMonthPlan: v?.divisionMonthPlan ?? undefined,
           };
         });
         setScenarios(mapped);
@@ -472,26 +459,10 @@ export default function CycleValidation() {
           if (v?.coverageTarget) setCoverageTarget(v.coverageTarget);
           if (v?.estoqueColeçãoPassada) setEstoqueColeçãoPassada(v.estoqueColeçãoPassada);
           if (v?.seasonId) setSelectedSeasonId(v.seasonId);
-          // Restaura o plano mensal por divisão do M4 Tab 3
-          if (v?.divisionMonthPlan && Object.keys(v.divisionMonthPlan).length > 0) {
-            setDivRevenue(v.divisionMonthPlan);
-            // Marca como já inicializado para não sobrescrever com cálculo histórico
-            if (v?.seasonId) setDivInitializedFor(v.seasonId);
-          }
         }
       });
     }).catch(() => {});
   }, [navigate]);
-
-  // ── Carrega perfil histórico de sazonalidade por divisão ─────────────────────
-  useEffect(() => {
-    if (!tenantId) return;
-    setDivLoadingSeasonality(true);
-    getDivisionSeasonality(tenantId)
-      .then(res => { if (res.hasData) setDivSeasonality(res.consolidated); })
-      .catch(() => {})
-      .finally(() => setDivLoadingSeasonality(false));
-  }, [tenantId]);
 
   // ── Load canal configs + prev year when season changes ──────────────────────
   useEffect(() => {
@@ -582,74 +553,6 @@ export default function CycleValidation() {
     return ordered.filter(m => allMonths.has(m));
   }, [activeCanals]);
 
-  // ── Inicializa matrix Divisão × Mês quando temporada ou dados históricos mudam ──
-  // Roda somente uma vez por temporada (divInitializedFor garante idempotência).
-  useEffect(() => {
-    if (!tenantId || !selectedSeasonId || !consolidatedMonths.length) return;
-    if (divInitializedFor === selectedSeasonId) return; // já inicializado para esta temporada
-
-    initModule3Scenarios(tenantId, selectedSeasonId)
-      .then(() => {
-        const m3Scenarios = listModule3Scenarios(selectedSeasonId);
-        const active = m3Scenarios.find(s => s.isActive) ?? m3Scenarios[0] ?? null;
-
-        // Participações M3 por divisão
-        const pcts: Record<string, number> = {};
-        const pmvByDiv: Record<string, number> = {};
-        if (active?.divisions) {
-          for (const [divId, block] of Object.entries(active.divisions)) {
-            pcts[divId]    = (block as any).participation ?? 0;
-            pmvByDiv[divId] = (block as any).indicators?.avgPrice ?? 0;
-          }
-        }
-
-        // Fallback: proporções históricas se M3 não configurado
-        if (!Object.keys(pcts).length && divSeasonality.length) {
-          const totalHist = divSeasonality.reduce((s, d) => s + d.totalRevenue, 0);
-          for (const d of divSeasonality) {
-            pcts[d.division]    = totalHist > 0 ? (d.totalRevenue / totalHist) * 100 : 0;
-            pmvByDiv[d.division] = d.pmv;
-          }
-        }
-
-        if (!Object.keys(pcts).length) return; // sem dados — aguarda M3
-
-        // Total de referência: M1 ou soma do plano Tab 1
-        const totalRef = macroMeta.metaReceita > 0
-          ? macroMeta.metaReceita
-          : activeCanals.reduce((s, c) =>
-              s + consolidatedMonths.reduce((ms, m) => ms + ((plannedRevenue[c.id] ?? {})[m] ?? 0), 0), 0);
-
-        // Receita mensal consolidada (de Tab 1) como base de distribuição
-        const consolidatedMRev: Record<string, number> = {};
-        for (const month of consolidatedMonths) {
-          consolidatedMRev[month] = activeCanals.reduce((s, c) =>
-            s + ((plannedRevenue[c.id] ?? {})[month] ?? 0), 0);
-        }
-
-        // Se não há plano mensal ainda, distribui igualmente
-        const sumMRev = Object.values(consolidatedMRev).reduce((s, v) => s + v, 0);
-        if (sumMRev === 0) {
-          const each = totalRef / Math.max(consolidatedMonths.length, 1);
-          for (const m of consolidatedMonths) consolidatedMRev[m] = each;
-        }
-
-        setDivM3Pcts(pcts);
-        setDivPmv(pmvByDiv);
-
-        const matrix = buildDivisionMonthRevenue(
-          consolidatedMRev,
-          divSeasonality.length ? divSeasonality : [],
-          pcts,
-          consolidatedMonths,
-        );
-        setDivRevenue(matrix);
-        setDivInitializedFor(selectedSeasonId);
-      })
-      .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, selectedSeasonId, consolidatedMonths, divSeasonality, macroMeta.metaReceita]);
-
   // ── Initialize planned revenue when canal config loads ─────────────────────
   useEffect(() => {
     if (!activeCanals.length) return;
@@ -732,38 +635,6 @@ export default function CycleValidation() {
     [canalCalcResults, channelView],
   );
 
-  // ── Tab 3: peças por divisão × mês ───────────────────────────────────────────
-  const divPieces = useMemo<Record<string, Record<string, number>>>(() => {
-    const result: Record<string, Record<string, number>> = {};
-    for (const [divId, monthMap] of Object.entries(divRevenue)) {
-      result[divId] = {};
-      const pmv = divPmv[divId] ?? 0;
-      for (const [month, rev] of Object.entries(monthMap)) {
-        result[divId][month] = pmv > 0 ? Math.round(rev / pmv) : 0;
-      }
-    }
-    return result;
-  }, [divRevenue, divPmv]);
-
-  // Totais por divisão (soma de todos os meses)
-  const divTotals = useMemo<Record<string, { revenue: number; pieces: number }>>(() => {
-    const result: Record<string, { revenue: number; pieces: number }> = {};
-    for (const divId of Object.keys(divRevenue)) {
-      const rev = Object.values(divRevenue[divId] ?? {}).reduce((s, v) => s + v, 0);
-      const pcs = Object.values(divPieces[divId] ?? {}).reduce((s, v) => s + v, 0);
-      result[divId] = { revenue: rev, pieces: pcs };
-    }
-    return result;
-  }, [divRevenue, divPieces]);
-
-  // Handler de edição bi-proporcional: mantém total da divisão inalterado
-  const handleDivRevenueChange = useCallback((divId: string, month: string, raw: string) => {
-    const newValue = Math.max(0, parseFloat(raw.replace(/[^\d.]/g, "")) || 0);
-    const profile  = divSeasonality.find(p => p.division === divId);
-    const histWeights = profile?.monthlyPcts ?? {};
-    setDivRevenue(prev => applyBiproportional(prev, divId, month, newValue, histWeights));
-  }, [divSeasonality]);
-
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleRevenueChange = useCallback((canalId: string, month: string, raw: string) => {
     const val = Math.max(0, parseFloat(raw.replace(/[^\d.]/g, "")) || 0);
@@ -791,15 +662,18 @@ export default function CycleValidation() {
       estoqueColeçãoPassada,
       totalPlanned,
       avgCoverage,
-      divisionMonthPlan: Object.keys(divRevenue).length > 0
-        ? JSON.parse(JSON.stringify(divRevenue))
-        : undefined,
     };
     setScenarios(prev => [...prev, s]);
     setSavingName(""); setShowSaveForm(false);
 
     if (tenantId) {
-      const year = new Date().getFullYear();
+      // Usa o ano fiscal da PRÓPRIA temporada, não o ano civil corrente — uma
+      // temporada de Verão (ago-fev) é salva sob o ano em que ela COMEÇA
+      // (fiscal_year da temporada), mesmo que o usuário esteja planejando em
+      // outro ano civil. Bug anterior: usava new Date().getFullYear() sempre,
+      // então o cenário ia parar no ciclo errado (ou não salvava, se esse ano
+      // civil nunca teve M1 planejado).
+      const year = seasons.find(se => se.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
       getCycle(tenantId, year).then(cycle => {
         if (!cycle) return;
         return (supabase as any)
@@ -814,7 +688,6 @@ export default function CycleValidation() {
               estoqueColeçãoPassada: s.estoqueColeçãoPassada,
               totalPlanned: s.totalPlanned,
               avgCoverage: s.avgCoverage,
-              divisionMonthPlan: s.divisionMonthPlan ?? null,
             },
             is_applied: false,
           })
@@ -836,10 +709,30 @@ export default function CycleValidation() {
     setEstoqueColeçãoPassada(s.estoqueColeçãoPassada);
     if (s.seasonId) setSelectedSeasonId(s.seasonId);
     setAppliedScenarioId(id);
-    // Restaura plano de divisão mensal do M4 Tab 3 (se existir no cenário)
-    if (s.divisionMonthPlan && Object.keys(s.divisionMonthPlan).length > 0) {
-      setDivRevenue(s.divisionMonthPlan);
-      if (s.seasonId) setDivInitializedFor(s.seasonId);
+
+    // Marca is_applied=true no banco — antes isso só existia em memória
+    // (appliedScenarioId), então não havia como o Dashboard/M4-Divisão saber,
+    // fora desta tela, se a Sazonalidade de uma temporada já foi aplicada
+    // (gate novo da Fase 3). Só grava se o id já é o real (UUID do Supabase) —
+    // ids locais (s-<timestamp>) ainda não têm linha correspondente no banco.
+    if (tenantId && s.seasonId && !id.startsWith("s-")) {
+      const db = supabase as any;
+      db.from("planning_scenarios")
+        .select("id, values")
+        .eq("tenant_id", tenantId)
+        .eq("is_applied", true)
+        .then(({ data }: any) => {
+          const siblings = (data ?? []).filter(
+            (r: any) => r.values?.seasonId === s.seasonId && r.id !== id,
+          );
+          return Promise.all(
+            siblings.map((r: any) =>
+              db.from("planning_scenarios").update({ is_applied: false }).eq("id", r.id),
+            ),
+          );
+        })
+        .then(() => db.from("planning_scenarios").update({ is_applied: true }).eq("id", id))
+        .catch(() => {});
     }
   };
 
@@ -859,7 +752,7 @@ export default function CycleValidation() {
     if (appliedScenarioId) return;
     const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
     if (!m2ReviewedYears.includes(year)) {
-      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 4.`);
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 3.`);
       return;
     }
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
@@ -891,7 +784,9 @@ export default function CycleValidation() {
       const appliedSc = scenarios.find(s => s.id === appliedScenarioId) ?? scenarios[scenarios.length - 1] ?? null;
       await createApprovalRequest({
         tenantId, year: new Date().getFullYear(),
-        fromModule: 4, toModule: 2,
+        // Sazonalidade agora é M3 (era M4) — pede aprovação ao M2 (Canal), mesma
+        // relação de sempre, só renumerada pela nova ordem do fluxo.
+        fromModule: 3, toModule: 2,
         requesterEmail: user.email,
         justification: approvalJustification,
         proposedData: { totalPlanned, divergence, divergencePct, avgCoverage },
@@ -921,7 +816,7 @@ export default function CycleValidation() {
               <ArrowLeft className="w-6 h-6" />
             </button>
             <div id="tour-cv-header">
-              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 4</span>
+              <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 3</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">Validação de Sazonalidade</span>
             </div>
           </div>
@@ -1037,7 +932,6 @@ export default function CycleValidation() {
                 [
                   { key: "curva"    as const, label: "1 · Curva de Receita" },
                   { key: "orcamento" as const, label: "2 · Orçamento de Abastecimento" },
-                  { key: "divisao"  as const, label: "3 · Plano por Divisão" },
                 ]
               ).map(tab => (
                 <button key={tab.key} onClick={() => setActiveModuleView(tab.key)}
@@ -1546,280 +1440,11 @@ export default function CycleValidation() {
                 />
               );
             })()}
-      {/* ──────────────────────────────────────────────────────────────────────
-          VIEW 3: PLANO POR DIVISÃO
-          Matrix Division × Mês com calibração bi-proporcional.
-          Fonte: M1 (total da coleção) × M3 (participação por divisão) × histórico (sazonalidade mensal)
-      ─────────────────────────────────────────────────────────────────────── */}
-      {activeModuleView === "divisao" && (() => {
-        const divIds    = Object.keys(divRevenue);
-        const months    = consolidatedMonths;
-        const hasDivs   = divIds.length > 0 && months.length > 0;
-
-        // Rótulos legíveis por divisão
-        const DIV_LABELS: Record<string, string> = {
-          feminino:  "Feminino",
-          masculino: "Masculino",
-          acessorios: "Acessórios",
-          infantil:  "Infantil",
-        };
-        const DIV_COLORS: Record<string, string> = {
-          feminino:  "#9B8CD8",
-          masculino: "#7598CF",
-          acessorios: "#F0C040",
-          infantil:  "#6BAE75",
-        };
-
-        // Total consolidado por mês (soma de todas as divisões)
-        const monthTotalsRev: Record<string, number> = {};
-        const monthTotalsPcs: Record<string, number> = {};
-        for (const m of months) {
-          monthTotalsRev[m] = divIds.reduce((s, d) => s + ((divRevenue[d] ?? {})[m] ?? 0), 0);
-          monthTotalsPcs[m] = divIds.reduce((s, d) => s + ((divPieces[d] ?? {})[m] ?? 0), 0);
-        }
-        const grandTotalRev = divIds.reduce((s, d) => s + (divTotals[d]?.revenue ?? 0), 0);
-        const grandTotalPcs = divIds.reduce((s, d) => s + (divTotals[d]?.pieces ?? 0), 0);
-
-        return (
-          <div className="space-y-5">
-            {/* Cabeçalho informativo */}
-            <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm border border-[#28071C]/8">
-              <div className="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-[#28071C]">Plano por Divisão × Mês</h3>
-                  <p className="text-xs text-[#28071C]/50 mt-0.5">
-                    Distribuição da coleção por divisão com sazonalidade histórica · calibração bi-proporcional
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  {divLoadingSeasonality && (
-                    <span className="flex items-center gap-1.5 text-xs text-[#7598CF]">
-                      <Loader2 className="w-3 h-3 animate-spin" />Calculando perfis históricos…
-                    </span>
-                  )}
-                  <div className="text-xs text-[#28071C]/50">
-                    <span className="font-medium text-[#28071C]/70">Total coleção: </span>
-                    <span className="font-bold text-[#28071C]">{fmtR(grandTotalRev)}</span>
-                    <span className="ml-3 font-medium text-[#28071C]/70"> · </span>
-                    <span className="font-bold text-[#28071C]">{grandTotalPcs.toLocaleString("pt-BR")} peças</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {!hasDivs && (
-              <div className="bg-white/60 rounded-2xl p-8 text-center text-[#28071C]/40">
-                {divLoadingSeasonality
-                  ? "Calculando perfis históricos de sazonalidade…"
-                  : "Configure as divisões no Módulo 3 e salve um cenário para visualizar o plano por divisão."
-                }
-              </div>
-            )}
-
-            {hasDivs && (
-              <>
-                {/* Cards de resumo por divisão */}
-                <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${divIds.length}, 1fr)` }}>
-                  {divIds.map(divId => {
-                    const color  = DIV_COLORS[divId] ?? "#7598CF";
-                    const label  = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
-                    const totRev = divTotals[divId]?.revenue ?? 0;
-                    const totPcs = divTotals[divId]?.pieces ?? 0;
-                    const pct    = grandTotalRev > 0 ? (totRev / grandTotalRev) * 100 : 0;
-                    const m3Pct  = divM3Pcts[divId] ?? 0;
-                    const pmv    = divPmv[divId] ?? 0;
-                    return (
-                      <div key={divId} className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm" style={{ borderTop: `3px solid ${color}` }}>
-                        <div className="flex items-start justify-between mb-2">
-                          <span className="text-sm font-semibold text-[#28071C]">{label}</span>
-                          <span className="text-xs px-2 py-0.5 rounded-full font-semibold text-white" style={{ background: color }}>
-                            {pct.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div className="text-xl font-bold text-[#28071C]">{fmtR(totRev)}</div>
-                        <div className="text-xs text-[#28071C]/50 mt-0.5">{totPcs.toLocaleString("pt-BR")} peças</div>
-                        <div className="mt-2 pt-2 border-t border-[#28071C]/8 grid grid-cols-2 gap-1 text-[10px] text-[#28071C]/50">
-                          <span>M3 target: <strong className="text-[#28071C]/70">{m3Pct.toFixed(1)}%</strong></span>
-                          <span>PMV: <strong className="text-[#28071C]/70">{pmv > 0 ? fmtR(pmv) : "—"}</strong></span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Matriz Division × Mês */}
-                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-                  <div className="border-t-4 border-[#28071C] px-6 pt-5 pb-4">
-                    <h4 className="text-sm font-semibold text-[#28071C] mb-1">Receita por Divisão (R$) · edição com calibração bi-proporcional</h4>
-                    <p className="text-xs text-[#28071C]/40 mb-4">Ao editar um mês, o sistema redistribui o delta entre os demais meses da mesma divisão proporcionalmente ao peso histórico.</p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b-2 border-[#28071C]/10">
-                            <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider sticky left-0 bg-white/90 w-28">Divisão</th>
-                            {months.map(m => (
-                              <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider min-w-[5.5rem]">
-                                {SHORT_MONTH[m] ?? m.slice(0,3)}
-                              </th>
-                            ))}
-                            <th className="text-right py-2 pl-4 text-xs font-semibold text-[#28071C] uppercase tracking-wider border-l border-[#28071C]/10">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {divIds.map((divId, di) => {
-                            const color = DIV_COLORS[divId] ?? "#7598CF";
-                            const label = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
-                            const bg    = di % 2 === 0 ? "bg-transparent" : "bg-[#28071C]/2";
-                            return (
-                              <tr key={divId} className={`border-b border-[#28071C]/5 ${bg}`}>
-                                <td className={`py-2.5 pr-4 font-semibold text-xs sticky left-0 ${bg} bg-white/80`}>
-                                  <span className="flex items-center gap-1.5">
-                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                    {label}
-                                  </span>
-                                </td>
-                                {months.map(m => {
-                                  const val = (divRevenue[divId] ?? {})[m] ?? 0;
-                                  return (
-                                    <td key={m} className="py-1.5 px-2 text-right">
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        value={Math.round(val)}
-                                        onChange={e => handleDivRevenueChange(divId, m, e.target.value)}
-                                        className="w-20 text-right text-xs text-[#28071C] bg-transparent border border-transparent focus:border-[#7598CF] focus:outline-none focus:bg-white rounded-lg px-1.5 py-1 transition-all"
-                                      />
-                                    </td>
-                                  );
-                                })}
-                                <td className="py-2.5 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
-                                  {fmtR(divTotals[divId]?.revenue ?? 0)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                          {/* Totais por mês */}
-                          <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/4">
-                            <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider sticky left-0 bg-[#28071C]/4">Total</td>
-                            {months.map(m => (
-                              <td key={m} className="py-3 px-2 text-right text-xs font-bold text-[#28071C]">
-                                {fmtR(monthTotalsRev[m] ?? 0)}
-                              </td>
-                            ))}
-                            <td className="py-3 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
-                              {fmtR(grandTotalRev)}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Matriz de Peças por Divisão × Mês */}
-                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-                  <div className="border-t-4 border-[#7598CF] px-6 pt-5 pb-4">
-                    <h4 className="text-sm font-semibold text-[#28071C] mb-1">Volume de Peças por Divisão</h4>
-                    <p className="text-xs text-[#28071C]/40 mb-4">Cálculo reverso: Peças = Receita ÷ PMV da divisão. Concentrar faturamento em meses de PMV alto reduz o volume total de peças.</p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b-2 border-[#28071C]/10">
-                            <th className="text-left py-2 pr-4 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider sticky left-0 bg-white/90 w-28">Divisão</th>
-                            {months.map(m => (
-                              <th key={m} className="text-right py-2 px-2 text-xs font-semibold text-[#28071C]/50 uppercase tracking-wider min-w-[5rem]">
-                                {SHORT_MONTH[m] ?? m.slice(0,3)}
-                              </th>
-                            ))}
-                            <th className="text-right py-2 pl-4 text-xs font-semibold text-[#28071C] uppercase tracking-wider border-l border-[#28071C]/10">Total pçs</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {divIds.map((divId, di) => {
-                            const color = DIV_COLORS[divId] ?? "#7598CF";
-                            const label = DIV_LABELS[divId] ?? divSeasonality.find(p => p.division === divId)?.label ?? divId;
-                            const bg    = di % 2 === 0 ? "bg-transparent" : "bg-[#28071C]/2";
-                            return (
-                              <tr key={divId} className={`border-b border-[#28071C]/5 ${bg}`}>
-                                <td className={`py-2.5 pr-4 font-semibold text-xs sticky left-0 ${bg} bg-white/80`}>
-                                  <span className="flex items-center gap-1.5">
-                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                    {label}
-                                  </span>
-                                </td>
-                                {months.map(m => {
-                                  const pcs = (divPieces[divId] ?? {})[m] ?? 0;
-                                  return (
-                                    <td key={m} className="py-2.5 px-2 text-right text-xs text-[#28071C] font-medium">
-                                      {pcs > 0 ? pcs.toLocaleString("pt-BR") : <span className="text-[#28071C]/20">—</span>}
-                                    </td>
-                                  );
-                                })}
-                                <td className="py-2.5 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
-                                  {(divTotals[divId]?.pieces ?? 0).toLocaleString("pt-BR")}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                          {/* Totais */}
-                          <tr className="border-t-2 border-[#28071C]/20 bg-[#28071C]/4">
-                            <td className="py-3 pr-4 font-bold text-xs text-[#28071C] uppercase tracking-wider sticky left-0 bg-[#28071C]/4">Total</td>
-                            {months.map(m => (
-                              <td key={m} className="py-3 px-2 text-right text-xs font-bold text-[#28071C]">
-                                {(monthTotalsPcs[m] ?? 0).toLocaleString("pt-BR")}
-                              </td>
-                            ))}
-                            <td className="py-3 pl-4 text-right font-bold text-sm text-[#28071C] border-l border-[#28071C]/10">
-                              {grandTotalPcs.toLocaleString("pt-BR")}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Mini bar chart — distribuição mensal consolidada */}
-                <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm p-5">
-                  <h4 className="text-sm font-semibold text-[#28071C] mb-4">Distribuição Mensal por Divisão</h4>
-                  <div className="flex items-end gap-2 h-48">
-                    {months.map(month => {
-                      const maxMonthlTotal = Math.max(...months.map(m => monthTotalsRev[m] ?? 0), 1);
-                      const monthTotal     = monthTotalsRev[month] ?? 0;
-                      const barH           = (monthTotal / maxMonthlTotal) * 100;
-                      return (
-                        <div key={month} className="flex-1 flex flex-col items-center gap-0.5">
-                          <span className="text-[9px] text-[#28071C]/40">{monthTotal > 0 ? fmtR(monthTotal) : ""}</span>
-                          <div className="w-full flex flex-col-reverse rounded-t overflow-hidden" style={{ height: `${Math.max(barH, 2)}%`, minHeight: 4 }}>
-                            {divIds.map(divId => {
-                              const rev   = (divRevenue[divId] ?? {})[month] ?? 0;
-                              const share = monthTotal > 0 ? (rev / monthTotal) * 100 : 0;
-                              const color = DIV_COLORS[divId] ?? "#7598CF";
-                              return share > 0 ? (
-                                <div key={divId} style={{ height: `${share}%`, background: color }} title={`${DIV_LABELS[divId] ?? divId}: ${fmtR(rev)}`} />
-                              ) : null;
-                            })}
-                          </div>
-                          <span className="text-[9px] font-semibold text-[#28071C]/60">{SHORT_MONTH[month] ?? month.slice(0,3)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Legenda */}
-                  <div className="flex items-center gap-4 mt-3 flex-wrap">
-                    {divIds.map(divId => (
-                      <span key={divId} className="flex items-center gap-1.5 text-xs text-[#28071C]/60">
-                        <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DIV_COLORS[divId] ?? "#7598CF" }} />
-                        {DIV_LABELS[divId] ?? divId}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        );
-      })()}
+      {/* Fase 3: aba "Plano por Divisão" removida — dependia da participação
+          anual do M3-antigo (Divisão), que agora vem DEPOIS da Sazonalidade.
+          O insight equivalente (mês reforçado na Sazonalidade → participação
+          sugerida da divisão que mais vende nele) agora vive em
+          Module3DivisionPlanning.tsx. */}
           </>
         )}
 
@@ -2001,9 +1626,9 @@ export default function CycleValidation() {
               <p className="text-[#28071C]/60 text-sm">A distribuição mensal foi aplicada ao plano.</p>
             </div>
             <div className="flex flex-col gap-2 w-full">
-              <button onClick={() => { setShowPostApplyModal(false); navigate("/channel-planning"); }}
+              <button onClick={() => { setShowPostApplyModal(false); navigate("/module3-division-planning"); }}
                 className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90">
-                Voltar ao Plano por Canal (M2) <ArrowRight className="w-4 h-4" />
+                Ir para Módulo 4 — Planejamento por Divisão <ArrowRight className="w-4 h-4" />
               </button>
               <button onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
                 className="w-full px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-[#F2F2F2]">

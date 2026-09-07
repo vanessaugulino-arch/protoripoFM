@@ -1,10 +1,16 @@
 // ─── planApprovalService.ts ────────────────────────────────────────────────────
 // Gerencia pedidos de revisão/aprovação entre módulos do Fashion Mind.
 //
-// Fluxo:
-//   M2 (ChannelPlanning) → pede aprovação a M1 (Planning)
-//   M3 (DivisionPlanning) → pede aprovação a M2 (ChannelPlanning)
-//   M4 (CycleValidation)  → pede aprovação a M2 (ChannelPlanning)
+// Ordem do fluxo (pós-Fase 3): Canal(M2) → Sazonalidade(M3) → Divisão(M4) → Sortimento(M5)
+// Cada módulo pede aprovação a quem já fixou a meta que ele pode divergir —
+// não é necessariamente o módulo imediatamente anterior no fluxo:
+//   M2 (ChannelPlanning)   → pede aprovação a M1 (Planning) — impacta o macro anual
+//   M3 (CycleValidation)   → pede aprovação a M2 (ChannelPlanning) — sazonalidade é por canal
+//   M4 (DivisionPlanning)  → pede aprovação a M1 (Planning) — impacta o macro anual
+//   M5 (SortimentPlan)     → pede aprovação a M4 (DivisionPlanning)
+//
+// Gate adicional (Fase 3): M4 (Divisão) só libera depois que M3 (Sazonalidade)
+// estiver aplicada e, se houve desvio, aprovada — não basta só M2 estar pronto.
 //
 // Tabela: plan_approval_requests
 // ─────────────────────────────────────────────────────────────────────────────

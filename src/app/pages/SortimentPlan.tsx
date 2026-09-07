@@ -553,8 +553,12 @@ export default function SortimentPlan() {
       await createApprovalRequest({
         tenantId:           user.tenant_id,
         year,
+        // Pede aprovação à tela de Divisão, que agora é M4 (era M3) — renumerado
+        // pela nova ordem do fluxo (Canal → Sazonalidade → Divisão → Sortimento).
+        // Nomes de variáveis locais (requestM3Justif etc.) continuam com "M3"
+        // por serem só identificadores internos — não afeta o comportamento.
         fromModule:         5,
-        toModule:           3,
+        toModule:           4,
         requesterEmail:     user.email,
         justification:      requestM3Justif.trim(),
         proposedData:       proposedData as Record<string, unknown>,

@@ -1,5 +1,6 @@
 /**
- * Módulo 3 - Planejamento por Divisão de Negócio (Temporada de Coleção)
+ * Módulo 4 - Planejamento por Divisão de Negócio (Temporada de Coleção)
+ * (Fase 3: renumerado — era Módulo 3, agora vem depois da Sazonalidade)
  *
  * Ambiente oficial de planejamento por divisão orientado a temporadas.
  * O consolidado da temporada deve obrigatoriamente atingir as metas
@@ -14,8 +15,9 @@
  * F — Sistema de Cenários
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { supabase } from "../../lib/supabase";
 // Helper único de meses da temporada (aceita número "07" ou nome "Agosto" e
 // trata a temporada que cruza o ano). Substitui as funções locais que só
 // entendiam nomes de mês — a tabela seasons guarda números.
@@ -42,6 +44,7 @@ import {
   Info,
   Check,
   X,
+  Lock,
   Play,
   FileDown,
   GitCompare,
@@ -104,6 +107,8 @@ import { fetchTenantDivisions, type TenantDivision } from "../../services/supaba
 import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
 import { applyVolumeCoverageEdit, recalcVolumeClusterFromAnchor } from "../../engine/divisionEngineAdapter";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
+import { getSazonalidadeCompletedYears, seasonFiscalYearsTouched } from "../../services/supabase/planningScenarioService";
+import { getDivisionSeasonality, type DivisionMonthProfile } from "../../services/supabase/divisionSeasonalityService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   applyModule3Scenario,
@@ -267,6 +272,12 @@ export default function Module3DivisionPlanning() {
   const [divisionsLoaded, setDivisionsLoaded] = useState(false);
   const [temporadas, setTemporadas] = useState<Temporada[]>([]);
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
+  // Fase 3: popup de seleção de temporada — mostra por ano fiscal quais já
+  // estão liberadas (Sazonalidade completa) antes do usuário escolher por
+  // onde começar. Uma temporada de Verão (ago-fev) toca 2 anos; o usuário
+  // precisa ver isso com clareza antes de entrar no detalhe por divisão.
+  const [showSeasonPickerPopup, setShowSeasonPickerPopup] = useState(false);
+  const seasonPickerShownRef = useRef(false);
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -305,14 +316,16 @@ export default function Module3DivisionPlanning() {
       const hasAccess = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
       if (!hasAccess) navigate("/dashboard");
 
-      // Pedidos de aprovação direcionados ao M3 (vindos do M5 — Sortimento)
+      // Pedidos de aprovação direcionados ao M4 (vindos do M5 — Sortimento).
+      // Divisão agora é M4 (era M3) — renumerado pela nova ordem do fluxo
+      // (Canal → Sazonalidade → Divisão → Sortimento).
       if (tid) {
         // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
         // reload nesta tela lê macroTargets/M1 desatualizados (deriveSeasonMacroTarget
         // depende de getPlanCycle/getPlannedYears).
         initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
         const isCeoOrAdmin = userData.profile === "CEO" || userData.system_role === "support" || userData.system_role === "client_admin";
-        getPendingApprovalsForUser(tid, 3, userData.email, isCeoOrAdmin)
+        getPendingApprovalsForUser(tid, 4, userData.email, isCeoOrAdmin)
           .then(reqs => {
             setIncomingApprovals(reqs);
             if (reqs.length > 0) {
@@ -346,6 +359,17 @@ export default function Module3DivisionPlanning() {
     setIsLoading(false);
   }, [navigate]);
 
+  // Fase 3: mostra o popup de temporadas assim que a lista carrega, uma vez
+  // por visita à tela — antes o sistema já auto-selecionava a primeira
+  // temporada silenciosamente, sem deixar claro quais anos fiscais ela toca
+  // nem se a Sazonalidade daqueles anos já está pronta.
+  useEffect(() => {
+    if (seasonPickerShownRef.current) return;
+    if (temporadas.length === 0) return;
+    seasonPickerShownRef.current = true;
+    setShowSeasonPickerPopup(true);
+  }, [temporadas]);
+
   // ─── Divisões reais do tenant (products.division) ─────────────────────────
   // Antes: lista fixa ["feminino","masculino","acessorios","infantil"] pra
   // qualquer cliente. Agora: só aparece o que o tenant realmente tem no catálogo.
@@ -359,13 +383,74 @@ export default function Module3DivisionPlanning() {
 
   const divisionIds = useMemo(() => realDivisions.map((d) => d.id), [realDivisions]);
 
-  // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
-  // do Dashboard (que é decorativo e não impede acesso direto à tela).
+  // Anos com M2 aplicado e temporadas com Sazonalidade (M3) completa — trava
+  // real de "Aplicar Metas" aqui, não só o card do Dashboard (que é decorativo
+  // e não impede acesso direto à tela). Fase 3: Divisão (M4) agora depende da
+  // Sazonalidade (M3) estar pronta, não só do Canal (M2).
   const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
+  const [sazonalidadeCompletedYears, setSazonalidadeCompletedYears] = useState<number[]>([]);
   useEffect(() => {
     if (!tenantId) return;
     getReviewedYears(tenantId).then(setM2ReviewedYears).catch(() => {});
+    getSazonalidadeCompletedYears(tenantId).then(setSazonalidadeCompletedYears).catch(() => {});
   }, [tenantId]);
+
+  // Fase 3: participação sugerida por divisão a partir da curva já fechada na
+  // Sazonalidade (M3). Não é uma grade mensal aqui — só um número de
+  // referência: cruza a curva mensal (por canal) já aplicada no M3 com o
+  // formato histórico de cada divisão mês a mês, para que um mês reforçado
+  // na Sazonalidade (ex.: Agosto — Dia dos Pais) já puxe a participação
+  // sugerida da divisão que historicamente concentra mais receita naquele
+  // mês (ex.: Masculino), sem exigir que o usuário calcule isso na mão.
+  const [sazonalidadeMonthlyTotal, setSazonalidadeMonthlyTotal] = useState<Record<string, number> | null>(null);
+  const [divisionHistProfiles, setDivisionHistProfiles] = useState<DivisionMonthProfile[]>([]);
+  useEffect(() => {
+    if (!tenantId || !selectedSeasonId) { setSazonalidadeMonthlyTotal(null); return; }
+    const db = supabase as any;
+    db.from("planning_scenarios")
+      .select("values")
+      .eq("tenant_id", tenantId)
+      .eq("is_applied", true)
+      .then(({ data }: any) => {
+        const applied = (data ?? []).find((r: any) => r.values?.seasonId === selectedSeasonId);
+        const plannedRevenue = applied?.values?.plannedRevenue as Record<string, Record<string, number>> | undefined;
+        if (!plannedRevenue) { setSazonalidadeMonthlyTotal(null); return; }
+        const monthlyTotal: Record<string, number> = {};
+        for (const canalMonths of Object.values(plannedRevenue)) {
+          for (const [month, rev] of Object.entries(canalMonths ?? {})) {
+            monthlyTotal[month] = (monthlyTotal[month] ?? 0) + (rev ?? 0);
+          }
+        }
+        setSazonalidadeMonthlyTotal(monthlyTotal);
+      })
+      .catch(() => setSazonalidadeMonthlyTotal(null));
+  }, [tenantId, selectedSeasonId]);
+
+  useEffect(() => {
+    if (!tenantId) return;
+    getDivisionSeasonality(tenantId)
+      .then((r) => setDivisionHistProfiles(r.consolidated))
+      .catch(() => setDivisionHistProfiles([]));
+  }, [tenantId]);
+
+  /** % anual sugerido por divisão, ou null se ainda não há curva de Sazonalidade aplicada para esta temporada. */
+  const sazonalidadeSuggestedPct = useMemo<Record<string, number> | null>(() => {
+    if (!sazonalidadeMonthlyTotal || !divisionHistProfiles.length) return null;
+    const raw: Record<string, number> = {};
+    for (const prof of divisionHistProfiles) {
+      let total = 0;
+      for (const [month, monthTotal] of Object.entries(sazonalidadeMonthlyTotal)) {
+        total += monthTotal * ((prof.monthlyPcts[month] ?? 0) / 100);
+      }
+      raw[prof.division] = total;
+    }
+    const sum = Object.values(raw).reduce((s, v) => s + v, 0);
+    if (sum <= 0) return null;
+    const pct: Record<string, number> = {};
+    for (const [divId, v] of Object.entries(raw)) pct[divId] = (v / sum) * 100;
+    return pct;
+  }, [sazonalidadeMonthlyTotal, divisionHistProfiles]);
+
   const divisionLabels = useMemo(
     () => Object.fromEntries(realDivisions.map((d) => [d.id, d.label])) as Record<string, string>,
     [realDivisions],
@@ -374,6 +459,22 @@ export default function Module3DivisionPlanning() {
   // ─── Metas macro derivadas do Módulo 1 ───────────────────────────────────
   const selectedTemporada = temporadas.find((t) => String(t.id) === selectedSeasonId);
   const referenceTemporada = temporadas.find((t) => String(t.id) === referenceSeasonId);
+
+  // Fase 3: status de cada temporada pro popup — quais anos fiscais ela toca
+  // (1 se não cruza o ano, 2 se cruza, ex.: Verão ago-fev) e se a Sazonalidade
+  // desse(s) ano(s) já está completa. Ordenado por ano fiscal, mais recente
+  // planejável primeiro fica mais fácil de achar — mas aqui deixamos na ordem
+  // que já vem do backend (crescente) para bater com o calendário.
+  const temporadasComStatus = useMemo(() => {
+    return temporadas
+      .map((t) => {
+        const anoBase = t.anoFiscal ?? new Date().getFullYear();
+        const anosNecessarios = seasonFiscalYearsTouched(t.mesInicio, t.mesFim, anoBase);
+        const anosFaltando = anosNecessarios.filter((y) => !sazonalidadeCompletedYears.includes(y));
+        return { temporada: t, anosNecessarios, anosFaltando, liberada: anosFaltando.length === 0 };
+      })
+      .sort((a, b) => (a.temporada.anoFiscal ?? 0) - (b.temporada.anoFiscal ?? 0));
+  }, [temporadas, sazonalidadeCompletedYears]);
 
   // Base real do cluster Giro/Cobertura/Estoque Médio (Bloco 4): dias da
   // temporada de verdade, não um "365" genérico. 30 dias/mês, mesma convenção
@@ -628,8 +729,23 @@ export default function Module3DivisionPlanning() {
   const handleApplyMetas = async () => {
     const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
     if (!m2ReviewedYears.includes(year)) {
-      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 3.`);
+      alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 4.`);
       return;
+    }
+    // Fase 3: uma temporada de Verão (ago-fev) toca 2 anos fiscais — os dois
+    // precisam estar com a Sazonalidade completa, não só o ano da temporada.
+    if (selectedTemporada) {
+      const anosNecessarios = seasonFiscalYearsTouched(
+        selectedTemporada.mesInicio, selectedTemporada.mesFim, year,
+      );
+      const faltando = anosNecessarios.filter(y => !sazonalidadeCompletedYears.includes(y));
+      if (faltando.length > 0) {
+        alert(
+          `A Sazonalidade (Módulo 3) ainda não foi aplicada para o(s) ano(s) fiscal(is) ${faltando.join(", ")} — ` +
+          `necessário porque a temporada "${selectedTemporada.nome}" atravessa esse(s) ano(s). Complete a Sazonalidade antes de aplicar o Módulo 4.`
+        );
+        return;
+      }
     }
     const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
     if (chosen) {
@@ -671,7 +787,9 @@ export default function Module3DivisionPlanning() {
       await createApprovalRequest({
         tenantId,
         year:               selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
-        fromModule:         3,
+        // Divisão agora é M4 (era M3) — mesma relação de sempre (pede aprovação
+        // ao M1, já que Divisão impacta os dados macro do ano), só renumerada.
+        fromModule:         4,
         toModule:           1,
         requesterEmail:     user.email,
         justification:      approvalJustification,
@@ -792,7 +910,7 @@ export default function Module3DivisionPlanning() {
             </button>
             <div>
               <span className="text-[#F6F3AA] text-base font-semibold">
-                Fashion Mind · Módulo 3
+                Fashion Mind · Módulo 4
               </span>
               <span className="text-[#F6F3AA]/70 text-sm ml-3">
                 Planejamento por Divisão de Negócio
@@ -828,7 +946,15 @@ export default function Module3DivisionPlanning() {
         {/* ══════════════════════════════════════════════════════════════════ */}
 
         <div id="tour-m3-season" className="bg-white/70 backdrop-blur-sm rounded-2xl p-5 shadow-sm border-t-4 border-[#7598CF]">
-          <h2 className="text-[#28071C] text-lg font-bold mb-3">Temporada de Planejamento</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-[#28071C] text-lg font-bold">Temporada de Planejamento</h2>
+            <button
+              onClick={() => setShowSeasonPickerPopup(true)}
+              className="text-[#7598CF] text-xs font-semibold hover:underline"
+            >
+              Ver anos liberados
+            </button>
+          </div>
 
           <div className="grid grid-cols-2 gap-4 mb-3">
             {/* Temporada a planejar */}
@@ -906,7 +1032,7 @@ export default function Module3DivisionPlanning() {
             <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-900 mt-2">
               <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>
-                Nenhuma divisão encontrada no catálogo de produtos. Importe seu catálogo (com a divisão de cada produto preenchida) para planejar o Módulo 3.{" "}
+                Nenhuma divisão encontrada no catálogo de produtos. Importe seu catálogo (com a divisão de cada produto preenchida) para planejar o Módulo 4.{" "}
                 <button onClick={() => navigate("/operation-settings")} className="underline font-semibold">
                   Ir para Configurações de Operação
                 </button>
@@ -973,6 +1099,14 @@ export default function Module3DivisionPlanning() {
                           />
                           <span className="text-[11px] text-[#28071C]/50 font-semibold">%</span>
                         </div>
+                        {sazonalidadeSuggestedPct && sazonalidadeSuggestedPct[divId] != null && (
+                          <div
+                            className="text-[9px] text-[#7598CF] font-semibold mb-1"
+                            title="Calculado a partir da curva mensal já aplicada na Sazonalidade (M3) cruzada com o histórico de cada divisão mês a mês — um mês reforçado na Sazonalidade puxa a participação da divisão que historicamente vende mais nele."
+                          >
+                            Sugerido pela Sazonalidade: {sazonalidadeSuggestedPct[divId].toFixed(1)}%
+                          </div>
+                        )}
                         <div className="h-1 bg-[#28071C]/10 rounded-full overflow-hidden">
                           <div
                             className="h-full bg-gradient-to-r from-[#7598CF] to-[#28071C] rounded-full transition-all duration-300"
@@ -1345,7 +1479,7 @@ export default function Module3DivisionPlanning() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-6">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-[860px] max-h-[80vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#28071C]/8">
-              <h3 className="text-[#28071C] font-bold text-base">Comparação de Cenários — Módulo 3</h3>
+              <h3 className="text-[#28071C] font-bold text-base">Comparação de Cenários — Módulo 4</h3>
               <button onClick={() => setCompareOpen(false)} className="text-[#28071C]/40 hover:text-[#28071C] transition-colors">
                 <X className="w-5 h-5" />
               </button>
@@ -1451,6 +1585,76 @@ export default function Module3DivisionPlanning() {
         )}
       </div>
 
+      {/* ─── MODAL: Seleção de Temporada (Fase 3) ──────────────────────────── */}
+      {showSeasonPickerPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="flex items-start justify-between px-6 py-4 border-b border-[#28071C]/8">
+              <div>
+                <h2 className="text-[#28071C] font-bold text-base">Escolha a temporada</h2>
+                <p className="text-[#28071C]/50 text-xs mt-0.5">
+                  Uma temporada pode impactar 1 ou 2 anos comerciais — confira antes de começar.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowSeasonPickerPopup(false)}
+                className="text-[#28071C]/40 hover:text-[#28071C] transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-5 flex-1 flex flex-col gap-2.5">
+              {temporadasComStatus.map(({ temporada: t, anosNecessarios, anosFaltando, liberada }) => {
+                const isSelected = String(t.id) === selectedSeasonId;
+                const cruzaAno = anosNecessarios.length > 1;
+                return (
+                  <button
+                    key={t.id}
+                    disabled={!liberada}
+                    onClick={() => {
+                      setSelectedSeasonId(String(t.id));
+                      setShowSeasonPickerPopup(false);
+                    }}
+                    className={`text-left rounded-xl border-2 px-4 py-3 transition-all ${
+                      !liberada
+                        ? "border-[#28071C]/8 bg-[#28071C]/3 opacity-60 cursor-not-allowed"
+                        : isSelected
+                          ? "border-[#7598CF] bg-[#7598CF]/8"
+                          : "border-[#28071C]/10 hover:border-[#7598CF]/50 hover:bg-[#7598CF]/4"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[#28071C] text-sm">{t.nome}</span>
+                      {!liberada && <Lock className="w-4 h-4 text-[#28071C]/30 flex-shrink-0" />}
+                      {liberada && isSelected && <Check className="w-4 h-4 text-[#7598CF] flex-shrink-0" />}
+                    </div>
+                    <p className="text-[#28071C]/50 text-xs mt-1">
+                      {seasonFiscalLabel(t.mesInicio, t.mesFim)}
+                      {cruzaAno && (
+                        <span className="ml-1.5 text-[#7598CF] font-medium">
+                          · atravessa os anos comerciais {anosNecessarios.join(" e ")}
+                        </span>
+                      )}
+                    </p>
+                    {!liberada && (
+                      <p className="text-amber-700 text-xs mt-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                        Aguardando Sazonalidade (Módulo 3) do(s) ano(s) {anosFaltando.join(", ")} — complete lá antes de planejar a divisão desta temporada.
+                      </p>
+                    )}
+                  </button>
+                );
+              })}
+              {temporadasComStatus.length === 0 && (
+                <p className="text-[#28071C]/50 text-sm text-center py-6">
+                  Nenhuma temporada cadastrada ainda.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── MODAL: Pós-Aplicação ─────────────────────────────────────────── */}
       {showPostApplyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -1464,10 +1668,10 @@ export default function Module3DivisionPlanning() {
             </div>
             <div className="flex flex-col gap-2 w-full">
               <button
-                onClick={() => { setShowPostApplyModal(false); navigate("/cycle-validation"); }}
+                onClick={() => { setShowPostApplyModal(false); navigate("/sortiment-plan"); }}
                 className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
               >
-                Ir para Módulo 4 — Validação de Ciclo
+                Ir para Módulo 5 — Plano de Sortimento
                 <ArrowRight className="w-4 h-4" />
               </button>
               <button

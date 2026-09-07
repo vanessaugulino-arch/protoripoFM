@@ -615,10 +615,12 @@ export default function Planning() {
       // Se aprovado, aplica o cenário do módulo SOLICITANTE e sobrescreve o macro
       // oficial pela realidade granular (upward ripple). Ramifica pelo from_module:
       //   M2 (canal)   → aplica cenário de canal + recompute do canal
-      //   M3 (divisão) → aplica cenário de divisão + recompute divisão→mês→macro
-      // Correção do bug B2: antes aplicava SEMPRE cenário de canal, quebrando M3→M1.
+      //   M4 (divisão) → aplica cenário de divisão + recompute divisão→mês→macro
+      // Correção do bug B2: antes aplicava SEMPRE cenário de canal, quebrando
+      // Divisão→M1. Divisão é M4 (era M3) — renumerado pela nova ordem do fluxo
+      // (Canal → Sazonalidade → Divisão → Sortimento).
       if (decision === 'approved' && req.scenario_id && tenantId) {
-        if (req.from_module === 3) {
+        if (req.from_module === 4) {
           await applyDivisionScenarioById(tenantId, req.scenario_id)
           await recomputeMacroFromDivisions(tenantId, req.year)
         } else {

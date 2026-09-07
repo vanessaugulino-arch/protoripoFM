@@ -1681,13 +1681,13 @@ export default function ChannelPlanning() {
               </div>
             </div>
             <p className="text-[#28071C]/60 text-sm mb-6 leading-relaxed">
-              O plano por canal está registrado. O próximo passo é detalhar as metas por divisão de produto dentro de cada canal.
+              O plano por canal está registrado. O próximo passo é validar a sazonalidade — distribuir a receita mês a mês antes de detalhar por divisão.
             </p>
             <div className="flex flex-col gap-2.5">
               <button
-                onClick={() => { setShowPostApplyModal(false); navigate("/module3-division-planning"); }}
+                onClick={() => { setShowPostApplyModal(false); navigate("/cycle-validation"); }}
                 className="w-full flex items-center justify-center gap-2 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl font-semibold text-sm hover:opacity-90">
-                Ir para Módulo 3 — Planejamento por Divisão <ArrowRight className="w-4 h-4" />
+                Ir para Módulo 3 — Sazonalidade <ArrowRight className="w-4 h-4" />
               </button>
               <button
                 onClick={() => { setShowPostApplyModal(false); navigate("/dashboard"); }}
