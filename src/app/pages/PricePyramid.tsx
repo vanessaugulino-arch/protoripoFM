@@ -29,6 +29,7 @@ import {
   type TierRange,
 } from "../../services/supabase/pricePyramidService";
 import { fetchCategoriesForDivision } from "../../services/supabase/productHierarchyService";
+import { computeAndSaveConsolidated } from "../../services/supabase/consolidatedHierarchyService";
 
 // ─── Dados estáticos (ranges vêm de OperationSettings no futuro) ───────────
 
@@ -185,6 +186,23 @@ export default function PricePyramid() {
     [tenantId, seasonId, divisionId],
   );
 
+  // Ao sair da tela: garante que o autosave pendente (debounce de 800ms) já
+  // foi gravado antes de recalcular o consolidado — Fase 2 (divisão→categoria→
+  // subcategoria→linha × faixa de preço). Best-effort, não bloqueia a navegação.
+  const handleBack = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (tenantId && seasonId && divisionId) {
+        await savePyramidPlan(tenantId, seasonId, divisionId, categories);
+      }
+    }
+    if (tenantId && seasonId) {
+      computeAndSaveConsolidated(tenantId, seasonId).catch(() => {});
+    }
+    navigate("/module3-division-planning");
+  }, [tenantId, seasonId, divisionId, categories, navigate]);
+
   // ── Mutações ───────────────────────────────────────────────────────────────
   function updateTier(categoryId: string, tierId: PriceTierId, updates: Partial<TierPlan>) {
     setCategories((prev) => {
@@ -239,7 +257,7 @@ export default function PricePyramid() {
             Importe o catálogo com a categoria de cada produto preenchida para planejar as faixas de preço aqui.
           </p>
           <button
-            onClick={() => navigate("/module3-division-planning")}
+            onClick={handleBack}
             className="text-[#7598CF] font-semibold text-sm underline"
           >
             Voltar ao Módulo 3
@@ -258,7 +276,7 @@ export default function PricePyramid() {
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
         <div className="max-w-[1400px] mx-auto flex items-center gap-4">
           <button
-            onClick={() => navigate("/module3-division-planning")}
+            onClick={handleBack}
             className="text-[#F6F3AA] hover:opacity-80 transition-opacity"
           >
             <ArrowLeft className="w-6 h-6" />

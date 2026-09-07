@@ -120,6 +120,7 @@ import {
   applyDivisionScenario,
 } from "../../services/supabase/divisionScenarioService";
 import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { computeAndSaveConsolidated, exportConsolidatedCsv } from "../../services/supabase/consolidatedHierarchyService";
 import { useModule3 } from "../../hooks/useModule3";
 import {
   fetchHistoricalTierAvgs,
@@ -275,6 +276,7 @@ export default function Module3DivisionPlanning() {
   const [scenarioDescription, setScenarioDescription] = useState("");
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [isExportingConsolidated, setIsExportingConsolidated] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [applySuccess, setApplySuccess]                       = useState(false);
   const [showPostApplyModal, setShowPostApplyModal]           = useState(false);
@@ -651,6 +653,9 @@ export default function Module3DivisionPlanning() {
         } catch {
           // recompute não bloqueia a aplicação do cenário
         }
+        // Fase 2: recalcula o consolidado por hierarquia (divisão→categoria→
+        // subcategoria→linha × faixa de preço) — best-effort, não bloqueia.
+        computeAndSaveConsolidated(tenantId, selectedSeasonId).catch(() => {});
       }
     }
     setApplySuccess(true);
@@ -736,6 +741,21 @@ export default function Module3DivisionPlanning() {
       title:     `Comparação de Cenários — ${selectedTemporada?.nome ?? selectedSeasonId}`,
     });
     setIsExportingPDF(false);
+  };
+
+  const handleExportConsolidated = async () => {
+    if (!tenantId || !selectedSeasonId) return;
+    setIsExportingConsolidated(true);
+    try {
+      // Recalcula antes de exportar — garante que reflete o último cenário
+      // aplicado e o último plano de Pirâmide de Preço salvo, mesmo que o
+      // recálculo automático de alguma tela ainda não tenha rodado.
+      await computeAndSaveConsolidated(tenantId, selectedSeasonId);
+      await exportConsolidatedCsv(tenantId, selectedSeasonId);
+    } catch (err) {
+      alert(`Não foi possível exportar o consolidado: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+    }
+    setIsExportingConsolidated(false);
   };
 
   const handleLogout = () => {
@@ -1211,6 +1231,15 @@ export default function Module3DivisionPlanning() {
             >
               <FileDown className="w-4 h-4" />
               {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+            </button>
+            <button
+              onClick={handleExportConsolidated}
+              disabled={isExportingConsolidated}
+              title="Exporta o cruzamento divisão×categoria×subcategoria×linha×faixa de preço da temporada — inclui estimativas proporcionais ao histórico onde não há input direto"
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+            >
+              <FileDown className="w-4 h-4" />
+              {isExportingConsolidated ? "Gerando CSV…" : "Exportar consolidado"}
             </button>
           </div>
           <div className="flex items-center gap-3">
