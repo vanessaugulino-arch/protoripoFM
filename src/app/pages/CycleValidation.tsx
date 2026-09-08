@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
 import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
@@ -10,22 +10,20 @@ import {
 import {
   applyBiproportional,
 } from "../../services/supabase/divisionSeasonalityService";
-import {
-  listSeasonsDb,
-  listCanalConfigDb,
-  type CanalConfig,
-} from "../../services/supabase/seasonService";
-import { useNavigate } from "react-router";
+import { listSeasonsDb } from "../../services/supabase/seasonService";
+import { useNavigate, useLocation } from "react-router";
+import { getChannelSeasonality } from "../../services/supabase/historicalProfileService";
+import { expandSeasonMonths } from "../../engine/seasonMonths";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
-  X, HelpCircle, ArrowRight, SendHorizonal, CheckCircle, Loader2,
+  X, HelpCircle, ArrowRight, SendHorizonal, CheckCircle, Loader2, Info,
 } from "lucide-react";
 import {
   createApprovalRequest,
   hasPendingRequest,
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
-import { getReviewedYears } from "../../services/supabase/channelScenarioService";
+import { getReviewedYears, getAppliedChannelScenario } from "../../services/supabase/channelScenarioService";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { useTour } from "../hooks/useTour";
@@ -120,17 +118,15 @@ function matchChannelToCanal(channel: string): string {
   return ch;
 }
 
-function getSeasonDateRange(season: Temporada): { start: string; end: string } {
-  const si  = MONTHS_FULL.indexOf(season.mesInicio);
-  const ei  = MONTHS_FULL.indexOf(season.mesFim);
-  const ano = season.anoFiscal ?? new Date().getFullYear();
-  const crossYear = si > ei || season.tipo === "verao";
-  const startYear = crossYear ? ano - 1 : ano;
-  const endYear   = ano;
-  const startDate = `${startYear}-${String(si + 1).padStart(2,"0")}-01`;
-  const endDays   = new Date(endYear, ei + 1, 0).getDate();
-  const endDate   = `${endYear}-${String(ei + 1).padStart(2,"0")}-${endDays}`;
-  return { start: startDate, end: endDate };
+// Temporadas cujos meses tocam o calendário Jan–Dez do ano fiscal informado.
+// Uma temporada de Verão cruza dois anos civis (ex.: Verão 2026 = Ago/2026 a
+// Fev/2027) — ela aparece na visão de 2026 (com os meses Ago–Dez) E na de
+// 2027 (com os meses Jan–Fev), cada vez só com a fatia que cabe naquele ano.
+function seasonsForFiscalYear(seasons: Temporada[], year: number): Temporada[] {
+  return seasons.filter(s => {
+    if (s.anoFiscal == null) return false;
+    return expandSeasonMonths(s.mesInicio, s.mesFim, s.anoFiscal).some(m => m.year === year);
+  });
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────────
@@ -158,7 +154,6 @@ interface CanalCalcResult {
 
 interface Scenario {
   id: string; name: string; timestamp: string;
-  seasonId: string;
   plannedRevenue: Record<string, Record<string, number>>;
   coverageTarget: Record<string, number>;
   estoqueColeçãoPassada: number;
@@ -257,6 +252,11 @@ function computeCanalCalc(
 // ── Main Component ──────────────────────────────────────────────────────────────
 export default function CycleValidation() {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Ano que o Dashboard já tinha selecionado (Dashboard.tsx sempre navega com
+  // { state: { year } }) — usado pra pré-selecionar a temporada certa em vez
+  // de abrir pedindo pro usuário escolher de novo algo que o sistema já sabe.
+  const routeYear = (location.state as { year?: number } | null)?.year;
   const tour = useTour("cycle-validation");
 
   const [user, setUser]           = useState<CurrentUser | null>(null);
@@ -266,14 +266,19 @@ export default function CycleValidation() {
   const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
   const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
 
+  // Ano Fiscal — a tela passou a ser organizada por ano fiscal (Jan–Dez),
+  // não mais por temporada isolada. Uma temporada de Verão cruza dois anos
+  // civis, então o mesmo ano fiscal pode "ver" até 3 instâncias de temporada:
+  // a cauda da Verão do ano anterior (Jan/Fev), o Inverno deste ano, e o
+  // início da Verão deste ano (Ago–Dez) — daí as 3 cores na régua de meses.
+  const [selectedFiscalYear, setSelectedFiscalYear] = useState<number>(() => {
+    if (routeYear) return routeYear;
+    const planned = getPlannedYears();
+    return planned.length > 0 ? Math.max(...planned) : new Date().getFullYear();
+  });
+
   // Seasons
-  const [seasons, setSeasons]                     = useState<Temporada[]>([]);
-  const [selectedSeasonId, setSelectedSeasonId]   = useState("");
-  // Configuração real vinda do banco (canal_temporada_config) — o fallback
-  // (períodos unificados por canal do tenant) é derivado, não guardado aqui,
-  // pra nunca ficar preso a uma corrida entre este fetch, as temporadas e os
-  // canais do tenant (3 efeitos assíncronos independentes).
-  const [dbCanalConfigs, setDbCanalConfigs]         = useState<CanalConfig[]>([]);
+  const [seasons, setSeasons] = useState<Temporada[]>([]);
   const [tenantCanalIds, setTenantCanalIds]         = useState<string[]>([]);
   const [isLoadingData, setIsLoadingData]           = useState(false);
 
@@ -281,6 +286,16 @@ export default function CycleValidation() {
   const [avgPmv, setAvgPmv]   = useState<Record<string, number>>({});
   const [avgCost, setAvgCost] = useState<number>(30);
   const [prevYearRevenue, setPrevYearRevenue] = useState<Record<string, Record<string, number>>>({});
+
+  // Sazonalidade histórica por canal (% da receita anual em cada mês) + meta
+  // de receita por canal do M2 aplicado do ano — usados juntos pra sugerir a
+  // curva mensal inicial do ano fiscal em vez de abrir tudo zerado.
+  const [channelSeasonality, setChannelSeasonality] = useState<Record<string, Record<string, number>>>({});
+  const [channelYearTarget,  setChannelYearTarget]  = useState<Record<string, number>>({});
+  // Guarda quais (anoFiscal::canalId) já tiveram a curva sugerida aplicada,
+  // pra nunca sobrescrever um valor que o usuário (ou um cenário salvo/
+  // aplicado) já colocou ali, e nunca reaplicar ao trocar de aba/re-render.
+  const seededChannelsRef = useRef<Set<string>>(new Set());
 
   // Planning inputs
   const [plannedRevenue, setPlannedRevenue]                   = useState<Record<string, Record<string, number>>>({});
@@ -340,12 +355,11 @@ export default function CycleValidation() {
     getReviewedYears(tid).then(setM2ReviewedYears).catch(() => {});
     getAvgPurchaseCost(tid).then(setAvgPurchaseCost).catch(() => {});
 
-    hasPendingRequest(tid, 4, new Date().getFullYear())
-      .then(has => setAlreadyPending(has)).catch(() => {});
-
     listSupplyFornecedores(tid).then(setSupplyFornecedores).catch(() => {});
 
     listSeasonsDb(tid).then(setSeasons).catch(() => {});
+
+    getChannelSeasonality(tid).then(setChannelSeasonality).catch(() => {});
 
     // Tenant channels from onboarding_profiles
     db.from("onboarding_profiles")
@@ -385,10 +399,18 @@ export default function CycleValidation() {
         if (Object.keys(pmvResult).length) setAvgPmv(pmvResult);
       }).catch(() => {});
 
-    // Custo médio — prioridade: (1) Módulo 1 planejado, (2) média do catálogo importado
-    const year = new Date().getFullYear();
-    const plannedYears = getPlannedYears();
-    const cycleYear = plannedYears.length > 0 ? Math.max(...plannedYears) : year;
+  }, [navigate]);
+
+  // ── Carrega M1/macro, cenários e cenário aplicado do ANO FISCAL selecionado ──
+  // BUG real corrigido aqui: antes disto viver num efeito próprio, o ano usado
+  // pra buscar M1/macro e cenário aplicado era SEMPRE o ano mais recente
+  // planejado, nunca o ano que o usuário estava efetivamente vendo. Agora
+  // segue diretamente selectedFiscalYear, a fonte única de verdade da tela.
+  useEffect(() => {
+    if (!tenantId) return;
+    const db = supabase as any;
+    const cycleYear = selectedFiscalYear;
+
     const m1Cycle = getPlanCycle(cycleYear);
     const m1Values = (m1Cycle?.versions?.[0]?.values ?? {}) as Record<string, number | null>;
     const m1CustoMedio = m1Values.custoMedio;
@@ -401,7 +423,7 @@ export default function CycleValidation() {
       // Fallback: média simples do catálogo importado
       db.from("products")
         .select("price_cost")
-        .eq("tenant_id", tid)
+        .eq("tenant_id", tenantId)
         .not("price_cost", "is", null)
         .gt("price_cost", 0)
         .limit(1000)
@@ -424,25 +446,28 @@ export default function CycleValidation() {
     }
 
     // Macro meta do M1 → alimenta macroMeta state (receita, margem, orçamento)
-    if (m1Values) {
-      setMacroMeta({
-        metaReceita: (m1Values.receitaBruta ?? 0) as number,
-        margemMeta:  (m1Values.margemBruta  ?? 45) as number,
-        orcamento:   (m1Values.orcamento    ?? 0)  as number,
-      });
-    }
+    setMacroMeta({
+      metaReceita: (m1Values.receitaBruta ?? 0) as number,
+      margemMeta:  (m1Values.margemBruta  ?? 45) as number,
+      orcamento:   (m1Values.orcamento    ?? 0)  as number,
+    });
 
-    // Scenarios
-    getCycle(tid, cycleYear).then(cycle => {
+    // Cenários do ano — agora UM plano por ano fiscal (não mais por
+    // temporada): cada linha de planning_scenarios já é o ano inteiro
+    // (Jan–Dez), então não precisa mais filtrar por seasonId.
+    setScenarios([]);
+    setAppliedScenarioId(null);
+    setPlannedRevenue({});
+    setCoverageTarget({});
+    getCycle(tenantId, cycleYear).then(cycle => {
       if (!cycle) return;
-      return dbListScenarios(tid, cycleYear).then(rows => {
+      return dbListScenarios(tenantId, cycleYear).then(rows => {
         if (!rows.length) return;
         const mapped: Scenario[] = rows.map(r => {
           const v = r.values as any;
           return {
             id: r.id, name: r.name,
             timestamp: new Date(r.created_at).toLocaleString("pt-BR"),
-            seasonId: v?.seasonId ?? "",
             plannedRevenue: v?.plannedRevenue ?? {},
             coverageTarget: v?.coverageTarget ?? {},
             estoqueColeçãoPassada: v?.estoqueColeçãoPassada ?? 500,
@@ -458,102 +483,142 @@ export default function CycleValidation() {
           if (v?.plannedRevenue) setPlannedRevenue(v.plannedRevenue);
           if (v?.coverageTarget) setCoverageTarget(v.coverageTarget);
           if (v?.estoqueColeçãoPassada) setEstoqueColeçãoPassada(v.estoqueColeçãoPassada);
-          if (v?.seasonId) setSelectedSeasonId(v.seasonId);
         }
       });
     }).catch(() => {});
-  }, [navigate]);
+  }, [tenantId, selectedFiscalYear]);
 
-  // ── Load canal configs + prev year when season changes ──────────────────────
+  // ── Temporadas relevantes ao ano fiscal selecionado (view Jan–Dez) ─────────
+  const relevantSeasons = useMemo(
+    () => seasonsForFiscalYear(seasons, selectedFiscalYear),
+    [seasons, selectedFiscalYear],
+  );
+
+  // Anos disponíveis no seletor — todo ano com Planejamento Estratégico (M1)
+  // salvo, mais qualquer ano fiscal que já tenha temporada cadastrada (pode
+  // ter temporada sem M1 ainda, ex.: recém auto-gerada por um ano futuro).
+  const availableFiscalYears = useMemo(() => {
+    const planned = getPlannedYears();
+    const fromSeasons = seasons.map(s => s.anoFiscal).filter((y): y is number => y != null);
+    const years = new Set([...planned, ...fromSeasons, selectedFiscalYear]);
+    return [...years].sort((a, b) => a - b);
+  }, [seasons, selectedFiscalYear]);
+
+  // ── Banda de cor por mês: a QUE temporada cada mês do calendário pertence ──
+  // Mês cuja temporada é "deste" ano fiscal (anoFiscal === selectedFiscalYear)
+  // usa a cor do tipo (Inverno=azul, Verão=amarelo); mês cuja temporada é do
+  // ano fiscal ANTERIOR (cauda de Verão que atravessou o ano) fica cinza —
+  // é só contexto/continuidade da curva, mas os valores são editáveis (ver
+  // activeCanals) e gravam de volta no plano do ano fiscal a que pertencem.
+  const monthSeasonBand = useMemo(() => {
+    return MONTHS_FULL.map((monthName, idx) => {
+      const monthNum = idx + 1;
+      const season = relevantSeasons.find(s =>
+        expandSeasonMonths(s.mesInicio, s.mesFim, s.anoFiscal!)
+          .some(m => m.month === monthNum && m.year === selectedFiscalYear),
+      );
+      if (!season) return { month: monthName, color: "#28071C1A", seasonName: null as string | null, isCurrentCycle: false };
+      const isCurrentCycle = season.anoFiscal === selectedFiscalYear;
+      const color = !isCurrentCycle
+        ? "#9CA3AF"
+        : season.tipo === "verao"   ? "#F0C040"
+        : season.tipo === "inverno" ? "#7598CF"
+        : "#9B8CD8";
+      return { month: monthName, color, seasonName: season.nome, isCurrentCycle };
+    });
+  }, [relevantSeasons, selectedFiscalYear]);
+
+  // ── Carrega receita do ano anterior (referência de comparação) ────────────
   useEffect(() => {
-    if (!tenantId || !selectedSeasonId) return;
+    if (!tenantId) return;
     setIsLoadingData(true);
 
     const db = supabase as any;
-    const season = seasons.find(s => s.id === selectedSeasonId);
 
-    listCanalConfigDb(tenantId, selectedSeasonId)
-      .then(setDbCanalConfigs)
-      .catch(() => {});
+    // Receita do ano civil anterior (Jan–Dez completo) — referência de
+    // comparação. Antes calculada a partir da janela exata da temporada
+    // (getSeasonDateRange); como a tela agora é o ano fiscal inteiro
+    // (calendário Jan–Dez), a comparação é simplesmente o mesmo calendário
+    // um ano antes — sem depender de nenhuma temporada específica existir.
+    db.from("sales_history")
+      .select("channel, sale_date, revenue_net")
+      .eq("tenant_id", tenantId)
+      .gte("sale_date", `${selectedFiscalYear - 1}-01-01`)
+      .lte("sale_date", `${selectedFiscalYear - 1}-12-31`)
+      .limit(100000)
+      .then(({ data: rows }: any) => {
+        const map: Record<string, Record<string, number>> = {};
+        for (const r of rows ?? []) {
+          const cid   = matchChannelToCanal(r.channel);
+          const month = MONTHS_FULL[new Date(r.sale_date + "T00:00:00").getMonth()];
+          if (!map[cid]) map[cid] = {};
+          map[cid][month] = (map[cid][month] || 0) + (r.revenue_net || 0);
+        }
+        setPrevYearRevenue(map);
+      }).catch(() => {})
+      .finally(() => setIsLoadingData(false));
+  }, [tenantId, relevantSeasons, selectedFiscalYear]);
 
-    // Prev year revenue
-    if (season) {
-      const { start, end } = getSeasonDateRange(season);
-      const prevStart = new Date(start); prevStart.setFullYear(prevStart.getFullYear() - 1);
-      const prevEnd   = new Date(end);   prevEnd.setFullYear(prevEnd.getFullYear() - 1);
+  // ── Meta de receita por canal do M2 aplicado do ano fiscal selecionado ─────
+  // Base pra sugerir a curva mensal inicial (junto de channelSeasonality).
+  useEffect(() => {
+    if (!tenantId) return;
+    getAppliedChannelScenario(tenantId, selectedFiscalYear).then(scenario => {
+      if (!scenario) { setChannelYearTarget({}); return; }
+      const targets: Record<string, number> = {};
+      for (const [cid, data] of Object.entries(scenario.channel_data ?? {})) {
+        targets[cid] = (data as Record<string, number>)?.receita ?? 0;
+      }
+      setChannelYearTarget(targets);
+    }).catch(() => setChannelYearTarget({}));
+  }, [tenantId, selectedFiscalYear]);
 
-      db.from("sales_history")
-        .select("channel, sale_date, revenue_net")
-        .eq("tenant_id", tenantId)
-        .gte("sale_date", prevStart.toISOString().split("T")[0])
-        .lte("sale_date", prevEnd.toISOString().split("T")[0])
-        .limit(100000)
-        .then(({ data: rows }: any) => {
-          const map: Record<string, Record<string, number>> = {};
-          for (const r of rows ?? []) {
-            const cid   = matchChannelToCanal(r.channel);
-            const month = MONTHS_FULL[new Date(r.sale_date + "T00:00:00").getMonth()];
-            if (!map[cid]) map[cid] = {};
-            map[cid][month] = (map[cid][month] || 0) + (r.revenue_net || 0);
-          }
-          setPrevYearRevenue(map);
-        }).catch(() => {})
-        .finally(() => setIsLoadingData(false));
-    } else {
-      setIsLoadingData(false);
-    }
-  }, [tenantId, selectedSeasonId, seasons, tenantCanalIds]);
+  // ── Pedido de ajuste já pendente para o ano fiscal selecionado ─────────────
+  // BUG real corrigido aqui: checava sempre hasPendingRequest(tid, 4, ...) —
+  // módulo 4 (Divisão), não o 3 (esta própria tela) — e sempre com o ano
+  // civil corrente, nunca o ano fiscal em edição. Resultado: o botão
+  // "Já pendente" nunca refletia a realidade (podia deixar reenviar um
+  // pedido duplicado, ou nunca destravar um pedido de outro ano).
+  useEffect(() => {
+    if (!tenantId) { setAlreadyPending(false); return; }
+    hasPendingRequest(tenantId, 3, selectedFiscalYear)
+      .then(setAlreadyPending).catch(() => setAlreadyPending(false));
+  }, [tenantId, selectedFiscalYear]);
 
-  // ── Derived: active canals with months ─────────────────────────────────────
-  const selectedSeason = useMemo(
-    () => seasons.find(s => s.id === selectedSeasonId) ?? null,
-    [seasons, selectedSeasonId],
-  );
-
-  // Config real do banco quando existe; senão, período unificado da temporada
-  // pra cada canal do tenant. Derivado a cada render — nunca fica travado numa
-  // versão vazia por causa da ordem em que os 3 fetches (config, temporadas,
-  // canais do tenant) terminam.
-  const canalConfigs = useMemo((): CanalConfig[] => {
-    if (dbCanalConfigs.length > 0) return dbCanalConfigs;
-    if (!selectedSeason) return [];
-    return tenantCanalIds.map(cid => ({
-      id: `fallback-${cid}`, canal_id: cid,
-      mes_inicio: selectedSeason.mesInicio, mes_fim: selectedSeason.mesFim,
-    }));
-  }, [dbCanalConfigs, selectedSeason, tenantCanalIds]);
-
+  // ── Derived: canais ativos — a tela agora é o ano fiscal inteiro (Jan–Dez),
+  // então todo canal do tenant aparece com os 12 meses do calendário, sempre
+  // — nunca recorta pelos meses de uma temporada específica (mesmo com um
+  // "buraco" de cadastro, ex.: sem Inverno deste ano, os meses de Mar–Jul
+  // continuam aparecendo pra edição, só sem cor de temporada na régua acima).
   const activeCanals = useMemo(() => {
-    const activeCids = new Set(tenantCanalIds);
-    return canalConfigs
-      .filter(cc => activeCids.has(cc.canal_id))
-      .map(cc => {
-        const def    = TODOS_CANAIS.find(c => c.id === cc.canal_id);
-        const mesFim = cc.mes_fim ?? selectedSeason?.mesFim ?? "";
-        const months = generateMonthRange(cc.mes_inicio, mesFim);
-        return {
-          id: cc.canal_id,
-          name: def?.name ?? cc.canal_id,
-          color: def?.color ?? "#7598CF",
-          prevColor: def?.prevColor ?? "#7598CF55",
-          months,
-        };
-      });
-  }, [canalConfigs, tenantCanalIds, selectedSeason]);
+    return tenantCanalIds.map(cid => {
+      const def = TODOS_CANAIS.find(c => c.id === cid);
+      return {
+        id: cid,
+        name: def?.name ?? cid,
+        color: def?.color ?? "#7598CF",
+        prevColor: def?.prevColor ?? "#7598CF55",
+        months: MONTHS_FULL,
+      };
+    });
+  }, [tenantCanalIds]);
 
+  // Sempre Jan→Dez — a tela agora é o calendário do ano fiscal inteiro, não
+  // mais ancorada no primeiro mês de uma temporada específica.
   const consolidatedMonths = useMemo(() => {
     if (!activeCanals.length) return [];
     const allMonths = new Set(activeCanals.flatMap(c => c.months));
-    const anchor    = activeCanals[0].months[0] ?? "Janeiro";
-    const startIdx  = MONTHS_FULL.indexOf(anchor);
-    const ordered   = [
-      ...MONTHS_FULL.slice(startIdx),
-      ...MONTHS_FULL.slice(0, startIdx),
-    ];
-    return ordered.filter(m => allMonths.has(m));
+    return MONTHS_FULL.filter(m => allMonths.has(m));
   }, [activeCanals]);
 
   // ── Initialize planned revenue when canal config loads ─────────────────────
+  // Nunca inicializa com zero quando há como projetar de verdade: distribui a
+  // meta ANUAL de receita do canal (M2 aplicado do ano) pelos meses do ano
+  // fiscal usando a sazonalidade histórica real do canal — o usuário AJUSTA
+  // essa curva sugerida, não digita o ano inteiro do zero. Só roda a
+  // sugestão uma vez por canal/ano fiscal (seededChannelsRef) e nunca quando
+  // já existe um cenário aplicado pra este ano (dado real já restaurado
+  // ganha sempre de uma projeção).
   useEffect(() => {
     if (!activeCanals.length) return;
     setPlannedRevenue(prev => {
@@ -562,6 +627,20 @@ export default function CycleValidation() {
         if (!next[c.id]) next[c.id] = {};
         for (const m of c.months) {
           if (next[c.id][m] === undefined) next[c.id][m] = 0;
+        }
+
+        const seedKey = `${selectedFiscalYear}:${c.id}`;
+        const target = channelYearTarget[c.id] ?? 0;
+        if (!appliedScenarioId && target > 0 && !seededChannelsRef.current.has(seedKey)) {
+          // Normaliza os pesos históricos dentro dos meses deste canal no
+          // ano fiscal (pode chegar a 12) — sem sinal histórico nenhum, cai
+          // pra divisão igual entre os meses. Nunca fica em zero.
+          const profile  = channelSeasonality[c.id] ?? {};
+          const weights  = c.months.map(m => profile[m] ?? 0);
+          const sumW     = weights.reduce((s, w) => s + w, 0);
+          const norm     = sumW > 0 ? weights.map(w => w / sumW) : c.months.map(() => 1 / c.months.length);
+          c.months.forEach((m, i) => { next[c.id][m] = Math.round(target * norm[i]); });
+          seededChannelsRef.current.add(seedKey);
         }
       }
       return next;
@@ -573,7 +652,7 @@ export default function CycleValidation() {
       }
       return next;
     });
-  }, [activeCanals, consolidatedMonths]);
+  }, [activeCanals, consolidatedMonths, channelSeasonality, channelYearTarget, appliedScenarioId, selectedFiscalYear]);
 
   // ── Bottom-up engine ────────────────────────────────────────────────────────
   const canalCalcResults = useMemo((): CanalCalcResult[] => {
@@ -656,7 +735,6 @@ export default function CycleValidation() {
     const s: Scenario = {
       id: localId, name: savingName.trim(),
       timestamp: new Date().toLocaleString("pt-BR"),
-      seasonId: selectedSeasonId,
       plannedRevenue: JSON.parse(JSON.stringify(plannedRevenue)),
       coverageTarget: { ...coverageTarget },
       estoqueColeçãoPassada,
@@ -667,14 +745,9 @@ export default function CycleValidation() {
     setSavingName(""); setShowSaveForm(false);
 
     if (tenantId) {
-      // Usa o ano fiscal da PRÓPRIA temporada, não o ano civil corrente — uma
-      // temporada de Verão (ago-fev) é salva sob o ano em que ela COMEÇA
-      // (fiscal_year da temporada), mesmo que o usuário esteja planejando em
-      // outro ano civil. Bug anterior: usava new Date().getFullYear() sempre,
-      // então o cenário ia parar no ciclo errado (ou não salvava, se esse ano
-      // civil nunca teve M1 planejado).
-      const year = seasons.find(se => se.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
-      getCycle(tenantId, year).then(cycle => {
+      // Um plano por ano fiscal agora — salva sob selectedFiscalYear direto,
+      // não mais sob o ano fiscal de uma temporada específica.
+      getCycle(tenantId, selectedFiscalYear).then(cycle => {
         if (!cycle) return;
         return (supabase as any)
           .from("planning_scenarios")
@@ -682,7 +755,6 @@ export default function CycleValidation() {
             tenant_id: tenantId, cycle_id: cycle.id,
             name: s.name, version: scenarios.length + 1,
             values: {
-              seasonId: s.seasonId,
               plannedRevenue: s.plannedRevenue,
               coverageTarget: s.coverageTarget,
               estoqueColeçãoPassada: s.estoqueColeçãoPassada,
@@ -707,32 +779,35 @@ export default function CycleValidation() {
     setPlannedRevenue(JSON.parse(JSON.stringify(s.plannedRevenue)));
     setCoverageTarget({ ...s.coverageTarget });
     setEstoqueColeçãoPassada(s.estoqueColeçãoPassada);
-    if (s.seasonId) setSelectedSeasonId(s.seasonId);
     setAppliedScenarioId(id);
 
     // Marca is_applied=true no banco — antes isso só existia em memória
     // (appliedScenarioId), então não havia como o Dashboard/M4-Divisão saber,
-    // fora desta tela, se a Sazonalidade de uma temporada já foi aplicada
-    // (gate novo da Fase 3). Só grava se o id já é o real (UUID do Supabase) —
-    // ids locais (s-<timestamp>) ainda não têm linha correspondente no banco.
-    if (tenantId && s.seasonId && !id.startsWith("s-")) {
+    // fora desta tela, se a Sazonalidade de um ano já foi aplicada (gate da
+    // Fase 3). Só grava se o id já é o real (UUID do Supabase) — ids locais
+    // (s-<timestamp>) ainda não têm linha correspondente no banco. Os
+    // "irmãos" a desaplicar agora são simplesmente todo cenário do MESMO
+    // cycle_id (ano) — não precisa mais filtrar por seasonId, já que um
+    // cenário passou a cobrir o ano inteiro.
+    if (tenantId && !id.startsWith("s-")) {
       const db = supabase as any;
-      db.from("planning_scenarios")
-        .select("id, values")
-        .eq("tenant_id", tenantId)
-        .eq("is_applied", true)
-        .then(({ data }: any) => {
-          const siblings = (data ?? []).filter(
-            (r: any) => r.values?.seasonId === s.seasonId && r.id !== id,
-          );
-          return Promise.all(
-            siblings.map((r: any) =>
-              db.from("planning_scenarios").update({ is_applied: false }).eq("id", r.id),
-            ),
-          );
-        })
-        .then(() => db.from("planning_scenarios").update({ is_applied: true }).eq("id", id))
-        .catch(() => {});
+      getCycle(tenantId, selectedFiscalYear).then(cycle => {
+        if (!cycle) return;
+        return db.from("planning_scenarios")
+          .select("id")
+          .eq("tenant_id", tenantId)
+          .eq("cycle_id", cycle.id)
+          .eq("is_applied", true)
+          .then(({ data }: any) => {
+            const siblings = (data ?? []).filter((r: any) => r.id !== id);
+            return Promise.all(
+              siblings.map((r: any) =>
+                db.from("planning_scenarios").update({ is_applied: false }).eq("id", r.id),
+              ),
+            );
+          })
+          .then(() => db.from("planning_scenarios").update({ is_applied: true }).eq("id", id));
+      }).catch(() => {});
     }
   };
 
@@ -750,7 +825,7 @@ export default function CycleValidation() {
 
   const handleApplyMetas = async () => {
     if (appliedScenarioId) return;
-    const year = seasons.find(s => s.id === selectedSeasonId)?.anoFiscal ?? new Date().getFullYear();
+    const year = selectedFiscalYear;
     if (!m2ReviewedYears.includes(year)) {
       alert(`As Metas por Canal (M2) de ${year} ainda não foram aplicadas. Complete o M2 antes de aplicar o Módulo 3.`);
       return;
@@ -783,7 +858,9 @@ export default function CycleValidation() {
     try {
       const appliedSc = scenarios.find(s => s.id === appliedScenarioId) ?? scenarios[scenarios.length - 1] ?? null;
       await createApprovalRequest({
-        tenantId, year: new Date().getFullYear(),
+        // BUG real corrigido aqui: usava sempre o ano civil corrente, nunca
+        // o ano fiscal que o usuário estava de fato planejando.
+        tenantId, year: selectedFiscalYear,
         // Sazonalidade agora é M3 (era M4) — pede aprovação ao M2 (Canal), mesma
         // relação de sempre, só renumerada pela nova ordem do fluxo.
         fromModule: 3, toModule: 2,
@@ -841,49 +918,97 @@ export default function CycleValidation() {
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-4 shadow-sm">
           <div className="flex items-center gap-6 flex-wrap">
             <div className="max-w-xs flex-1">
-              <label className="block text-[#28071C]/60 text-xs uppercase tracking-widest mb-2">Temporada Alvo</label>
+              <label className="block text-[#28071C]/60 text-xs uppercase tracking-widest mb-2">Ano Fiscal</label>
               <select
-                value={selectedSeasonId}
-                onChange={e => setSelectedSeasonId(e.target.value)}
+                value={selectedFiscalYear}
+                onChange={e => setSelectedFiscalYear(Number(e.target.value))}
                 className="w-full bg-white rounded-xl px-4 py-2.5 text-[#28071C] text-sm border-2 border-[#7598CF] focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 cursor-pointer"
               >
-                <option value="">Selecione uma temporada</option>
-                {seasons.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.nome} {s.mesInicio && s.mesFim ? `(${SHORT_MONTH[s.mesInicio]} → ${SHORT_MONTH[s.mesFim]})` : ""}
-                  </option>
+                {availableFiscalYears.map(y => (
+                  <option key={y} value={y}>{y}</option>
                 ))}
               </select>
             </div>
-            {selectedSeason && (
-              <div className="flex items-center gap-4 text-xs text-[#28071C]/60">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#7598CF]" />
-                  {activeCanals.length} {activeCanals.length === 1 ? "canal" : "canais"}
+            <div className="flex items-center gap-4 text-xs text-[#28071C]/60">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#7598CF]" />
+                {activeCanals.length} {activeCanals.length === 1 ? "canal" : "canais"}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#9B8CD8]" />
+                {consolidatedMonths.length} meses no ciclo consolidado
+              </span>
+              {isLoadingData && (
+                <span className="flex items-center gap-1.5 text-[#7598CF]">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Carregando dados…
                 </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#9B8CD8]" />
-                  {consolidatedMonths.length} meses no ciclo consolidado
-                </span>
-                {isLoadingData && (
-                  <span className="flex items-center gap-1.5 text-[#7598CF]">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Carregando dados…
+              )}
+            </div>
+          </div>
+
+          {/* Avisa quais temporadas já existem pra este ano fiscal — o usuário
+              não precisa adivinhar nem recadastrar nada que o sistema já sabe. */}
+          {relevantSeasons.length > 0 && (
+            <div className="mt-4 flex items-start gap-2 bg-[#7598CF]/8 border border-[#7598CF]/20 rounded-xl px-4 py-2.5 text-xs text-[#28071C]/70">
+              <Info className="w-3.5 h-3.5 text-[#7598CF] flex-shrink-0 mt-0.5" />
+              <span>
+                Temporadas já cadastradas para o ano fiscal {selectedFiscalYear}:{" "}
+                {relevantSeasons.map((s, i) => (
+                  <span key={s.id}>
+                    {i > 0 && " · "}
+                    <strong className={s.anoFiscal === selectedFiscalYear ? "text-[#28071C]" : "text-[#28071C]/50"}>
+                      {s.nome}
+                    </strong>{" "}
+                    ({SHORT_MONTH[s.mesInicio]} → {SHORT_MONTH[s.mesFim]}{s.anoFiscal !== selectedFiscalYear ? ", ano anterior" : ""})
                   </span>
-                )}
-              </div>
-            )}
+                ))}
+              </span>
+            </div>
+          )}
+
+          {/* Régua do ano fiscal completo (Jan–Dez) com cor por temporada:
+              cinza = cauda de uma temporada do ciclo fiscal anterior (mostrada
+              aqui só pra dar continuidade à curva); azul = Inverno deste ano
+              fiscal; amarelo = Verão deste ano fiscal. */}
+          <div className="mt-4 pt-4 border-t border-[#28071C]/8">
+            <label className="block text-[#28071C]/50 text-[10px] uppercase tracking-widest mb-2">
+              Ano fiscal {selectedFiscalYear} — meses por temporada
+            </label>
+            <div className="flex gap-1">
+              {monthSeasonBand.map(cell => (
+                <div
+                  key={cell.month}
+                  title={cell.seasonName ?? "Sem temporada cadastrada"}
+                  className="flex-1 text-center text-[10px] font-semibold py-1.5 rounded-md"
+                  style={{ backgroundColor: `${cell.color}30`, color: cell.color }}
+                >
+                  {SHORT_MONTH[cell.month]}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-4 mt-2 flex-wrap">
+              <span className="flex items-center gap-1.5 text-[10px] text-[#28071C]/50">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#7598CF" }} />Inverno deste ano
+              </span>
+              <span className="flex items-center gap-1.5 text-[10px] text-[#28071C]/50">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#F0C040" }} />Verão deste ano
+              </span>
+              <span className="flex items-center gap-1.5 text-[10px] text-[#28071C]/50">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#9CA3AF" }} />Cauda do ciclo fiscal anterior
+              </span>
+            </div>
           </div>
         </div>
 
-        {selectedSeasonId && activeCanals.length > 0 && (
+        {activeCanals.length > 0 && (
           <>
             {/* ── Sticky Indicators ── */}
             <div id="tour-cv-indicators" className="sticky top-16 z-40">
               <div className="bg-[#28071C] rounded-2xl px-6 py-4 shadow-xl">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-white/80 text-xs uppercase tracking-widest">
-                    Indicadores do Ciclo · {selectedSeason?.nome}
+                    Indicadores do Ciclo · Ano Fiscal {selectedFiscalYear}
                   </h3>
                   <Badge className="text-xs bg-[#7598CF]/30 text-[#7598CF] border-[#7598CF]/40">
                     {macroMeta.metaReceita > 0 ? "Plano Macro" : "Sem plano macro"}
@@ -1448,12 +1573,12 @@ export default function CycleValidation() {
           </>
         )}
 
-        {selectedSeasonId && activeCanals.length === 0 && !isLoadingData && (
+        {activeCanals.length === 0 && !isLoadingData && (
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-12 text-center shadow-sm">
             <div className="text-4xl mb-3">⚙️</div>
-            <p className="text-sm text-[#28071C]/60 mb-2 font-medium">Nenhum canal configurado para esta temporada.</p>
+            <p className="text-sm text-[#28071C]/60 mb-2 font-medium">Nenhum canal de venda configurado.</p>
             <p className="text-xs text-[#28071C]/40">
-              Acesse <strong>Configurações de Operação → Temporadas</strong> e configure os canais de venda para esta temporada.
+              Acesse <strong>Configurações de Operação → Temporadas</strong> e configure os canais de venda.
             </p>
           </div>
         )}

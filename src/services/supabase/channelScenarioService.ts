@@ -113,6 +113,27 @@ export async function applyChannelScenario(
     .eq("id", scenarioId);
 }
 
+// ─── Cenário aplicado de um ano ───────────────────────────────────────────────
+// Usado pela Sazonalidade (M3) para pegar a meta de receita por canal do M2 e
+// sugerir a curva mensal inicial a partir dela, em vez de abrir zerada.
+
+export async function getAppliedChannelScenario(
+  tenantId: string,
+  year: number,
+): Promise<ChannelScenario | undefined> {
+  const { data, error } = await supabase
+    .from("channel_scenarios")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("year", year)
+    .eq("is_applied", true)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as ChannelScenario | null) ?? undefined;
+}
+
 // ─── Marcar anos revisados ────────────────────────────────────────────────────
 // Canal: "reviewed years" é derivado de cenários aplicados no ano
 

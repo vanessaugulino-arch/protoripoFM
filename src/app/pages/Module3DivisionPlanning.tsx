@@ -24,7 +24,9 @@ import { supabase } from "../../lib/supabase";
 import {
   seasonMonthCount as countSeasonMonths,
   seasonFiscalLabel,
+  expandSeasonMonths,
 } from "../../engine/seasonMonths";
+import { MONTHS as MONTHS_FULL } from "../../services/temporadaService";
 import {
   ArrowLeft,
   LogOut,
@@ -406,25 +408,46 @@ export default function Module3DivisionPlanning() {
   const [divisionHistProfiles, setDivisionHistProfiles] = useState<DivisionMonthProfile[]>([]);
   useEffect(() => {
     if (!tenantId || !selectedSeasonId) { setSazonalidadeMonthlyTotal(null); return; }
+    const season = temporadas.find((t) => String(t.id) === selectedSeasonId);
+    if (!season?.anoFiscal) { setSazonalidadeMonthlyTotal(null); return; }
     const db = supabase as any;
-    db.from("planning_scenarios")
-      .select("values")
-      .eq("tenant_id", tenantId)
-      .eq("is_applied", true)
-      .then(({ data }: any) => {
-        const applied = (data ?? []).find((r: any) => r.values?.seasonId === selectedSeasonId);
-        const plannedRevenue = applied?.values?.plannedRevenue as Record<string, Record<string, number>> | undefined;
-        if (!plannedRevenue) { setSazonalidadeMonthlyTotal(null); return; }
-        const monthlyTotal: Record<string, number> = {};
+
+    // Fase 6 (CycleValidation.tsx passou a ser por ano fiscal completo, não
+    // mais por temporada): não existe mais planning_scenarios.values.seasonId
+    // pra filtrar direto. Uma temporada de Verão toca 2 anos fiscais — busca
+    // o plano aplicado de CADA ano que ela toca (cycle_id, não seasonId) e
+    // pega, de cada um, só os meses que realmente pertencem a esta temporada.
+    const touchedYears = seasonFiscalYearsTouched(season.mesInicio, season.mesFim, season.anoFiscal);
+    const seasonMonthNames = new Set(
+      expandSeasonMonths(season.mesInicio, season.mesFim, season.anoFiscal).map((m) => MONTHS_FULL[m.month - 1]),
+    );
+
+    Promise.all(
+      touchedYears.map((year) =>
+        db.from("annual_plan_cycles").select("id").eq("tenant_id", tenantId).eq("year", year).maybeSingle()
+          .then(({ data: cycle }: any) => {
+            if (!cycle) return null;
+            return db.from("planning_scenarios").select("values")
+              .eq("tenant_id", tenantId).eq("cycle_id", cycle.id).eq("is_applied", true)
+              .maybeSingle()
+              .then(({ data }: any) => (data?.values?.plannedRevenue as Record<string, Record<string, number>> | undefined) ?? null);
+          }),
+      ),
+    ).then((results) => {
+      const monthlyTotal: Record<string, number> = {};
+      let hasAny = false;
+      for (const plannedRevenue of results) {
+        if (!plannedRevenue) continue;
+        hasAny = true;
         for (const canalMonths of Object.values(plannedRevenue)) {
           for (const [month, rev] of Object.entries(canalMonths ?? {})) {
-            monthlyTotal[month] = (monthlyTotal[month] ?? 0) + (rev ?? 0);
+            if (seasonMonthNames.has(month)) monthlyTotal[month] = (monthlyTotal[month] ?? 0) + (rev ?? 0);
           }
         }
-        setSazonalidadeMonthlyTotal(monthlyTotal);
-      })
-      .catch(() => setSazonalidadeMonthlyTotal(null));
-  }, [tenantId, selectedSeasonId]);
+      }
+      setSazonalidadeMonthlyTotal(hasAny ? monthlyTotal : null);
+    }).catch(() => setSazonalidadeMonthlyTotal(null));
+  }, [tenantId, selectedSeasonId, temporadas]);
 
   useEffect(() => {
     if (!tenantId) return;

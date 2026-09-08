@@ -93,16 +93,21 @@ export interface OrcamentoPorPeriodo {
 export async function listSupplyFornecedores(
   tenantId: string
 ): Promise<SupplyFornecedor[]> {
+  // "ORDER BY" dentro do select embed nunca foi sintaxe válida do PostgREST
+  // (isso é SQL, não a linguagem de embed) — toda chamada a esta função
+  // sempre retornou 400. A ordenação de um recurso embutido é um parâmetro
+  // separado (.order com referencedTable), não texto dentro do select.
   const { data, error } = await db
     .from("supply_fornecedores")
     .select(`
       *,
       categorias:supply_fornecedor_categorias(*),
-      etapas:supply_etapas_servico(* ORDER BY sequencia)
+      etapas:supply_etapas_servico(*)
     `)
     .eq("tenant_id", tenantId)
     .eq("ativo", true)
-    .order("nome");
+    .order("nome")
+    .order("sequencia", { referencedTable: "supply_etapas_servico" });
   if (error) throw error;
   return (data ?? []) as SupplyFornecedor[];
 }

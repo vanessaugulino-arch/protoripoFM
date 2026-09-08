@@ -247,3 +247,63 @@ export function normalizeDivisionPcts(
   })
   return result
 }
+
+// ─── Sazonalidade mensal por canal ────────────────────────────────────────────
+// Mesmo espírito de divisionSeasonalityService.getDivisionSeasonality, mas por
+// canal M2 em vez de divisão — usado pela Sazonalidade (M3) para sugerir uma
+// curva mensal inicial em vez de abrir tudo zerado (o usuário só ajusta a
+// partir daí, não digita a temporada inteira do zero).
+
+const MONTHS_FULL_PT = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+]
+
+/** Para cada canal M2: % da receita anual histórica caída em cada mês (0–100, soma 100). */
+export async function getChannelSeasonality(
+  tenantId: string,
+): Promise<Record<string, Record<string, number>>> {
+  if (!tenantId) return {}
+  const db = supabase as any
+
+  const { data: sales, error } = await db
+    .from('sales_history')
+    .select('channel, sale_date, revenue_net')
+    .eq('tenant_id', tenantId)
+    .not('revenue_net', 'is', null)
+    .gt('revenue_net', 0)
+    .limit(150_000)
+
+  if (error || !sales?.length) return {}
+
+  const acc = new Map<string, Map<string, number>>() // canalId → month → receita
+  const totals = new Map<string, number>()
+
+  for (const row of sales) {
+    const canalId = canalToM2Group(matchChannelToCanal(row.channel ?? ''))
+    if (!canalId) continue
+    const dateStr = (row.sale_date as string) ?? ''
+    const monthIdx = dateStr ? new Date(dateStr + 'T00:00:00').getMonth() : -1
+    if (monthIdx < 0) continue
+    const month = MONTHS_FULL_PT[monthIdx]
+    const rev   = (row.revenue_net as number) ?? 0
+
+    if (!acc.has(canalId)) acc.set(canalId, new Map())
+    const monthMap = acc.get(canalId)!
+    monthMap.set(month, (monthMap.get(month) ?? 0) + rev)
+    totals.set(canalId, (totals.get(canalId) ?? 0) + rev)
+  }
+
+  const result: Record<string, Record<string, number>> = {}
+  for (const [canalId, monthMap] of acc.entries()) {
+    const total = totals.get(canalId) ?? 0
+    if (total <= 0) continue
+    const pcts: Record<string, number> = {}
+    for (const month of MONTHS_FULL_PT) {
+      const rev = monthMap.get(month) ?? 0
+      pcts[month] = total > 0 ? Math.round((rev / total) * 1000) / 10 : 0
+    }
+    result[canalId] = pcts
+  }
+  return result
+}

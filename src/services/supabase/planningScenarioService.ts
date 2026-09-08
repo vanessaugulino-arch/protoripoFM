@@ -196,10 +196,15 @@ export async function applyScenario(
 
 // ─── Fase 3 — Sazonalidade aplicada por ano fiscal ───────────────────────────
 // Uma temporada de Verão (ago-fev) cruza dois anos fiscais. Consideramos um
-// ano fiscal Y "com Sazonalidade completa" quando TODAS as temporadas que
-// COMEÇAM nesse ano (ex.: Inverno-Y e Verão-Y) já foram aplicadas — não
-// rastreamos mês a mês, só por temporada (is_applied em
-// planning_scenarios.values.seasonId, gravado em CycleValidation.tsx).
+// ano fiscal Y "com Sazonalidade completa" quando existe um plano aplicado
+// pra esse ano.
+//
+// Fase 6 (tela por ano fiscal): CycleValidation.tsx passou a gravar UM
+// planning_scenario cobrindo o ano inteiro (Jan–Dez), não mais um por
+// temporada — não existe mais planning_scenarios.values.seasonId. "Completo"
+// virou simplesmente "existe alguma linha is_applied=true no cycle_id deste
+// ano", em vez de "toda temporada que começa nesse ano tem sua própria linha
+// aplicada".
 //
 // Usado pelo gate do M4-Divisão: uma temporada só pode ser planejada por
 // divisão quando TODOS os anos fiscais que ela toca (1 ou 2, se cruza o ano)
@@ -221,28 +226,18 @@ export function seasonFiscalYearsTouched(
 
 export async function getSazonalidadeCompletedYears(tenantId: string): Promise<number[]> {
   const db = supabase as any;
-  const [{ data: seasonRows }, { data: scenarioRows }] = await Promise.all([
-    db.from("seasons").select("id, fiscal_year").eq("tenant_id", tenantId),
-    db.from("planning_scenarios").select("values").eq("tenant_id", tenantId).eq("is_applied", true),
+  const [{ data: cycles }, { data: scenarioRows }] = await Promise.all([
+    db.from("annual_plan_cycles").select("id, year").eq("tenant_id", tenantId),
+    db.from("planning_scenarios").select("cycle_id").eq("tenant_id", tenantId).eq("is_applied", true),
   ]);
 
-  const appliedSeasonIds = new Set(
-    ((scenarioRows ?? []) as { values: { seasonId?: string } }[])
-      .map((r) => r.values?.seasonId)
-      .filter((id): id is string => Boolean(id)),
+  const appliedCycleIds = new Set(
+    ((scenarioRows ?? []) as { cycle_id: string }[]).map((r) => r.cycle_id),
   );
 
-  const seasonsByYear = new Map<number, string[]>();
-  for (const s of (seasonRows ?? []) as { id: string; fiscal_year: number | null }[]) {
-    if (s.fiscal_year == null) continue;
-    const list = seasonsByYear.get(s.fiscal_year) ?? [];
-    list.push(s.id);
-    seasonsByYear.set(s.fiscal_year, list);
-  }
+  const completedYears = ((cycles ?? []) as { id: string; year: number }[])
+    .filter((c) => appliedCycleIds.has(c.id))
+    .map((c) => c.year);
 
-  const completedYears: number[] = [];
-  for (const [year, ids] of seasonsByYear.entries()) {
-    if (ids.length > 0 && ids.every((id) => appliedSeasonIds.has(id))) completedYears.push(year);
-  }
-  return completedYears.sort((a, b) => a - b);
+  return [...new Set(completedYears)].sort((a, b) => a - b);
 }
