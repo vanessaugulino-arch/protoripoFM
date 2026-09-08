@@ -10,7 +10,7 @@
 //   PRIMARY KEY (tenant_id, season_id, division_id)
 //
 // Médias históricas são calculadas diretamente dos produtos importados
-// (tabela products), filtrando por division e faixa de sale_price.
+// (tabela products), filtrando por division e faixa de price_sale.
 
 import { supabase as _supabase } from '../../lib/supabase'
 import type { CategoryPricePlan, PriceTierId } from '../../app/types/pricePyramid'
@@ -26,7 +26,7 @@ export interface TierRange {
   max: number
 }
 
-/** Média histórica de sale_price por faixa, calculada sobre os produtos do tenant. */
+/** Média histórica de price_sale por faixa, calculada sobre os produtos do tenant. */
 export type TierHistoricalAvg = Record<PriceTierId, number | null>
 
 /** Ranges P1/P2/P3 para uma categoria específica (carregados do operation_settings). */
@@ -141,21 +141,21 @@ export async function fetchHistoricalTierAvgs(
     (Object.entries(tiers) as [PriceTierId, TierRange][]).map(async ([tid, range]) => {
       const { data, error } = await supabase
         .from('products')
-        .select('sale_price')
+        .select('price_sale')
         .eq('tenant_id', tenantId)
         .eq('division', division)
-        .gte('sale_price', range.min)
-        .lte('sale_price', range.max)
+        .gte('price_sale', range.min)
+        .lte('price_sale', range.max)
 
       if (error) {
         console.warn(`[pricePyramid] fetchHistoricalTierAvgs ${tid}:`, error.message)
         return
       }
 
-      const rows = (data ?? []) as { sale_price: number }[]
+      const rows = (data ?? []) as { price_sale: number }[]
       if (rows.length === 0) return
 
-      const avg = rows.reduce((sum, r) => sum + (r.sale_price ?? 0), 0) / rows.length
+      const avg = rows.reduce((sum, r) => sum + (r.price_sale ?? 0), 0) / rows.length
       result[tid] = Math.round(avg)
     }),
   )

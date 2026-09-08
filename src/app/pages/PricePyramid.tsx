@@ -1,5 +1,5 @@
 /**
- * Tela: Revisão de Pirâmide de Preço por Divisão — Módulo 3
+ * Tela: Revisão de Pirâmide de Preço por Divisão — Módulo 4
  *
  * Aberta a partir do botão "Revisão" no Bloco 2 de cada DivisionBlockCard.
  * Recebe por navigation state: plannedAvgPrice, seasonId, referenceSeasonId, tenantId.
@@ -260,7 +260,7 @@ export default function PricePyramid() {
             onClick={handleBack}
             className="text-[#7598CF] font-semibold text-sm underline"
           >
-            Voltar ao Módulo 3
+            Voltar ao Módulo 4
           </button>
         </div>
       </div>
@@ -286,7 +286,7 @@ export default function PricePyramid() {
               Pirâmide de Preço · {divisionName}
             </span>
             <span className="text-[#F6F3AA]/70 text-sm ml-3">
-              Participação por faixa e categoria — Módulo 3
+              Participação por faixa e categoria — Módulo 4
             </span>
           </div>
         </div>

@@ -18,7 +18,7 @@ const DASHBOARD_TOUR: TourStep[] = [
   {
     targetId: "tour-dashboard-greeting",
     title: "Bem-vindo ao Fashion Mind",
-    content: "Esses 5 módulos te levam da meta de receita até o sortimento final, em sequência. Comece pelo Planejamento Estratégico — os próximos se desbloqueiam conforme você avança.",
+    content: "Esses 6 módulos te levam da meta de receita até o sortimento final, em sequência. Comece pelo Planejamento Estratégico — os próximos se desbloqueiam conforme você avança.",
   },
   {
     targetId: "tour-module-1",
@@ -42,7 +42,12 @@ const DASHBOARD_TOUR: TourStep[] = [
   },
   {
     targetId: "tour-module-5",
-    title: "Plano de Sortimento",
+    title: "Plano de Coleção",
+    content: "Distribua o volume de peças estimado da temporada entre coleções e drops por mês, acompanhando a cobertura em tempo real.",
+  },
+  {
+    targetId: "tour-module-6",
+    title: "Engenharia de Sortimento",
     content: "Desenvolva a engenharia de sortimento com base nas metas definidas. Detalhe categorias, preços e atributos.",
   },
   {
@@ -133,8 +138,27 @@ const MODULE_CARDS: ModuleCard[] = [
     requiresModules: [3],
   },
   {
+    // Fase 4/5: novo módulo — régua de tempo da temporada onde o usuário
+    // distribui o volume de peças estimado (vindo do M4/Divisão) entre
+    // coleções e drops por mês. Libera junto com o M6 (Sortimento), pois o
+    // usuário pode justificar sua estratégia de coleções na Engenharia de
+    // Sortimento mesmo antes de fechar o Plano de Coleção.
     id: 5,
-    title: "Plano de Sortimento",
+    title: "Plano de Coleção",
+    level: "Operacional",
+    levelColor: "text-[#28071C]",
+    icon: Shield,
+    description: "Distribua o volume de peças estimado da temporada entre coleções e drops por mês, acompanhando a cobertura em tempo real.",
+    cta: "Planejar coleção",
+    route: "/collection-plan",
+    ceoOnly: false,
+    requiresModules: [4],
+  },
+  {
+    // Fase 4/5: era M5 "Plano de Sortimento" — renomeado e renumerado para
+    // M6 com a entrada do Plano de Coleção como novo M5.
+    id: 6,
+    title: "Engenharia de Sortimento",
     level: "Operacional",
     levelColor: "text-[#28071C]",
     icon: FileText,
@@ -143,18 +167,6 @@ const MODULE_CARDS: ModuleCard[] = [
     route: "/sortiment-plan",
     ceoOnly: false,
     requiresModules: [4],
-  },
-  {
-    id: 6,
-    title: "Mix de Produtos",
-    level: "Operacional",
-    levelColor: "text-[#28071C]",
-    icon: Shield,
-    description: "Composição final de categorias, subcategorias, preços e nível de moda. Em desenvolvimento.",
-    cta: "Em breve",
-    route: null,
-    ceoOnly: false,
-    requiresModules: [],
   },
 ];
 

@@ -33,6 +33,40 @@ export async function getM3AppliedYears(tenantId: string): Promise<number[]> {
   return [...new Set((data ?? []).map((r: { year: number }) => r.year))];
 }
 
+// ─── Temporadas com Divisão aplicada (para o M5 — Plano de Coleção) ───────────
+// O Plano de Coleção só faz sentido para uma temporada cuja Divisão (M4) já
+// tenha um cenário aplicado — é de lá que vem o volume-teto de peças por
+// divisão que o usuário distribui em coleções/drops.
+
+export async function getAppliedDivisionSeasonIds(tenantId: string): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from("division_scenarios")
+    .select("season_id")
+    .eq("tenant_id", tenantId)
+    .eq("is_applied", true);
+
+  if (error) throw error;
+  return new Set((data ?? []).map((r: { season_id: string }) => r.season_id));
+}
+
+/** Cenário de Divisão aplicado de uma temporada específica (undefined se nenhum). */
+export async function getAppliedDivisionScenario(
+  tenantId: string,
+  seasonId: string,
+): Promise<DivisionScenarioRow | undefined> {
+  const { data, error } = await supabase
+    .from("division_scenarios")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("season_id", seasonId)
+    .eq("is_applied", true)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as DivisionScenarioRow | null) ?? undefined;
+}
+
 // ─── Listar cenários de uma temporada ─────────────────────────────────────────
 
 export async function listDivisionScenarios(

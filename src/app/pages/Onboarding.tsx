@@ -767,7 +767,7 @@ export default function Onboarding() {
                     desc: 'Entendo como o estratégico se divide nos meus canais. Comparo diferentes distribuições e escolho a melhor. Meus ajustes se desdobram em todos os níveis.',
                   },
                   {
-                    icon: '✏️', perfil: 'Operacional', modulos: 'Módulo 5',
+                    icon: '✏️', perfil: 'Operacional', modulos: 'Módulos 5 e 6',
                     badge: 'bg-[#9B8CD8]/15 text-[#9B8CD8]',
                     color: 'border-[#9B8CD8]/25 bg-[#9B8CD8]/5',
                     desc: 'Recebo um briefing claro com metas por categoria. Simulo diferentes composições de sortimento. Meu trabalho criativo tem base sólida em números.',
@@ -1922,9 +1922,10 @@ export default function Onboarding() {
                     {[
                       { mod: 'Módulo 1 — Planejamento Macro', fonte: 'Histórico de vendas + configuração de temporadas', table: 'sales_history, season_default_rules' },
                       { mod: 'Módulo 2 — Canal',              fonte: 'Canais configurados aqui + cenários salvos',        table: 'onboarding_profiles, channel_scenarios' },
-                      { mod: 'Módulo 3 — Divisão',            fonte: 'Segmentos + hierarquia de produtos',                table: 'onboarding_profiles, hier_labels' },
-                      { mod: 'Módulo 4 — Sazonalidade',       fonte: 'Temporadas e calendário configurados aqui',         table: 'seasons, season_default_rules' },
-                      { mod: 'Módulo 5 — Sortimento',         fonte: 'Histórico de produtos + faixas de preço',           table: 'products, price_tiers' },
+                      { mod: 'Módulo 3 — Sazonalidade',       fonte: 'Temporadas e calendário configurados aqui',         table: 'seasons, season_default_rules' },
+                      { mod: 'Módulo 4 — Divisão',            fonte: 'Segmentos + hierarquia de produtos',                table: 'onboarding_profiles, hier_labels' },
+                      { mod: 'Módulo 5 — Plano de Coleção',   fonte: 'Volume por divisão definido no Módulo 4',           table: 'division_scenarios, collection_plans' },
+                      { mod: 'Módulo 6 — Engenharia de Sortimento', fonte: 'Histórico de produtos + faixas de preço',     table: 'products, price_tiers' },
                     ].map(m => (
                       <div key={m.mod} className="flex items-start gap-2">
                         <div className="w-1 h-1 rounded-full bg-[#7598CF] flex-shrink-0 mt-1.5" />

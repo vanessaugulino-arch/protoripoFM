@@ -14,6 +14,7 @@ import Admin_Users from "./pages/Admin_Users";
 import Admin_Permissions from "./pages/Admin_Permissions";
 import TenantSelector from "./pages/TenantSelector";
 import SortimentPlan from "./pages/SortimentPlan";
+import CollectionPlan from "./pages/CollectionPlan";
 import Onboarding from "./pages/Onboarding";
 import PlanningGateway from "./pages/PlanningGateway";
 import PlanningSetup from "./pages/PlanningSetup";
@@ -21,7 +22,6 @@ import ProfileAdjust from "./pages/ProfileAdjust";
 import MatrizAbastecimento from "./pages/MatrizAbastecimento";
 // Fase 2 — acessíveis apenas pelo usuário Suporte
 import CollectionPlanning from "./pages/CollectionPlanning";
-import ProductMix from "./pages/ProductMix";
 import TrackingCreative from "./pages/TrackingCreative";
 
 // Guard: bloqueia acesso a rotas de Fase 2 para qualquer role que não seja "support"
@@ -95,6 +95,10 @@ export const router = createBrowserRouter([
     Component: MatrizAbastecimento,
   },
   {
+    path: "/collection-plan",
+    Component: CollectionPlan,
+  },
+  {
     path: "/sortiment-plan",
     Component: SortimentPlan,
   },
@@ -126,10 +130,6 @@ export const router = createBrowserRouter([
       {
         path: "/preview/collection-planning",
         Component: CollectionPlanning,
-      },
-      {
-        path: "/preview/product-mix",
-        Component: ProductMix,
       },
       {
         path: "/preview/tracking-creative",

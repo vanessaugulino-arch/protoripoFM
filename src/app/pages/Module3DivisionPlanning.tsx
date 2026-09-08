@@ -805,7 +805,9 @@ export default function Module3DivisionPlanning() {
     setIsSubmittingApproval(false);
   };
 
-  // ── Resolver pedido de aprovação recebido do M5 ────────────────────────────
+  // ── Resolver pedido de aprovação recebido do M5 (Plano de Coleção) ou M6
+  // (Engenharia de Sortimento) — ambos pedem aprovação ao M4/Divisão, então
+  // este resolver precisa diferenciar a origem para aplicar o efeito certo.
   const handleResolveIncoming = async (
     req: PlanApprovalRequest,
     decision: "approved" | "denied",
@@ -814,16 +816,30 @@ export default function Module3DivisionPlanning() {
     setIsResolvingApproval(true);
     try {
       await resolveApproval(req.id, decision, user.email);
-      // Se aprovado, reafirma o Plano Oficial a partir das divisões aplicadas —
-      // mesma chamada que o próprio M3 já faz ao aplicar sem desvio. Sem isso,
-      // o pedido do M5 (Sortimento) ficava "aprovado" só no banco, sem nunca
-      // refletir no plano — e quem submeteu não conseguia avançar.
       if (decision === "approved" && tenantId) {
         try {
-          await recomputeMacroFromDivisions(tenantId, req.year);
-          await advanceDetailLevel(tenantId, req.year, 5);
+          if (req.from_module === 5) {
+            // M5 — Plano de Coleção: aplica o cenário de coleção submetido
+            // (volume de peças por mês) como plano de trabalho e avança o
+            // detail_level para 4 (Mensal) — a Coleção É o detalhamento
+            // mensal do plano, na numeração legada de detail_level.
+            const seasonId = (req.proposed_data as { seasonId?: string } | null)?.seasonId;
+            if (seasonId && req.scenario_id) {
+              const { applyCollectionPlanScenario } = await import("../../services/supabase/collectionPlanService");
+              await applyCollectionPlanScenario(tenantId, seasonId, req.scenario_id);
+            }
+            await advanceDetailLevel(tenantId, req.year, 4);
+          } else {
+            // M6 — Engenharia de Sortimento (era M5 antes da Fase 4/5): reafirma
+            // o Plano Oficial a partir das divisões aplicadas — mesma chamada
+            // que o próprio M4 já faz ao aplicar sem desvio. Sem isso, o pedido
+            // ficava "aprovado" só no banco, sem nunca refletir no plano — e
+            // quem submeteu não conseguia avançar.
+            await recomputeMacroFromDivisions(tenantId, req.year);
+            await advanceDetailLevel(tenantId, req.year, 5);
+          }
         } catch {
-          // recompute não bloqueia a resolução do pedido
+          // recompute/apply não bloqueia a resolução do pedido
         }
       }
       setIncomingApprovals(prev => prev.filter(r => r.id !== req.id));
@@ -1668,10 +1684,10 @@ export default function Module3DivisionPlanning() {
             </div>
             <div className="flex flex-col gap-2 w-full">
               <button
-                onClick={() => { setShowPostApplyModal(false); navigate("/sortiment-plan"); }}
+                onClick={() => { setShowPostApplyModal(false); navigate("/collection-plan"); }}
                 className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-[#28071C] text-[#F6F3AA] rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
               >
-                Ir para Módulo 5 — Plano de Sortimento
+                Ir para Módulo 5 — Plano de Coleção
                 <ArrowRight className="w-4 h-4" />
               </button>
               <button
@@ -1763,14 +1779,14 @@ export default function Module3DivisionPlanning() {
         </div>
       )}
 
-      {/* ─── MODAL: Pedido recebido do M5 (Sortimento → Divisão) ─────────────── */}
+      {/* ─── MODAL: Pedido recebido do M5 (Plano de Coleção) ou M6 (Sortimento) ── */}
       {showIncomingApproval && activeIncoming && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mx-4 overflow-hidden max-h-[90vh] flex flex-col">
             <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
               <div>
                 <p className="text-[#F6F3AA] font-bold text-base">
-                  Pedido de Ajuste — Módulo {activeIncoming.from_module} (Sortimento)
+                  Pedido de Ajuste — Módulo {activeIncoming.from_module} ({activeIncoming.from_module === 5 ? "Plano de Coleção" : "Engenharia de Sortimento"})
                 </p>
                 <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
                   Solicitado por {activeIncoming.requester_email} · {new Date(activeIncoming.created_at).toLocaleDateString("pt-BR")}
@@ -1792,25 +1808,32 @@ export default function Module3DivisionPlanning() {
                   <thead>
                     <tr>
                       <th className="text-left px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest rounded-tl-lg">Indicador</th>
-                      <th className="text-right px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest">Plano Atual (M3)</th>
+                      <th className="text-right px-3 py-2 bg-[#28071C]/5 text-[#28071C]/50 font-semibold uppercase tracking-widest">Plano Atual (M4)</th>
                       <th className="text-right px-3 py-2 bg-[#7598CF]/10 text-[#7598CF] font-semibold uppercase tracking-widest rounded-tr-lg">Proposto (M{activeIncoming.from_module})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#28071C]/6">
-                    {(activeIncoming.impacted_indicators as ImpactedIndicator[]).map(item => (
-                      <tr key={item.key} className="hover:bg-[#28071C]/2">
-                        <td className="px-3 py-2 text-[#28071C]/70 font-medium">{item.label}</td>
-                        <td className="px-3 py-2 text-right font-mono text-[#28071C]">
-                          {item.isRate ? `${item.planned.toFixed(1)}%` : `R$ ${Math.round(item.planned).toLocaleString("pt-BR")}`}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono font-semibold text-[#7598CF]">
-                          {item.isRate ? `${item.projected.toFixed(1)}%` : `R$ ${Math.round(item.projected).toLocaleString("pt-BR")}`}
-                          <span className={`ml-1.5 text-[9px] font-normal ${item.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
-                            {item.gap >= 0 ? "+" : ""}{item.isRate ? `${item.gap.toFixed(1)}pp` : `R$${Math.round(item.gap).toLocaleString("pt-BR")}`}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {(activeIncoming.impacted_indicators as ImpactedIndicator[]).map(item => {
+                      // M5 (Plano de Coleção) envia volume em peças; M6 (Sortimento) envia R$.
+                      const unit = activeIncoming.from_module === 5 ? " pçs" : "";
+                      const prefix = activeIncoming.from_module === 5 ? "" : "R$ ";
+                      const fmt = (v: number) => item.isRate ? `${v.toFixed(1)}%` : `${prefix}${Math.round(v).toLocaleString("pt-BR")}${unit}`;
+                      const fmtGap = (v: number) => item.isRate ? `${v.toFixed(1)}pp` : `${prefix}${Math.round(v).toLocaleString("pt-BR")}${unit}`;
+                      return (
+                        <tr key={item.key} className="hover:bg-[#28071C]/2">
+                          <td className="px-3 py-2 text-[#28071C]/70 font-medium">{item.label}</td>
+                          <td className="px-3 py-2 text-right font-mono text-[#28071C]">
+                            {fmt(item.planned)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono font-semibold text-[#7598CF]">
+                            {fmt(item.projected)}
+                            <span className={`ml-1.5 text-[9px] font-normal ${item.gap >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                              {item.gap >= 0 ? "+" : ""}{fmtGap(item.gap)}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1825,7 +1848,7 @@ export default function Module3DivisionPlanning() {
               )}
 
               <p className="text-[11px] text-[#28071C]/40 mt-4 leading-relaxed">
-                Ao aceitar, revise as metas por divisão e ajuste os indicadores conforme a proposta do Sortimento antes de reaplicar o plano.
+                Ao aceitar, revise as metas por divisão e ajuste os indicadores conforme a proposta do {activeIncoming.from_module === 5 ? "Plano de Coleção" : "Sortimento"} antes de reaplicar o plano.
               </p>
             </div>
 

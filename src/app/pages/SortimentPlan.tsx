@@ -1,5 +1,5 @@
 /**
- * Módulo 5 — Plano de Sortimento
+ * Módulo 6 — Engenharia de Sortimento
  * Sub-módulo A: Sortiment  — estrutura de coleções por divisão
  * Sub-módulo B: Mix de Produtos — arquitetura por categoria e faixa de preço
  */
@@ -40,7 +40,7 @@ import { useTour } from "../hooks/useTour";
 const SORTIMENT_TOUR: TourStep[] = [
   {
     targetId: "tour-sort-header",
-    title: "Plano de Sortimento — Módulo 5",
+    title: "Engenharia de Sortimento — Módulo 6",
     content: "Aqui você transforma as metas estratégicas em um plano concreto de produtos. Comece selecionando a temporada e veja os indicadores macro que guiam todo o planejamento.",
   },
   {
@@ -146,10 +146,10 @@ interface Collection {
 interface Division {
   id: string;
   name: string;
-  revenueTarget: number;    // Meta de receita (R$) — do Módulo 3
-  participationPct: number; // % de participação — do Módulo 3
-  targetMarginPct: number;  // Margem alvo (%) — do Módulo 3
-  pricePyramid: { p1: number; p2: number; p3: number }; // % do Módulo 3
+  revenueTarget: number;    // Meta de receita (R$) — do Módulo 4
+  participationPct: number; // % de participação — do Módulo 4
+  targetMarginPct: number;  // Margem alvo (%) — do Módulo 4
+  pricePyramid: { p1: number; p2: number; p3: number }; // % do Módulo 4
   avgPriceP1: number;
   avgPriceP2: number;
   avgPriceP3: number;
@@ -464,7 +464,8 @@ export default function SortimentPlan() {
   const [scenarioName,      setScenarioName]      = useState("");
   const [compareScenarioId, setCompareScenarioId] = useState<string>("");
 
-  // ── Solicitação de ajuste ao Módulo 3 (Sortimento → Divisão) ─────────────────
+  // ── Solicitação de ajuste ao Módulo 4 — Divisão (nomes locais mantêm "M3"
+  // por serem identificadores internos legados; não afeta o comportamento) ──
   const [showRequestM3Modal, setShowRequestM3Modal] = useState(false);
   const [requestM3Justif,    setRequestM3Justif]    = useState("");
   const [isSendingM3Request, setIsSendingM3Request] = useState(false);
@@ -512,7 +513,7 @@ export default function SortimentPlan() {
 
   const exportPDF = () => window.print();
 
-  // ── Solicitar ajuste ao Módulo 3 (Sortimento → Divisão) ─────────────────────
+  // ── Solicitar ajuste ao Módulo 4 (Sortimento → Divisão) ─────────────────────
   // O sortimento pode implicar uma receita de mix (Σ receita das coleções) que
   // difere da meta de receita da divisão vinda do M3. Este fluxo empacota essa
   // divergência por divisão e a envia como pedido de aprovação para o M3.
@@ -554,10 +555,11 @@ export default function SortimentPlan() {
         tenantId:           user.tenant_id,
         year,
         // Pede aprovação à tela de Divisão, que agora é M4 (era M3) — renumerado
-        // pela nova ordem do fluxo (Canal → Sazonalidade → Divisão → Sortimento).
+        // pela nova ordem do fluxo (Canal → Sazonalidade → Divisão → Coleção → Sortimento).
+        // Este módulo passou a ser M6 (era M5) com a entrada do Plano de Coleção como M5.
         // Nomes de variáveis locais (requestM3Justif etc.) continuam com "M3"
         // por serem só identificadores internos — não afeta o comportamento.
-        fromModule:         5,
+        fromModule:         6,
         toModule:           4,
         requesterEmail:     user.email,
         justification:      requestM3Justif.trim(),
@@ -1234,9 +1236,9 @@ export default function SortimentPlan() {
             </button>
             <div id="tour-sort-header">
               <span className="text-[#F6F3AA] text-base font-semibold">
-                Fashion Mind · Módulo 5
+                Fashion Mind · Módulo 6
               </span>
-              <span className="text-[#F6F3AA]/70 text-sm ml-2">· Plano de Sortimento</span>
+              <span className="text-[#F6F3AA]/70 text-sm ml-2">· Engenharia de Sortimento</span>
               {/* Temporada selecionada — chip clicável para trocar */}
               {seasonId ? (
                 <button
@@ -1441,7 +1443,7 @@ export default function SortimentPlan() {
                     Nenhuma temporada planejada
                   </h2>
                   <p className="text-sm text-[#28071C]/50 mb-6 leading-relaxed">
-                    O Plano de Sortimento exige que a temporada tenha sido planejada nos{" "}
+                    A Engenharia de Sortimento exige que a temporada tenha sido planejada nos{" "}
                     <strong>Módulos 1 a 4</strong> — Planejamento Estratégico, Receita, Divisões e Pirâmide de Preços.
                     Complete o planejamento e volte aqui.
                   </p>
@@ -1570,7 +1572,7 @@ export default function SortimentPlan() {
                             {STRATEGIC_FOCUS_LABELS[focus]}
                           </span>
                         </div>
-                        <Tooltip text="Indicadores da divisão selecionada. Receita, margem e Orçamento são específicos desta divisão na temporada, calculados a partir do Módulo 3 — Plano por Divisão." side="bottom">
+                        <Tooltip text="Indicadores da divisão selecionada. Receita, margem e Orçamento são específicos desta divisão na temporada, calculados a partir do Módulo 4 — Plano por Divisão." side="bottom">
                           <span className="flex items-center gap-1 text-[10px] text-[#28071C]/40 cursor-default">
                             Planejamento Estratégico <Info className="w-3 h-3" />
                           </span>
@@ -1579,7 +1581,7 @@ export default function SortimentPlan() {
 
                       {/* Linha 2: KPIs reais da divisão ativa */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-0 divide-x divide-[#28071C]/8">
-                        <Tooltip text="Receita bruta planejada para esta divisão na temporada selecionada. Definida no Módulo 3 — Plano por Divisão." side="bottom">
+                        <Tooltip text="Receita bruta planejada para esta divisão na temporada selecionada. Definida no Módulo 4 — Plano por Divisão." side="bottom">
                           <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               Receita Bruta Alvo <Info className="w-3 h-3 opacity-40" />
@@ -1587,7 +1589,7 @@ export default function SortimentPlan() {
                             <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divReceita)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Margem bruta alvo desta divisão na temporada. Define o limite de custo de produto para o mix da divisão, conforme Módulo 3." side="bottom">
+                        <Tooltip text="Margem bruta alvo desta divisão na temporada. Define o limite de custo de produto para o mix da divisão, conforme Módulo 4." side="bottom">
                           <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               Margem Bruta Alvo <Info className="w-3 h-3 opacity-40" />
@@ -1603,7 +1605,7 @@ export default function SortimentPlan() {
                             <div className="text-lg font-bold text-[#28071C]">{fmtCurrency(divOrcamento)}</div>
                           </div>
                         </Tooltip>
-                        <Tooltip text="Preço médio de venda ponderado pelas faixas P1, P2 e P3 desta divisão. Calculado a partir da pirâmide de preços e dos preços médios definidos no Módulo 3." side="bottom">
+                        <Tooltip text="Preço médio de venda ponderado pelas faixas P1, P2 e P3 desta divisão. Calculado a partir da pirâmide de preços e dos preços médios definidos no Módulo 4." side="bottom">
                           <div className="px-4 py-3 cursor-default w-full">
                             <div className="text-[10px] text-[#28071C]/40 uppercase tracking-widest mb-1 flex items-center gap-1">
                               PMV Médio <Info className="w-3 h-3 opacity-40" />
@@ -1645,7 +1647,7 @@ export default function SortimentPlan() {
                             ))}
                           </div>
                         </Tooltip>
-                        <Tooltip text="PMV alvo por faixa de preço desta divisão na temporada, definido no Módulo 3." side="bottom">
+                        <Tooltip text="PMV alvo por faixa de preço desta divisão na temporada, definido no Módulo 4." side="bottom">
                           <div className="px-4 py-2 cursor-default flex items-center gap-2 w-full">
                             {([
                               { tier: "P1", price: activeDivision.avgPriceP1, color: "text-blue-600" },
@@ -2414,7 +2416,7 @@ export default function SortimentPlan() {
                                                       className="w-14 bg-white border border-[#28071C]/10 rounded px-2 py-1 text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50 text-xs"
                                                     />
                                                     <span className="text-xs text-[#28071C]/40">%</span>
-                                                    <span className={`text-xs ml-1 ${deviationClass}`} title={`Meta Módulo 3: ${tgt}%`}>
+                                                    <span className={`text-xs ml-1 ${deviationClass}`} title={`Meta Módulo 4: ${tgt}%`}>
                                                       ({delta > 0 ? "+" : ""}{delta.toFixed(0)}pp)
                                                     </span>
                                                   </div>
@@ -2747,7 +2749,7 @@ export default function SortimentPlan() {
               <button
                 onClick={() => setShowRequestM3Modal(true)}
                 disabled={m3RequestPending}
-                title={m3RequestPending ? "Já existe um pedido de ajuste pendente no Módulo 3" : "Enviar as divergências do sortimento ao Módulo 3 (Divisão)"}
+                title={m3RequestPending ? "Já existe um pedido de ajuste pendente no Módulo 4" : "Enviar as divergências do sortimento ao Módulo 4 (Divisão)"}
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#7598CF]/40 text-[#7598CF] rounded-xl text-sm hover:bg-[#7598CF]/8 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <SendHorizonal className="w-4 h-4" />
@@ -2774,14 +2776,14 @@ export default function SortimentPlan() {
         </div>
       )}
 
-      {/* ── MODAL: Solicitar ajuste ao Módulo 3 (Sortimento → Divisão) ───────── */}
+      {/* ── MODAL: Solicitar ajuste ao Módulo 4 (Sortimento → Divisão) ───────── */}
       {showRequestM3Modal && (
         <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowRequestM3Modal(false)} />
           <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] flex flex-col">
             <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between flex-shrink-0">
               <div>
-                <p className="text-[#F6F3AA] font-bold text-base">Solicitar ajuste ao Módulo 3</p>
+                <p className="text-[#F6F3AA] font-bold text-base">Solicitar ajuste ao Módulo 4</p>
                 <p className="text-[#F6F3AA]/60 text-xs mt-0.5">
                   Envia a receita do mix por divisão para o Planejamento por Divisão revisar as metas.
                 </p>
@@ -2843,7 +2845,7 @@ export default function SortimentPlan() {
                 disabled={isSendingM3Request || !requestM3Justif.trim()}
                 className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
                 <SendHorizonal className="w-4 h-4" />
-                {isSendingM3Request ? "Enviando…" : "Enviar ao Módulo 3"}
+                {isSendingM3Request ? "Enviando…" : "Enviar ao Módulo 4"}
               </button>
             </div>
           </div>
@@ -2854,7 +2856,7 @@ export default function SortimentPlan() {
       {m3RequestSent && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9300] bg-[#28071C] text-[#F6F3AA] px-5 py-3 rounded-xl shadow-xl text-sm font-medium flex items-center gap-2">
           <CheckCircle className="w-4 h-4" />
-          Pedido enviado ao Módulo 3.
+          Pedido enviado ao Módulo 4.
         </div>
       )}
 
