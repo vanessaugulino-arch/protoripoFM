@@ -75,6 +75,50 @@ export interface HistoricalProfiles {
   hasData:      boolean
 }
 
+// ─── Agregação mensal (banco) ─────────────────────────────────────────────────
+// BUG real corrigido aqui: toda função abaixo lia sales_history CRUA com um
+// LIMIT fixo (100k) e agregava em JS. Um tenant com mais linhas que o limite
+// (este já passou de 637 mil) tinha sua "sazonalidade histórica" calculada
+// sobre uma fatia ARBITRÁRIA do banco (sem ORDER BY, o Postgres devolve as
+// primeiras linhas que achar fisicamente) — meses inteiros ficavam de fora
+// silenciosamente. Corrigido com uma função SQL (get_sales_monthly_aggregates,
+// migration 026) que agrega no banco por canal/divisão/ano/mês — o resultado
+// tem no máximo algumas centenas de linhas, nunca precisa de LIMIT.
+
+export interface SalesMonthlyAggregate {
+  channel: string
+  division: string | null
+  saleYear: number
+  saleMonth: number // 1–12
+  revenueNet: number
+  quantity: number
+  priceRealizedSum: number
+  priceRealizedCount: number
+  pmvWeightedSum: number
+  costWeightedSum: number
+  marginWeightedSum: number
+}
+
+export async function getSalesMonthlyAggregates(tenantId: string): Promise<SalesMonthlyAggregate[]> {
+  if (!tenantId) return []
+  const db = supabase as any
+  const { data, error } = await db.rpc('get_sales_monthly_aggregates', { p_tenant_id: tenantId })
+  if (error || !data) return []
+  return (data as any[]).map(r => ({
+    channel:            (r.channel as string) ?? '',
+    division:           (r.division as string | null) ?? null,
+    saleYear:           Number(r.sale_year) || 0,
+    saleMonth:          Number(r.sale_month) || 0,
+    revenueNet:         Number(r.revenue_net) || 0,
+    quantity:           Number(r.quantity) || 0,
+    priceRealizedSum:   Number(r.price_realized_sum) || 0,
+    priceRealizedCount: Number(r.price_realized_count) || 0,
+    pmvWeightedSum:     Number(r.pmv_weighted_sum) || 0,
+    costWeightedSum:    Number(r.cost_weighted_sum) || 0,
+    marginWeightedSum:  Number(r.margin_weighted_sum) || 0,
+  }))
+}
+
 // ─── Função principal ─────────────────────────────────────────────────────────
 
 export async function getHistoricalProfiles(tenantId: string): Promise<HistoricalProfiles> {
@@ -83,34 +127,8 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
   }
   if (!tenantId) return empty
 
-  const db = supabase as any
-
-  // 1. Lê sales_history (limita a 100k linhas para performance)
-  const { data: salesRows, error: salesErr } = await db
-    .from('sales_history')
-    .select('channel, revenue_net, quantity, price_realized, sku')
-    .eq('tenant_id', tenantId)
-    .not('revenue_net', 'is', null)
-    .gt('revenue_net', 0)
-    .limit(100_000)
-
-  if (salesErr || !salesRows?.length) return empty
-
-  // 2. Lê produtos (division, price_tier, risk_level, price_cost, price_sale, sku)
-  const { data: productRows } = await db
-    .from('products')
-    .select('sku, division, price_tier, risk_level, price_cost, price_sale')
-    .eq('tenant_id', tenantId)
-    .not('sku', 'is', null)
-
-  // 3. Monta map sku → product
-  const skuMap = new Map<string, {
-    division: string; price_tier: string; risk_level: string;
-    price_cost: number; price_sale: number;
-  }>()
-  for (const p of (productRows ?? [])) {
-    if (p.sku) skuMap.set(String(p.sku), p)
-  }
+  const rows = await getSalesMonthlyAggregates(tenantId)
+  if (!rows.length) return empty
 
   // ─── Acumuladores por canal M2 ─────────────────────────────────────────────
   type CanalAcc = {
@@ -129,12 +147,11 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
   let totalReceita = 0
   let totalPecas   = 0
 
-  for (const row of salesRows) {
-    const receita = (row.revenue_net as number) ?? 0
-    const pecas   = (row.quantity    as number) ?? 0
-    const canal   = matchChannelToCanal(row.channel ?? '')
+  for (const row of rows) {
+    const receita = row.revenueNet
+    const pecas   = row.quantity
+    const canal   = matchChannelToCanal(row.channel)
     const m2      = canalToM2Group(canal)
-    const prod    = skuMap.get(String(row.sku ?? ''))
 
     totalReceita += receita
     totalPecas   += pecas
@@ -142,31 +159,26 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
     // ── Canal M2 ──────────────────────────────────────────────────────────────
     if (m2) {
       const acc = canalAcc.get(m2) ?? { receita: 0, pecas: 0, sumPmvW: 0, sumCostW: 0, wTotal: 0 }
-      const pmv      = row.price_realized ?? (prod?.price_sale ?? 0)
-      const cost     = prod?.price_cost ?? 0
-      acc.receita   += receita
-      acc.pecas     += pecas
-      acc.sumPmvW   += pmv  * receita
-      acc.sumCostW  += cost * receita
-      acc.wTotal    += receita
+      acc.receita  += receita
+      acc.pecas    += pecas
+      acc.sumPmvW  += row.pmvWeightedSum
+      acc.sumCostW += row.costWeightedSum
+      acc.wTotal   += receita
       canalAcc.set(m2, acc)
     }
 
     // ── Divisão ──────────────────────────────────────────────────────────────
-    if (prod?.division) {
-      const divId  = normalizeDivision(prod.division)
-      const acc    = divAcc.get(divId) ?? {
-        label: prod.division, receita: 0, pecas: 0,
+    if (row.division) {
+      const divId = normalizeDivision(row.division)
+      const acc   = divAcc.get(divId) ?? {
+        label: row.division, receita: 0, pecas: 0,
         sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0,
       }
-      const pmv    = row.price_realized ?? (prod?.price_sale ?? 0)
-      const cost   = prod?.price_cost ?? 0
-      const margin = pmv > 0 ? ((pmv - cost) / pmv) * 100 : 0
       acc.receita    += receita
       acc.pecas      += pecas
-      acc.sumPmvW    += pmv    * receita
-      acc.sumCostW   += cost   * receita
-      acc.sumMarginW += margin * receita
+      acc.sumPmvW    += row.pmvWeightedSum
+      acc.sumCostW   += row.costWeightedSum
+      acc.sumMarginW += row.marginWeightedSum
       acc.wTotal     += receita
       divAcc.set(divId, acc)
     }
@@ -264,34 +276,23 @@ export async function getChannelSeasonality(
   tenantId: string,
 ): Promise<Record<string, Record<string, number>>> {
   if (!tenantId) return {}
-  const db = supabase as any
 
-  const { data: sales, error } = await db
-    .from('sales_history')
-    .select('channel, sale_date, revenue_net')
-    .eq('tenant_id', tenantId)
-    .not('revenue_net', 'is', null)
-    .gt('revenue_net', 0)
-    .limit(150_000)
-
-  if (error || !sales?.length) return {}
+  const rows = await getSalesMonthlyAggregates(tenantId)
+  if (!rows.length) return {}
 
   const acc = new Map<string, Map<string, number>>() // canalId → month → receita
   const totals = new Map<string, number>()
 
-  for (const row of sales) {
-    const canalId = canalToM2Group(matchChannelToCanal(row.channel ?? ''))
+  for (const row of rows) {
+    const canalId = canalToM2Group(matchChannelToCanal(row.channel))
     if (!canalId) continue
-    const dateStr = (row.sale_date as string) ?? ''
-    const monthIdx = dateStr ? new Date(dateStr + 'T00:00:00').getMonth() : -1
-    if (monthIdx < 0) continue
-    const month = MONTHS_FULL_PT[monthIdx]
-    const rev   = (row.revenue_net as number) ?? 0
+    if (row.saleMonth < 1 || row.saleMonth > 12) continue
+    const month = MONTHS_FULL_PT[row.saleMonth - 1]
 
     if (!acc.has(canalId)) acc.set(canalId, new Map())
     const monthMap = acc.get(canalId)!
-    monthMap.set(month, (monthMap.get(month) ?? 0) + rev)
-    totals.set(canalId, (totals.get(canalId) ?? 0) + rev)
+    monthMap.set(month, (monthMap.get(month) ?? 0) + row.revenueNet)
+    totals.set(canalId, (totals.get(canalId) ?? 0) + row.revenueNet)
   }
 
   const result: Record<string, Record<string, number>> = {}

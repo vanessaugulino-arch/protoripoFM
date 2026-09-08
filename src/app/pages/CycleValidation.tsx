@@ -12,7 +12,7 @@ import {
 } from "../../services/supabase/divisionSeasonalityService";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
 import { useNavigate, useLocation } from "react-router";
-import { getChannelSeasonality } from "../../services/supabase/historicalProfileService";
+import { getChannelSeasonality, getSalesMonthlyAggregates } from "../../services/supabase/historicalProfileService";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
@@ -377,27 +377,22 @@ export default function CycleValidation() {
         }
       }).catch(() => setTenantCanalIds(["varejo", "ecommerce", "atacado"]));
 
-    // Avg PMV per channel from sales_history
-    db.from("sales_history")
-      .select("channel, price_realized")
-      .eq("tenant_id", tid)
-      .not("price_realized", "is", null)
-      .gt("price_realized", 0)
-      .limit(5000)
-      .then(({ data: rows }: any) => {
-        const map: Record<string, { sum: number; count: number }> = {};
-        for (const r of rows ?? []) {
-          const cid = matchChannelToCanal(r.channel);
-          if (!map[cid]) map[cid] = { sum: 0, count: 0 };
-          map[cid].sum += r.price_realized;
-          map[cid].count++;
-        }
-        const pmvResult: Record<string, number> = {};
-        for (const [ch, { sum, count }] of Object.entries(map)) {
-          pmvResult[ch] = count > 0 ? Math.round(sum / count) : 0;
-        }
-        if (Object.keys(pmvResult).length) setAvgPmv(pmvResult);
-      }).catch(() => {});
+    // Avg PMV por canal — agregado no banco (get_sales_monthly_aggregates),
+    // não mais lendo linha a linha com LIMIT fixo (ver comentário na função).
+    getSalesMonthlyAggregates(tid).then(rows => {
+      const map: Record<string, { sum: number; count: number }> = {};
+      for (const r of rows) {
+        const cid = matchChannelToCanal(r.channel);
+        if (!map[cid]) map[cid] = { sum: 0, count: 0 };
+        map[cid].sum += r.priceRealizedSum;
+        map[cid].count += r.priceRealizedCount;
+      }
+      const pmvResult: Record<string, number> = {};
+      for (const [ch, { sum, count }] of Object.entries(map)) {
+        pmvResult[ch] = count > 0 ? Math.round(sum / count) : 0;
+      }
+      if (Object.keys(pmvResult).length) setAvgPmv(pmvResult);
+    }).catch(() => {});
 
   }, [navigate]);
 
@@ -533,29 +528,25 @@ export default function CycleValidation() {
     if (!tenantId) return;
     setIsLoadingData(true);
 
-    const db = supabase as any;
-
     // Receita do ano civil anterior (Jan–Dez completo) — referência de
     // comparação. Antes calculada a partir da janela exata da temporada
     // (getSeasonDateRange); como a tela agora é o ano fiscal inteiro
     // (calendário Jan–Dez), a comparação é simplesmente o mesmo calendário
     // um ano antes — sem depender de nenhuma temporada específica existir.
-    db.from("sales_history")
-      .select("channel, sale_date, revenue_net")
-      .eq("tenant_id", tenantId)
-      .gte("sale_date", `${selectedFiscalYear - 1}-01-01`)
-      .lte("sale_date", `${selectedFiscalYear - 1}-12-31`)
-      .limit(100000)
-      .then(({ data: rows }: any) => {
-        const map: Record<string, Record<string, number>> = {};
-        for (const r of rows ?? []) {
-          const cid   = matchChannelToCanal(r.channel);
-          const month = MONTHS_FULL[new Date(r.sale_date + "T00:00:00").getMonth()];
-          if (!map[cid]) map[cid] = {};
-          map[cid][month] = (map[cid][month] || 0) + (r.revenue_net || 0);
-        }
-        setPrevYearRevenue(map);
-      }).catch(() => {})
+    // Agregado no banco (get_sales_monthly_aggregates), não mais lendo linha
+    // a linha com LIMIT fixo — ver comentário na função.
+    getSalesMonthlyAggregates(tenantId).then(rows => {
+      const map: Record<string, Record<string, number>> = {};
+      for (const r of rows) {
+        if (r.saleYear !== selectedFiscalYear - 1) continue;
+        if (r.saleMonth < 1 || r.saleMonth > 12) continue;
+        const cid   = matchChannelToCanal(r.channel);
+        const month = MONTHS_FULL[r.saleMonth - 1];
+        if (!map[cid]) map[cid] = {};
+        map[cid][month] = (map[cid][month] || 0) + r.revenueNet;
+      }
+      setPrevYearRevenue(map);
+    }).catch(() => {})
       .finally(() => setIsLoadingData(false));
   }, [tenantId, relevantSeasons, selectedFiscalYear]);
 

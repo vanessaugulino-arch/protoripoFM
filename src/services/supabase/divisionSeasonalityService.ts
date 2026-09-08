@@ -11,8 +11,7 @@
 //   históricos como fator de rateio, mantendo o total da divisão inalterado.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { supabase } from '../../lib/supabase'
-import { matchChannelToCanal, normalizeDivision } from './historicalProfileService'
+import { matchChannelToCanal, normalizeDivision, getSalesMonthlyAggregates } from './historicalProfileService'
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
@@ -61,31 +60,14 @@ export async function getDivisionSeasonality(
   }
   if (!tenantId) return empty
 
-  const db = supabase as any
-
-  // 1. Lê sales_history
-  const { data: sales, error: salesErr } = await db
-    .from('sales_history')
-    .select('channel, sale_date, revenue_net, price_realized, sku')
-    .eq('tenant_id', tenantId)
-    .not('revenue_net', 'is', null)
-    .gt('revenue_net', 0)
-    .limit(150_000)
-
-  if (salesErr || !sales?.length) return empty
-
-  // 2. Lê catálogo de produtos (para obter divisão por SKU)
-  const { data: products } = await db
-    .from('products')
-    .select('sku, division, price_sale')
-    .eq('tenant_id', tenantId)
-    .not('sku', 'is', null)
-
-  // 3. Monta map SKU → { division, price_sale }
-  const skuMap = new Map<string, { division: string; price_sale: number }>()
-  for (const p of products ?? []) {
-    if (p.sku) skuMap.set(String(p.sku), { division: p.division ?? '', price_sale: p.price_sale ?? 0 })
-  }
+  // BUG real corrigido aqui: lia sales_history CRUA com LIMIT fixo (150k) e
+  // agregava em JS — um tenant com mais linhas que o limite tinha o perfil
+  // histórico calculado sobre uma fatia arbitrária do banco (sem ORDER BY),
+  // meses inteiros sumiam silenciosamente. Agora usa a agregação mensal por
+  // canal/divisão já feita no banco (get_sales_monthly_aggregates, migration
+  // 026) — sem limite, sempre o histórico completo.
+  const rows = await getSalesMonthlyAggregates(tenantId)
+  if (!rows.length) return empty
 
   // ─── Acumuladores ────────────────────────────────────────────────────────────
   // canal → divId → monthName → { receita, sumPmvW, wTotal }
@@ -95,28 +77,23 @@ export async function getDivisionSeasonality(
   const canalDivMap = new Map<string, Map<string, DivAcc>>()
   const consoDivMap = new Map<string, DivAcc>()   // consolidated across canals
 
-  for (const row of sales) {
-    const rev     = (row.revenue_net  as number) ?? 0
-    const pmv     = (row.price_realized as number) ?? 0
-    const canalId = matchChannelToCanal(row.channel ?? '')
-    const prod    = skuMap.get(String(row.sku ?? ''))
-    if (!prod?.division) continue
+  for (const row of rows) {
+    if (!row.division) continue
 
-    const divId   = normalizeDivision(prod.division)
-    const label   = prod.division
-    const dateStr = (row.sale_date as string) ?? ''
-    const monthIdx = dateStr ? new Date(dateStr + 'T00:00:00').getMonth() : -1
-    if (monthIdx < 0) continue
-    const month = MONTHS_FULL[monthIdx]
+    const canalId = matchChannelToCanal(row.channel)
+    const divId   = normalizeDivision(row.division)
+    const label   = row.division
+    if (row.saleMonth < 1 || row.saleMonth > 12) continue
+    const month = MONTHS_FULL[row.saleMonth - 1]
 
     const updateAcc = (map: Map<string, DivAcc>) => {
       if (!map.has(divId)) map.set(divId, { label, months: new Map() })
       const divAcc = map.get(divId)!
       if (!divAcc.months.has(month)) divAcc.months.set(month, { receita: 0, sumPmvW: 0, wTotal: 0 })
       const mAcc = divAcc.months.get(month)!
-      mAcc.receita  += rev
-      mAcc.sumPmvW  += pmv * rev
-      mAcc.wTotal   += rev
+      mAcc.receita  += row.revenueNet
+      mAcc.sumPmvW  += row.pmvWeightedSum
+      mAcc.wTotal   += row.revenueNet
     }
 
     // Por canal
