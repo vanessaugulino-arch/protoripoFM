@@ -119,16 +119,16 @@ export function applyDivisionEdit(
   }
 }
 
-// ─── Cluster Giro × Cobertura × Estoque Médio (Bloco 4 — Volume/Orçamento) ────
-// Diferente do T3 (Custo > Margem > MKD, hierarquia fixa), este cluster não tem
-// prioridade fixa: as 3 pontas são equivalentes, e a última editada vira o
-// driver — as outras duas se ajustam. Nunca dá pra editar duas pontas ao mesmo
-// tempo, porque Giro e Cobertura são reciprocamente definidos pelo mesmo par
-// (Vendas Esperadas, dias da temporada), e Estoque Médio decorre de qualquer
-// um dos dois.
+// ─── Cluster Giro × Estoque Médio (Bloco 4 — Volume/Orçamento) ────────────────
+// 2026-09-08: Cobertura SAIU deste cluster (decisão da usuária) — virou
+// Forward Coverage, indicador real e independente (estoque inicial ÷ vendas
+// em janela fixa de 90 dias, via inventory_snapshots/sales_history), sem
+// relação algébrica com Giro. Ver HISTORICAL_CASCADE_ARCHITECTURE.md.
 //
-//   Giro (vezes na temporada)     = diasDaTemporada / Cobertura
-//   Cobertura (dias)              = diasDaTemporada / Giro
+// Com só 2 pontas (Giro, Estoque Médio) e 1 equação, não há mais hierarquia
+// nem round-robin de 3 vias: a última editada vira o driver, a outra deriva.
+//
+//   Giro (vezes na temporada)     = Vendas Esperadas / Estoque Médio
 //   Estoque Médio (peças)         = Vendas Esperadas / Giro
 //
 // Estoque Inicial é fato real (protegido, nunca recalculado por este cluster).
@@ -139,52 +139,46 @@ export function applyDivisionEdit(
 export interface VolumeClusterInputs {
   vendasEsperadas: number  // peças — âncora do cluster
   estoqueInicial:  number  // peças — protegido, fato real
-  diasDaTemporada: number
+  diasDaTemporada: number  // não usado neste cluster (era só p/ Cobertura) — mantido no tipo para não quebrar chamadores existentes
 }
 
 export interface VolumeClusterResult {
   giro:           number
-  coverage:       number
   estoqueMedio:   number
   replenishments: number
 }
 
-export function applyVolumeCoverageEdit(
-  editedField: 'giro' | 'coverage' | 'estoqueMedio',
+export function applyVolumeEdit(
+  editedField: 'giro' | 'estoqueMedio',
   editedValue: number,
   inputs: VolumeClusterInputs,
 ): VolumeClusterResult {
-  const { vendasEsperadas, estoqueInicial, diasDaTemporada } = inputs
-  let giro = 0, coverage = 0, estoqueMedio = 0
+  const { vendasEsperadas, estoqueInicial } = inputs
+  let giro = 0, estoqueMedio = 0
 
   if (editedField === 'giro') {
     giro         = Math.max(0.01, editedValue)
-    coverage     = diasDaTemporada / giro
     estoqueMedio = vendasEsperadas / giro
-  } else if (editedField === 'coverage') {
-    coverage     = Math.max(0, editedValue)
-    giro         = coverage > 0 ? diasDaTemporada / coverage : 0
-    estoqueMedio = diasDaTemporada > 0 ? (vendasEsperadas * coverage) / diasDaTemporada : 0
   } else {
     estoqueMedio = Math.max(0, editedValue)
     giro         = estoqueMedio > 0 ? vendasEsperadas / estoqueMedio : 0
-    coverage     = giro > 0 ? diasDaTemporada / giro : 0
   }
 
   const replenishments = Math.max(0, 2 * (estoqueMedio - estoqueInicial) + vendasEsperadas)
 
-  return { giro, coverage, estoqueMedio, replenishments }
+  return { giro, estoqueMedio, replenishments }
 }
 
 /**
- * Recalcula Estoque Médio + Reposições quando Vendas Esperadas ou Estoque
- * Inicial mudam — mantém a Cobertura atual como referência (é a ponta mais
- * "assentada" do cluster), já que essas duas edições não fazem parte do
- * round-robin do cluster, mas ainda precisam refletir nele.
+ * Recalcula Giro + Reposições quando Vendas Esperadas ou Estoque Inicial
+ * mudam — mantém o Estoque Médio atual como referência (é a ponta mais
+ * "assentada" do cluster agora que só restam duas), já que essas duas
+ * edições não fazem parte do round-robin do cluster, mas ainda precisam
+ * refletir nele.
  */
 export function recalcVolumeClusterFromAnchor(
-  currentCoverage: number,
+  currentEstoqueMedio: number,
   inputs: VolumeClusterInputs,
 ): VolumeClusterResult {
-  return applyVolumeCoverageEdit('coverage', currentCoverage, inputs)
+  return applyVolumeEdit('estoqueMedio', currentEstoqueMedio, inputs)
 }

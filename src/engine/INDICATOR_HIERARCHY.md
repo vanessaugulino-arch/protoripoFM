@@ -76,37 +76,45 @@ o sistema aplica **escala proporcional** com `fator = RB_novo / RB_base`.
 
 ---
 
-## CLUSTER T2 — GIRO × ESTOQUE MÉDIO R$ × COBERTURA
+## CLUSTER T2 — GIRO × ESTOQUE MÉDIO R$
 
-### Hierarquia estratégica (↑ = mais protegido)
-```
-Giro  >  Cobertura  >  Estoque Médio R$
-```
-> Giro é KPI de performance estratégica — definido pela liderança.
-> Cobertura é gestão de ciclo — compromisso com operações.
-> Estoque Médio é consequência das compras — o mais flexível.
+> **Redesenhado em 2026-09-08.** Cobertura SAIU deste cluster — a usuária
+> confirmou que a Cobertura real do negócio é *Forward Coverage* (Dias de
+> Suprimento Futuro): estoque **inicial** (foto do dia 1 do mês) ÷ vendas
+> realizadas/projetadas numa janela **fixa de 90 dias**, × 90. Isso não fecha
+> algebricamente com o Giro do jeito que a versão anterior deste cluster
+> assumia (que usava estoque médio e dias da temporada, variável). Cobertura
+> agora é um indicador **real e independente**, lido de `inventory_snapshots`
+> × `sales_history` (ainda não implementado — tabelas de estoque vazias hoje).
+> Ver [HISTORICAL_CASCADE_ARCHITECTURE.md](./HISTORICAL_CASCADE_ARCHITECTURE.md).
 
-**Alerta de divergência:** quando dois campos estão ambos tocados e o terceiro
-é editado, pode haver inconsistência matemática momentânea (ex: Giro e EstMed
-apontam para Coberturas diferentes). Exibir indicador visual de alerta — não
-bloquear a edição.
+### Só 2 variáveis, 1 equação — sem hierarquia
+
+```
+Giro = Receita Líquida / Estoque Médio R$
+```
+
+Com 3 variáveis (versão antiga), duas podiam divergir entre si de forma
+matematicamente inconsistente, exigindo hierarquia de proteção e alerta de
+divergência. Com 2 variáveis e 1 equação, **é sempre consistente por
+construção** — não há o que divergir. Regra única: o último campo tocado é a
+verdade, o outro deriva dele.
 
 ### Regras de absorção
 
 | Edição | Contexto | Absorve | Fórmula |
 |---|---|---|---|
-| Giro | nenhum toque | EstMed | EstMed = RL/Giro; Cobertura = 365/Giro |
-| Giro | EstMed tocado | Cobertura | Cobertura = 365/Giro (⚠ alerta divergência com EstMed) |
-| Giro | Cobertura tocada | EstMed | EstMed = RL/Giro |
-| Giro | ambos tocados | EstMed | Giro soberano; Cobertura protegida |
-| EstMed | nenhum toque | Giro | Giro = RL/EstMed; Cobertura segue |
-| EstMed | Giro tocado | Cobertura | Cobertura = EstMed×365/RL (⚠ alerta divergência) |
-| EstMed | Cobertura tocada | Giro | Giro = RL/EstMed |
-| EstMed | ambos tocados | Cobertura | Giro protegido |
-| Cobertura | nenhum toque | EstMed | EstMed = (RL/365)×Cob; Giro = 365/Cob |
-| Cobertura | EstMed tocado | Giro | Giro = 365/Cob (⚠ alerta divergência) |
-| Cobertura | Giro tocado | EstMed | EstMed = Cob×RL/365 |
-| Cobertura | ambos tocados | EstMed | Giro protegido |
+| Giro | nenhum toque | EstMed | EstMed = RL/Giro |
+| Giro | ambos tocados | EstMed | Giro soberano (último tocado) |
+| EstMed | nenhum toque | Giro | Giro = RL/EstMed |
+| EstMed | ambos tocados | Giro | EstMed soberano (último tocado) |
+
+### Onde a Cobertura real aparece agora
+
+Informativa, fora deste cluster — em qualquer tela que mostrava Cobertura
+antes (M1, M3/M4 Bloco 4), ela vira um campo **somente leitura**, mostrando
+"sem dado real ainda" até `inventory_snapshots`/`purchase_orders` terem dado
+importado. Nunca mais calculada a partir de Giro.
 
 ---
 
@@ -172,8 +180,8 @@ Durante a simulação (antes do commit), ambos os campos são livremente editáv
 ### Cascata automática para T2 (toda vez que ComprasPeças muda)
 
 ```
-ComprasPeças ↓ → EstMed R$ ↓ → Giro ↑, Cobertura ↓  (eficiência — vende mais do que compra)
-ComprasPeças ↑ → EstMed R$ ↑ → Giro ↓, Cobertura ↑  (reserva — compra para cobrir demanda futura)
+ComprasPeças ↓ → EstMed R$ ↓ → Giro ↑  (eficiência — vende mais do que compra)
+ComprasPeças ↑ → EstMed R$ ↑ → Giro ↓  (reserva — compra para cobrir demanda futura)
 ```
 
 ### Gap intencional T4 × T1
@@ -224,7 +232,7 @@ Estas regras valem para **todas as telas** onde os indicadores aparecem.
 | Cluster | Módulo 1 | Módulo 2 (Canal) | Módulo 3 (Divisão) | Módulo 4 (Ciclo) | Módulo 5 (Sort.) | DC / Mix | Tracking |
 |---|---|---|---|---|---|---|---|
 | T1 Receita/PMV/Peças | ✓ edição | ✓ edição | ✓ edição | ✓ leitura | ✓ PMV/Vol | ✓ PMV/Vol | ✓ leitura |
-| T2 Giro/EstMed/Cob | ✓ edição | ✓ edição | ✓ edição | ✓ Cobertura | — | — | ✓ leitura |
+| T2 Giro/EstMed (Cobertura saiu do cluster — real, à parte) | ✓ edição | ✓ edição | ✓ edição | ✓ leitura | — | — | ✓ leitura |
 | T3 Margem/Custo/MKD | ✓ edição | ✓ edição | ✓ edição | — | ✓ Margem | ✓ Margem | ✓ leitura |
 | T4 Orçamento/Compras | ✓ edição | ✓ edição | ✓ edição | ✓ edição | ✓ edição | — | — |
 

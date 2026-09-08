@@ -15,8 +15,12 @@
 //     Não escalam: pmv, margemBruta, custoMedio, giro, gmroi, cobertura, mkdPct, ticketMedio
 //     MKD R$ = Receita × MKD% → escala como consequência natural (% fica, R$ acompanha)
 //
-// CLUSTER T2 — GIRO × ESTOQUE MÉDIO R$ × COBERTURA
-//   Hierarquia: Giro > Cobertura > Estoque Médio
+// CLUSTER T2 — GIRO × ESTOQUE MÉDIO R$
+//   Só 2 variáveis, 1 equação (Giro = RL/EstMed) — sem hierarquia, sempre
+//   consistente por construção. Cobertura SAIU deste cluster em 2026-09-08
+//   (decisão da usuária) — virou Forward Coverage, indicador real e
+//   independente (estoque inicial ÷ vendas em janela fixa de 90 dias, via
+//   inventory_snapshots/sales_history). Ver HISTORICAL_CASCADE_ARCHITECTURE.md.
 //
 // CLUSTER T3 — MARGEM% × CUSTO MÉDIO × MKD%
 //   Hierarquia: Custo Médio > Margem% > MKD% (MKD absorve por padrão)
@@ -25,7 +29,7 @@
 //   Natureza: BIDIRECIONAL — sem hierarquia fixa, LIFO (último tocado = driver)
 //   Bridge com T3: CustoMédio (ComprasPeças = Orçamento / CustoMédio)
 //   Soberania pós-commit: o último campo definido vira âncora do cenário
-//   Cascata para T2: ComprasPeças muda → EstMed muda → Giro/Cobertura ajustam
+//   Cascata para T2: ComprasPeças muda → EstMed muda → Giro ajusta
 //   Nota: LIFO completo requer touchOrder[] — implementado parcialmente em v4.1,
 //         completo na reescrita v5 (task #36)
 //
@@ -214,13 +218,14 @@ export function buildStateFromBaseline(baseline: Partial<PlanningValues>): Plann
 //            Hierarquia: Custo > Margem > MKD% (MKD absorve por padrão)
 //            Markdown corrói a margem: Margem% = (RL − Custo×Peças − MKD R$)/RL
 //            INDEPENDENTE DO FOCO — activeKeys não influencia o cluster
-//   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura
-//            Hierarquia: Giro > Cobertura > EstMed
+//   5.  T2 — Giro(R$) ↔ EstoqueMédio(R$)
+//            2 variáveis, 1 equação (Giro=RL/EstMed) — sem hierarquia
+//            Cobertura NÃO participa mais (2026-09-08) — ver cabeçalho do arquivo
 //   6.  T4 — Orçamento ↔ ComprasPeças  [BIDIRECIONAL]
 //            LIFO: último tocado entre orcamento/comprasPecas = driver
 //            Bridge: CustoMédio (ComprasPeças = Orcamento / CustoMédio)
-//            Cascata: ComprasPeças → EstMed → Giro/Cobertura
-//   7.  Produção em valor / Estoque Final / Orçamento Total (derivados)
+//            Cascata: ComprasPeças → EstMed → Giro
+//   7.  Produção em valor / Orçamento Total (derivados)
 //   8.  Total de Peças (derivado)
 //   9.  MKD R$ (derivado: Receita × MKD%)
 //  10.  GMROI (derivado: LucroBruto / EstMed)
@@ -431,7 +436,7 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   // GMROI = LucroBruto / EstoqueMédio, com LucroBruto = RL × Margem%.
   // Hierarquia: GMROI é KPI estratégico (protegido, como o Giro); o Estoque
   // Médio é o absorvedor flexível. Editar GMROI (lucro fixo) → EstMédio absorve;
-  // em seguida o T2 (Giro/Cobertura) segue do novo estoque. Quando o GMROI NÃO
+  // em seguida o T2 (Giro) segue do novo estoque. Quando o GMROI NÃO
   // é tocado, ele permanece DERIVADO (Passo 10).
   if (touched.has('gmroi') && v.gmroi && v.gmroi > 0) {
     const rlG = v.receitaLiquida ?? v.receitaBruta
@@ -440,76 +445,39 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
       v.estoqueMediao  = lucroBruto / v.gmroi
       s.estoqueMediao  = 'calculated'
       if (v.estoqueMediao > 0) {
-        v.giro      = rlG / v.estoqueMediao
-        v.cobertura = (v.estoqueMediao / rlG) * 365
-        s.giro      = 'calculated'
-        s.cobertura = 'calculated'
+        v.giro = rlG / v.estoqueMediao
+        s.giro = 'calculated'
       }
       s.gmroi = 'locked'
     }
   }
 
-  // ── PASSO 5: CLUSTER T2 — Giro(R$) ↔ EstoqueMédio(R$) ↔ Cobertura ──────
-  // Hierarquia: Giro > Cobertura > Estoque Médio (EstMed absorve por padrão)
+  // ── PASSO 5: CLUSTER T2 — Giro(R$) ↔ EstoqueMédio(R$) ────────────
+  // Cobertura SAIU deste cluster (2026-09-08, decisão da usuária) — virou
+  // Forward Coverage, um indicador real e independente (estoque inicial ÷
+  // vendas realizadas/projetadas numa janela fixa de 90 dias, lido de
+  // inventory_snapshots/sales_history), sem relação algébrica com Giro.
+  // Ver HISTORICAL_CASCADE_ARCHITECTURE.md — a leitura real ainda não foi
+  // construída (tabelas de estoque vazias); até lá o campo `cobertura` fica
+  // fora desta reconciliação (nem lido nem escrito aqui).
   //
-  // Editar Giro:
-  //   nenhum tocado   → EstMed = RL/Giro; Cobertura = 365/Giro
-  //   EstMed tocado   → Cobertura absorve (⚠ alerta divergência matemática)
-  //   Cobertura tocada → EstMed absorve
-  //   ambos tocados   → EstMed absorve (Giro soberano)
-  //
-  // Editar EstMed:
-  //   nenhum tocado  → Giro = RL/EstMed; Cobertura segue
-  //   Giro tocado    → Cobertura absorve (Giro protegido; ⚠ alerta divergência)
-  //   Cobertura tocada → Giro absorve
-  //   ambos tocados  → Cobertura absorve (Giro protegido)
-  //
-  // Editar Cobertura:
-  //   nenhum tocado → EstMed = (RL/365)×Cob; Giro = 365/Cob
-  //   EstMed tocado → Giro absorve (⚠ alerta divergência)
-  //   Giro tocado   → EstMed absorve
-  //   ambos tocados → EstMed absorve (Giro protegido)
+  // Com só 2 variáveis e 1 equação (Giro = RL/EstMed), não sobra ambiguidade
+  // de quem absorve — o último campo tocado é a verdade, o outro deriva dele.
+  // Sem alerta de divergência: com 1 equação e 2 incógnitas é sempre
+  // consistente por construção (a divergência só existia com 3 variáveis).
   {
     const hasGiro   = touched.has('giro')
     const hasEstMed = touched.has('estoqueMediao')
-    const hasCober  = touched.has('cobertura')
-    const t2        = [hasGiro, hasEstMed, hasCober].filter(Boolean).length
     const rl        = v.receitaLiquida ?? v.receitaBruta
 
-    if (t2 >= 2 && rl && rl > 0) {
-      if (hasGiro && hasEstMed && v.giro && v.giro > 0 && v.estoqueMediao) {
-        v.cobertura = (v.estoqueMediao / rl) * 365
-        s.cobertura = 'calculated'
-        s.giro      = 'locked'
-      } else if (hasGiro && hasCober && v.giro && v.giro > 0 && v.cobertura) {
-        v.estoqueMediao = rl / v.giro
-        s.estoqueMediao = 'calculated'
-        s.cobertura     = 'locked'
-      } else if (hasEstMed && hasCober && v.estoqueMediao && v.estoqueMediao > 0 && v.cobertura) {
-        v.giro          = rl / v.estoqueMediao
-        s.giro          = 'calculated'
-        s.estoqueMediao = 'locked'
-      }
-    } else if (!soAlterouReceita && rl && rl > 0) {
+    if (!soAlterouReceita && rl && rl > 0) {
       if (hasGiro && v.giro && v.giro > 0) {
         v.estoqueMediao = rl / v.giro
         s.estoqueMediao = 'calculated'
-        if (v.estoqueMediao > 0) {
-          v.cobertura = (v.estoqueMediao / rl) * 365
-          s.cobertura = 'locked'
-        }
+        if (hasEstMed) s.giro = 'locked' // ambos tocados — Giro protegido
       } else if (hasEstMed && v.estoqueMediao && v.estoqueMediao > 0) {
-        v.giro      = rl / v.estoqueMediao
-        s.giro      = 'calculated'
-        v.cobertura = (v.estoqueMediao / rl) * 365
-        s.cobertura = 'calculated'
-      } else if (hasCober && v.cobertura && v.cobertura > 0) {
-        v.estoqueMediao = (rl / 365) * v.cobertura
-        s.estoqueMediao = 'calculated'
-        if (v.estoqueMediao > 0) {
-          v.giro = rl / v.estoqueMediao
-          s.giro = 'locked'
-        }
+        v.giro = rl / v.estoqueMediao
+        s.giro = 'calculated'
       }
     }
   }
@@ -529,9 +497,9 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
   //   CustoMédio mudou + orcamento foi o último tocado → ComprasPeças = Orcamento/novo_Custo
   //   CustoMédio mudou + comprasPecas foi o último tocado → Orcamento = ComprasPeças×novo_Custo
   //
-  // Cascata para T2: ComprasPeças → EstMed → Giro/Cobertura
-  //   ComprasPeças↓ → EstMed↓ → Giro↑, Cobertura↓ (eficiência)
-  //   ComprasPeças↑ → EstMed↑ → Giro↓, Cobertura↑ (reserva de estoque)
+  // Cascata para T2: ComprasPeças → EstMed → Giro
+  //   ComprasPeças↓ → EstMed↓ → Giro↑ (eficiência)
+  //   ComprasPeças↑ → EstMed↑ → Giro↓ (reserva de estoque)
   //
   // Gap intencional: PecasVendidas (T1) ≠ ComprasPeças (T4)
   //   diferença = variação de estoque no período — não é erro, exibir como alerta visual
@@ -587,10 +555,11 @@ export function recalculate(state: PlanningState, activeKeys?: string[]): Planni
     s.producaoValor = 'calculated'
   }
 
-  if (v.receitaLiquida && v.cobertura && v.margemBruta !== null && v.cobertura > 0) {
-    v.estoqueFinal = (v.receitaLiquida / 365) * v.cobertura * (1 - v.margemBruta / 100)
-    s.estoqueFinal = 'calculated'
-  }
+  // estoqueFinal deixou de ser calculado aqui (2026-09-08) — dependia da
+  // Cobertura antiga, removida do cluster T2. Conceitualmente é sempre o
+  // estoque inicial da temporada seguinte (rollover) — uma posição real de
+  // estoque (inventory_snapshots), não uma conta algébrica. Não é lido em
+  // nenhum outro lugar do código hoje.
 
   const prodVal = v.producaoValor ?? 0
   if (v.orcamento !== null) {

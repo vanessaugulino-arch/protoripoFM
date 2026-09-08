@@ -107,7 +107,7 @@ import {
 } from "../types/module3";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { computeMarginCompensationViaMkd } from "../../engine/clusterCompensation";
-import { applyVolumeCoverageEdit, recalcVolumeClusterFromAnchor } from "../../engine/divisionEngineAdapter";
+import { applyVolumeEdit, recalcVolumeClusterFromAnchor } from "../../engine/divisionEngineAdapter";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getSazonalidadeCompletedYears, seasonFiscalYearsTouched } from "../../services/supabase/planningScenarioService";
 import { getDivisionSeasonality, type DivisionMonthProfile } from "../../services/supabase/divisionSeasonalityService";
@@ -2029,15 +2029,15 @@ function DivisionBlockCard({
     estoqueInicial:  block.volumeCoverage.initialStock,
     diasDaTemporada,
   };
-  const handleVolumeClusterEdit = (field: "giro" | "coverage" | "estoqueMedio", value: number) => {
-    const r = applyVolumeCoverageEdit(field, value, volumeClusterInputs);
-    onUpdateVolume({ giro: r.giro, coverage: r.coverage, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
+  const handleVolumeClusterEdit = (field: "giro" | "estoqueMedio", value: number) => {
+    const r = applyVolumeEdit(field, value, volumeClusterInputs);
+    onUpdateVolume({ giro: r.giro, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
   };
   // Vendas Esp. e Est. Inicial não fazem parte do round-robin, mas ainda
-  // precisam refletir nele — mantém a Cobertura atual como referência.
+  // precisam refletir nele — mantém o Estoque Médio atual como referência.
   const handleAnchorEdit = (patch: Partial<VolumeAndCoverage>) => {
     const nextInputs = { ...volumeClusterInputs, ...patch };
-    const r = recalcVolumeClusterFromAnchor(block.volumeCoverage.coverage, nextInputs);
+    const r = recalcVolumeClusterFromAnchor(block.volumeCoverage.estoqueMedio ?? 0, nextInputs);
     onUpdateVolume({ ...patch, giro: r.giro, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
   };
 
@@ -2311,28 +2311,33 @@ function DivisionBlockCard({
             tooltip="Quantidade de peças em estoque no início da temporada — fato real, não é recalculado pelo cluster abaixo. Mudar aqui ajusta as Reposições pra manter o Estoque Médio consistente."
           />
 
-          {/* Cluster Giro × Cobertura × Estoque Médio — edite UMA ponta por vez;
-              as outras duas se recalculam automaticamente. */}
+          {/* Cluster Giro × Estoque Médio — edite UMA ponta por vez, a outra
+              se recalcula automaticamente (2026-09-08: Cobertura saiu deste
+              cluster, virou Forward Coverage — indicador real e independente,
+              lido de estoque/vendas reais, não mais uma 3ª ponta editável
+              aqui. Ver src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md). */}
           <div className="pt-1 border-t border-[#28071C]/10 space-y-1.5">
             <CompactField
               label="Giro"
               value={block.volumeCoverage.giro ?? 0}
               onChange={(v) => handleVolumeClusterEdit("giro", v)}
               suffix="x"
-              tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula Cobertura e Estoque Médio — as três pontas nunca são editadas juntas."
-            />
-            <CompactField
-              label="Cobertura (d)"
-              value={block.volumeCoverage.coverage}
-              onChange={(v) => handleVolumeClusterEdit("coverage", v)}
-              tooltip="Quantos dias o estoque médio cobre as vendas planejadas. Editar aqui recalcula Giro e Estoque Médio."
+              tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula o Estoque Médio."
             />
             <CompactField
               label="Estoque Médio"
               value={block.volumeCoverage.estoqueMedio ?? 0}
               onChange={(v) => handleVolumeClusterEdit("estoqueMedio", v)}
-              tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula Giro e Cobertura."
+              tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula o Giro."
             />
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
+                Cobertura (d)
+              </label>
+              <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]/50">
+                sem dado real ainda
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">

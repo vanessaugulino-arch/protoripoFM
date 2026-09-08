@@ -242,10 +242,11 @@ export default function CollectionPlan() {
   }, [targets, histProfiles, seasonMonths]);
 
   // ─── Timeline mensal: peças entrando, venda esperada, estoque e cobertura ──
-  // Cobertura reaproveita a lógica do cluster Giro×Cobertura do M4
-  // (divisionEngineAdapter.applyVolumeCoverageEdit), só que aplicada mês a mês
-  // em vez de uma vez só no total da temporada: estoque acumulado ao fim do
-  // mês ÷ ritmo de venda esperado do mês × ~30 dias.
+  // Projeção própria desta tela (não usa o cluster T2 do M4, que só tem
+  // Giro↔Estoque Médio desde 2026-09-08): estoque acumulado ao fim do mês ÷
+  // ritmo de venda esperado do mês × ~30 dias. Não é o Forward Coverage real
+  // (que usa estoque INICIAL e janela fixa de 90 dias) — alinhar isso é
+  // trabalho pendente, ver src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
   const buildTimeline = useCallback((divisionId: string) => {
     const div = divisionsPlan[divisionId];
     const target = targets[divisionId];

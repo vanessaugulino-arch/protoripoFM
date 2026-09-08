@@ -68,14 +68,19 @@ export interface VolumeAndCoverage {
   orcamento?: number;               // Orçamento de compra em R$
   
   // Comum
-  coverage: number;                 // Dias de cobertura de estoque
+  // coverage (dias de cobertura de estoque): a partir de 2026-09-08 é
+  // Forward Coverage — indicador real e independente (estoque inicial ÷
+  // vendas em janela fixa de 90 dias, via inventory_snapshots/sales_history),
+  // não mais calculado pelo cluster Giro↔Estoque Médio abaixo. Somente
+  // leitura na UI até essa leitura real existir. Ver
+  // src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
+  coverage: number;
   initialStock: number;             // Estoque inicial em peças — fato real, protegido
   replenishments: number;           // Total de reposições no período — calculado (absorve)
   unitsExpectedSold: number;        // Peças esperadas a vender (base para sell-through)
 
-  // Cluster Giro × Cobertura × Estoque Médio — o usuário só edita UMA ponta por
-  // vez; as outras duas são recalculadas (ver applyVolumeCoverageEdit). Nenhuma
-  // combinação de duas pontas ao mesmo tempo é permitida.
+  // Cluster Giro × Estoque Médio — o usuário só edita UMA ponta por vez; a
+  // outra é recalculada (ver divisionEngineAdapter.applyVolumeEdit).
   giro?: number;                    // Vezes que o estoque "vira" na temporada
   estoqueMedio?: number;             // Peças — ponto médio entre estoque inicial e final
 }
