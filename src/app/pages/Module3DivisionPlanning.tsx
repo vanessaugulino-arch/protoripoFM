@@ -285,6 +285,11 @@ export default function Module3DivisionPlanning() {
   // onde começar. Uma temporada de Verão (ago-fev) toca 2 anos; o usuário
   // precisa ver isso com clareza antes de entrar no detalhe por divisão.
   const [showSeasonPickerPopup, setShowSeasonPickerPopup] = useState(false);
+  // Popup em 2 passos: ano primeiro, temporada depois — antes era uma lista
+  // única com todas as temporadas de todos os anos misturadas (a maioria
+  // travada esperando Sazonalidade de outro ano), difícil de escanear.
+  const [seasonPickerStep, setSeasonPickerStep] = useState<"ano" | "temporada">("ano");
+  const [seasonPickerYear, setSeasonPickerYear] = useState<number | null>(null);
   const seasonPickerShownRef = useRef(false);
   const [referenceSeasonId, setReferenceSeasonId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
@@ -504,6 +509,27 @@ export default function Module3DivisionPlanning() {
       })
       .sort((a, b) => (a.temporada.anoFiscal ?? 0) - (b.temporada.anoFiscal ?? 0));
   }, [temporadas, sazonalidadeCompletedYears]);
+
+  // Anos fiscais disponíveis para o 1º passo do popup — cada um com quantas
+  // das suas temporadas já estão liberadas, pra dar uma pista antes de entrar.
+  const anosComStatus = useMemo(() => {
+    const porAno = new Map<number, { total: number; liberadas: number }>();
+    for (const { temporada: t, liberada } of temporadasComStatus) {
+      const ano = t.anoFiscal ?? new Date().getFullYear();
+      const atual = porAno.get(ano) ?? { total: 0, liberadas: 0 };
+      atual.total += 1;
+      if (liberada) atual.liberadas += 1;
+      porAno.set(ano, atual);
+    }
+    return Array.from(porAno.entries())
+      .map(([ano, status]) => ({ ano, ...status }))
+      .sort((a, b) => a.ano - b.ano);
+  }, [temporadasComStatus]);
+
+  const temporadasDoAnoSelecionado = useMemo(
+    () => temporadasComStatus.filter(({ temporada: t }) => t.anoFiscal === seasonPickerYear),
+    [temporadasComStatus, seasonPickerYear],
+  );
 
   // Base real do cluster Giro/Cobertura/Estoque Médio (Bloco 4): dias da
   // temporada de verdade, não um "365" genérico. 30 dias/mês, mesma convenção
@@ -1003,7 +1029,11 @@ export default function Module3DivisionPlanning() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-[#28071C] text-lg font-bold">Temporada de Planejamento</h2>
             <button
-              onClick={() => setShowSeasonPickerPopup(true)}
+              onClick={() => {
+                setSeasonPickerStep("ano");
+                setSeasonPickerYear(null);
+                setShowSeasonPickerPopup(true);
+              }}
               className="text-[#7598CF] text-xs font-semibold hover:underline"
             >
               Ver anos liberados
@@ -1022,8 +1052,13 @@ export default function Module3DivisionPlanning() {
                 className="w-full bg-white rounded-xl px-3 py-2 text-[#28071C] border-2 border-[#7598CF]/30 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 font-medium cursor-pointer"
               >
                 <option value="">Selecione a temporada...</option>
-                {temporadas.map((t) => (
-                  <option key={t.id} value={t.id}>{t.nome}</option>
+                {/* Mesmo filtro de liberação do popup — antes este select
+                    deixava escolher qualquer temporada, inclusive travada
+                    esperando Sazonalidade de outro ano, sem nenhum aviso. */}
+                {temporadasComStatus.map(({ temporada: t, liberada }) => (
+                  <option key={t.id} value={t.id} disabled={!liberada}>
+                    {t.nome}{!liberada ? " (aguardando Sazonalidade)" : ""}
+                  </option>
                 ))}
               </select>
               {selectedTemporada && (
@@ -1639,16 +1674,31 @@ export default function Module3DivisionPlanning() {
         )}
       </div>
 
-      {/* ─── MODAL: Seleção de Temporada (Fase 3) ──────────────────────────── */}
+      {/* ─── MODAL: Seleção de Temporada em 2 passos (ano → temporada) ─────── */}
       {showSeasonPickerPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
             <div className="flex items-start justify-between px-6 py-4 border-b border-[#28071C]/8">
-              <div>
-                <h2 className="text-[#28071C] font-bold text-base">Escolha a temporada</h2>
-                <p className="text-[#28071C]/50 text-xs mt-0.5">
-                  Uma temporada pode impactar 1 ou 2 anos comerciais — confira antes de começar.
-                </p>
+              <div className="flex items-start gap-2">
+                {seasonPickerStep === "temporada" && (
+                  <button
+                    onClick={() => { setSeasonPickerStep("ano"); setSeasonPickerYear(null); }}
+                    className="text-[#28071C]/40 hover:text-[#28071C] transition-colors mt-0.5"
+                    aria-label="Voltar para a escolha do ano"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                )}
+                <div>
+                  <h2 className="text-[#28071C] font-bold text-base">
+                    {seasonPickerStep === "ano" ? "Escolha o ano" : `Escolha a temporada de ${seasonPickerYear}`}
+                  </h2>
+                  <p className="text-[#28071C]/50 text-xs mt-0.5">
+                    {seasonPickerStep === "ano"
+                      ? "Primeiro o ano comercial, depois a temporada dentro dele."
+                      : "Uma temporada pode impactar 1 ou 2 anos comerciais — confira antes de começar."}
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setShowSeasonPickerPopup(false)}
@@ -1659,7 +1709,31 @@ export default function Module3DivisionPlanning() {
             </div>
 
             <div className="overflow-y-auto p-5 flex-1 flex flex-col gap-2.5">
-              {temporadasComStatus.map(({ temporada: t, anosNecessarios, anosFaltando, liberada }) => {
+              {seasonPickerStep === "ano" && (
+                <>
+                  {anosComStatus.map(({ ano, total, liberadas }) => (
+                    <button
+                      key={ano}
+                      onClick={() => { setSeasonPickerYear(ano); setSeasonPickerStep("temporada"); }}
+                      className="text-left rounded-xl border-2 border-[#28071C]/10 hover:border-[#7598CF]/50 hover:bg-[#7598CF]/4 px-4 py-3 transition-all flex items-center justify-between gap-2"
+                    >
+                      <span className="font-semibold text-[#28071C] text-sm">{ano}</span>
+                      <span className={`text-xs font-medium ${liberadas > 0 ? "text-[#7598CF]" : "text-[#28071C]/40"}`}>
+                        {liberadas > 0
+                          ? `${liberadas} de ${total} temporada${total > 1 ? "s" : ""} liberada${liberadas > 1 ? "s" : ""}`
+                          : `${total} temporada${total > 1 ? "s" : ""} — nenhuma liberada ainda`}
+                      </span>
+                    </button>
+                  ))}
+                  {anosComStatus.length === 0 && (
+                    <p className="text-[#28071C]/50 text-sm text-center py-6">
+                      Nenhuma temporada cadastrada ainda.
+                    </p>
+                  )}
+                </>
+              )}
+
+              {seasonPickerStep === "temporada" && temporadasDoAnoSelecionado.map(({ temporada: t, anosNecessarios, anosFaltando, liberada }) => {
                 const isSelected = String(t.id) === selectedSeasonId;
                 const cruzaAno = anosNecessarios.length > 1;
                 return (
@@ -1699,11 +1773,6 @@ export default function Module3DivisionPlanning() {
                   </button>
                 );
               })}
-              {temporadasComStatus.length === 0 && (
-                <p className="text-[#28071C]/50 text-sm text-center py-6">
-                  Nenhuma temporada cadastrada ainda.
-                </p>
-              )}
             </div>
           </div>
         </div>
