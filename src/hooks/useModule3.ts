@@ -29,6 +29,9 @@ export interface UseModule3Options {
   macroTargets: MacroTarget;
   // Divisões reais do tenant (vindas de fetchTenantDivisions) — nunca uma lista fixa.
   divisionIds: string[];
+  // Ano fiscal real da temporada (temporada.anoFiscal) — usado só para gravar
+  // division_scenarios.year corretamente; nunca derivar isso do seasonId (UUID).
+  seasonYear: number;
 }
 
 function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated {
@@ -62,13 +65,29 @@ function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget):
   // seguida quando não há cenário salvo ainda.
   const equalShare = divisionIds.length > 0 ? 100 / divisionIds.length : 0;
 
+  // Preço médio: parte do PMV real do M1 (macroTargets.pmv) — antes era um
+  // literal fixo (195) igual pra qualquer tenant/temporada, nunca lido do M1
+  // apesar do que o comentário dizia. 195 só sobra como último fallback,
+  // para quando o M1 realmente não tem PMV definido ainda.
+  const avgPrice = macroTargets?.pmv ?? 195;
+  const coverage = 45;
+  const giro     = 180 / coverage;
+
   divisionIds.forEach((divId) => {
+    // Peças esperadas: deriva de receita_divisão ÷ preço médio, igual à mesma
+    // fórmula usada no motor de consolidação (calculateScenarioConsolidated).
+    // Antes era um literal fixo (1200) igual pra QUALQUER divisão, dando a
+    // falsa impressão de que duas divisões distintas tinham o mesmo volume —
+    // agora varia com a participação real de cada uma (mesmo que comece
+    // igualitária, aqui) e com a receita real da temporada.
+    const revDiv = (macroTargets?.revenue ?? 0) * (equalShare / 100);
+    const unitsExpectedSold = avgPrice > 0 && revDiv > 0 ? Math.round(revDiv / avgPrice) : 1200;
+
     divisions[divId] = {
       divisionId: divId,
       participation: equalShare,
       indicators: {
-        // Lê do M1; fallback para valores de referência quando M1 não tem o indicador
-        avgPrice:    195,
+        avgPrice,
         mkd:         15,
         margin:      macroTargets?.margin      ?? 48,
         sellThrough: macroTargets?.sellThrough ?? 75,
@@ -88,16 +107,12 @@ function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget):
         iconeMarca: 20,
       },
       volumeCoverage: {
-        coverage: 45,
-        initialStock: 1000,
-        replenishments: 500,
-        unitsExpectedSold: 1200,
-        // Bootstrap do cluster Giro/Cobertura/Estoque Médio — placeholder até o
-        // usuário tocar em qualquer ponta (aí sim vira a conta real, com os
-        // dias reais da temporada). 180 dias ~ 6 meses fiscais, mesmo fallback
-        // usado quando a temporada ainda não carregou.
-        giro: 180 / 45,
-        estoqueMedio: 1200 / (180 / 45),
+        coverage,
+        initialStock: Math.round(unitsExpectedSold * (5 / 6)),
+        replenishments: Math.round(unitsExpectedSold * (5 / 12)),
+        unitsExpectedSold,
+        giro,
+        estoqueMedio: unitsExpectedSold / giro,
       },
       meetsTarget: true,
       status: "draft",
@@ -422,9 +437,10 @@ export function useModule3(options: UseModule3Options) {
 
   // ─── Salvar Cenário ───────────────────────────────────────────────────────
   const saveScenario = useCallback(
-    (name: string, description?: string) => {
+    async (name: string, description?: string) => {
+      const localId = `scenario_${Date.now()}`;
       const scenario = {
-        id: `scenario_${Date.now()}`,
+        id: localId,
         name,
         description,
         seasonId: state.selectedSeasonId,
@@ -442,14 +458,15 @@ export function useModule3(options: UseModule3Options) {
         isActive: false,
       };
 
-      saveModule3Scenario(state.selectedSeasonId, scenario);
-
       setState((prev) => ({
         ...prev,
         scenarios: [...prev.scenarios, scenario],
       }));
+
+      await saveModule3Scenario(state.selectedSeasonId, options.seasonYear, scenario);
     },
-    [state.selectedSeasonId, state.referenceSeasonId, state.divisions, state.consolidated]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.selectedSeasonId, state.referenceSeasonId, state.divisions, state.consolidated, options.seasonYear]
   );
 
   // ─── Recarregar cenários do storage ──────────────────────────────────────

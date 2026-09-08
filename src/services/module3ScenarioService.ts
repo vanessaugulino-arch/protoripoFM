@@ -76,9 +76,16 @@ export function getModule3Scenario(
   return listModule3Scenarios(seasonId).find(s => s.id === scenarioId) ?? null;
 }
 
-// ─── Escrita: cache + Supabase write-through (fire-and-forget) ────────────────
+// ─── Escrita: cache + Supabase write-through ───────────────────────────────
+// year vem de fora (anoFiscal real da temporada) — seasonId é o UUID da
+// temporada (seasons.id), nunca teve formato "ano-algo", então um parse tipo
+// Number(seasonId.split("-")[0]) sempre dava NaN e gravava o ano corrente.
 
-export function saveModule3Scenario(seasonId: string, scenario: Module3Scenario): void {
+export async function saveModule3Scenario(
+  seasonId: string,
+  year: number,
+  scenario: Module3Scenario,
+): Promise<void> {
   const existing = _cache.get(seasonId) ?? [];
   const idx = existing.findIndex(s => s.id === scenario.id);
   if (idx >= 0) {
@@ -89,14 +96,27 @@ export function saveModule3Scenario(seasonId: string, scenario: Module3Scenario)
   _cache.set(seasonId, existing);
 
   if (!_tenantId) return;
-  const yearNum = Number(seasonId.split("-")[0]) || new Date().getFullYear();
-  saveDivisionScenario(
-    _tenantId, seasonId, yearNum,
-    scenario.name, scenario.description ?? null,
-    scenario.divisions as Record<string, unknown>,
-    { ...scenario.consolidated, referenceSeasonId: scenario.referenceSeasonId } as Record<string, unknown>,
-    scenario.createdBy || undefined,
-  ).catch(err => console.warn("[module3] saveDivisionScenario erro:", err));
+  try {
+    const row = await saveDivisionScenario(
+      _tenantId, seasonId, year,
+      scenario.name, scenario.description ?? null,
+      scenario.divisions as Record<string, unknown>,
+      { ...scenario.consolidated, referenceSeasonId: scenario.referenceSeasonId } as Record<string, unknown>,
+      scenario.createdBy || undefined,
+    );
+    // Reconcilia o id local (scenario_<timestamp>, gerado só pro cache
+    // otimista) com o id real gravado no banco — sem isso, "Aplicar Cenário"
+    // tenta um UPDATE ... WHERE id=<id local>, que nunca bate com nenhuma
+    // linha real, e a aplicação falha silenciosamente (sem erro, sem
+    // is_applied=true em lugar nenhum) — exatamente o bug que travava o
+    // desbloqueio do M5 mesmo depois do usuário "aplicar" o plano.
+    const cur = _cache.get(seasonId) ?? [];
+    const i2 = cur.findIndex(s => s.id === scenario.id);
+    if (i2 >= 0) cur[i2] = { ...cur[i2], id: row.id };
+    _cache.set(seasonId, cur);
+  } catch (err) {
+    console.warn("[module3] saveDivisionScenario erro:", err);
+  }
 }
 
 export function deleteModule3Scenario(seasonId: string, scenarioId: string): void {

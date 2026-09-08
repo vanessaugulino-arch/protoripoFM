@@ -122,7 +122,6 @@ import {
 } from "../../services/module3ScenarioService";
 import {
   listDivisionScenarios,
-  saveDivisionScenario,
   deleteDivisionScenario,
   applyDivisionScenario,
 } from "../../services/supabase/divisionScenarioService";
@@ -228,6 +227,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
   let annualRevenue = 0;
   let margin = 48;
   let gmroi = 3.5;
+  let pmv: number | undefined;
 
   if (plannedYears.length > 0) {
     // Tenta o ano fiscal da temporada primeiro; se não houver, usa o mais recente
@@ -247,6 +247,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
         annualRevenue = (values.receitaBruta as number) ?? 0;
         margin        = (values.margemBruta  as number) ?? 48;
         gmroi         = (values.gmroi        as number) ?? 3.5;
+        pmv           = (values.pmv          as number | null) ?? undefined;
         break;
       }
     }
@@ -254,10 +255,15 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
 
   return {
     seasonId: String(temporada.id),
+    // Rateio linear do M1 — só usado como fallback antes da Sazonalidade (M3)
+    // ter uma curva aplicada para esta temporada; ver macroTargets no
+    // componente, que substitui isto pelo total real de sazonalidadeMonthlyTotal
+    // assim que ele existir.
     revenue: annualRevenue > 0 ? (monthCount / 12) * annualRevenue : 0,
     margin,
     sellThrough: 75,
     gmroi,
+    pmv,
   };
 }
 
@@ -510,8 +516,21 @@ export default function Module3DivisionPlanning() {
     if (!selectedTemporada) {
       return { seasonId: "", revenue: 0, margin: 48, sellThrough: 75, gmroi: 3.5 };
     }
-    return deriveSeasonMacroTarget(selectedTemporada);
-  }, [selectedTemporada]);
+    const base = deriveSeasonMacroTarget(selectedTemporada);
+    // A Sazonalidade (M3) aplicada é a fonte de verdade da receita da
+    // temporada — já veio ajustada mês a mês e por canal, respeitando
+    // qualquer redistribuição feita lá. Só cai no rateio linear do M1
+    // (base.revenue = receita anual × meses/12) quando a Sazonalidade ainda
+    // não foi aplicada para esta temporada — sem isso, a Divisão sempre
+    // recalculava a receita do zero e nunca batia com o que foi aprovado
+    // nas telas anteriores, mesmo quando a Sazonalidade tinha uma curva bem
+    // diferente de um rateio linear.
+    if (sazonalidadeMonthlyTotal) {
+      const somaSazonalidade = Object.values(sazonalidadeMonthlyTotal).reduce((s, v) => s + v, 0);
+      if (somaSazonalidade > 0) return { ...base, revenue: somaSazonalidade };
+    }
+    return base;
+  }, [selectedTemporada, sazonalidadeMonthlyTotal]);
 
   // Lê os indicadores foco ativos do M1 (todos os 6 potenciais) e os valores macro
   // correspondentes para alimentar o banner dinâmico e as bandas de aprovação do M3.
@@ -568,6 +587,7 @@ export default function Module3DivisionPlanning() {
     referenceSeasonId,
     macroTargets,
     divisionIds,
+    seasonYear: selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
   });
 
   const meetsTarget = validateAgainstMacro();
@@ -698,28 +718,22 @@ export default function Module3DivisionPlanning() {
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
-  const handleSaveScenario = () => {
+  const handleSaveScenario = async () => {
     if (!scenarioName.trim()) {
       alert("Nome do cenário é obrigatório");
       return;
     }
-    saveScenario(scenarioName, scenarioDescription);
+    // Antes disso havia uma SEGUNDA gravação direta em saveDivisionScenario
+    // aqui, duplicando toda vez a linha que saveScenario (hook) já gravava —
+    // removida. Também é essencial esperar saveScenario resolver antes de
+    // bumpar scenarioListVersion: é ela quem reconcilia o id local com o id
+    // real do banco (ver module3ScenarioService.ts), sem o que "Aplicar
+    // Cenário" logo em seguida tentaria aplicar um id que não existe no banco.
+    await saveScenario(scenarioName, scenarioDescription);
     setScenarioName("");
     setScenarioDescription("");
     setShowScenarioModal(false);
     setScenarioListVersion((v) => v + 1);
-
-    // Write-through → Supabase (fire-and-forget)
-    if (tenantId && selectedSeasonId) {
-      const yearNum = Number(selectedSeasonId.split("-")[0]) || new Date().getFullYear();
-      saveDivisionScenario(
-        tenantId, selectedSeasonId, yearNum,
-        scenarioName, scenarioDescription || null,
-        state.divisions as Record<string, unknown>,
-        state.consolidated as unknown as Record<string, unknown>,
-        undefined
-      ).catch(err => console.warn("[Module3] Supabase save:", err));
-    }
   };
 
   const handleApplyScenario = (scenarioId: string) => {
@@ -727,12 +741,13 @@ export default function Module3DivisionPlanning() {
     setScenarioListVersion((v) => v + 1);
   };
 
-  const handleCopyScenario = (scenarioId: string) => {
+  const handleCopyScenario = async (scenarioId: string) => {
     const all = listModule3Scenarios(selectedSeasonId);
     const original = all.find((s) => s.id === scenarioId);
     if (!original) return;
     const cloned = cloneModule3Scenario(original, `${original.name} (cópia)`);
-    saveModule3Scenario(selectedSeasonId, cloned);
+    const year = selectedTemporada?.anoFiscal ?? new Date().getFullYear();
+    await saveModule3Scenario(selectedSeasonId, year, cloned);
     setScenarioListVersion((v) => v + 1);
     reloadScenarios();
   };
