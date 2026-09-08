@@ -588,6 +588,50 @@ export default function CollectionPlan() {
                           </table>
                         </div>
 
+                        {/* Mapa de Lançamento — visão gráfica mês a mês das
+                            coleções/drops desta divisão. Antes vivia no M6
+                            (Engenharia de Sortimento) como um Gantt por dia;
+                            movido pra cá porque é aqui que o usuário decide o
+                            calendário de entrada — o M6 cuida da estrutura de
+                            produto (categoria/subcategoria/faixa/risco), não
+                            do calendário. Granularidade de mês, igual ao
+                            resto do módulo (não há data exata aqui). */}
+                        {(divisionsPlan[divId]?.entries.length ?? 0) > 0 && (
+                          <div className="overflow-x-auto">
+                            <p className="text-[10px] text-[#28071C]/40 uppercase tracking-wide font-semibold mb-1.5">
+                              Mapa de Lançamento
+                            </p>
+                            <div
+                              className="grid gap-1"
+                              style={{ gridTemplateColumns: `repeat(${seasonMonths.length}, minmax(64px, 1fr))` }}
+                            >
+                              {seasonMonths.map(m => (
+                                <div key={`h-${m}`} className="text-center text-[10px] text-[#28071C]/40 font-medium pb-1 border-b border-[#28071C]/10">
+                                  {m.slice(0, 3)}
+                                </div>
+                              ))}
+                              {seasonMonths.map(m => {
+                                const entriesInMonth = divisionsPlan[divId].entries.filter(e => e.month === m);
+                                return (
+                                  <div key={`b-${m}`} className="min-h-[32px] flex flex-col gap-1 pt-1">
+                                    {entriesInMonth.map(e => (
+                                      <div
+                                        key={e.id}
+                                        title={`${e.name} · ${fmtPieces(e.plannedPieces)} pçs`}
+                                        className={`rounded px-1.5 py-1 text-[10px] font-medium truncate ${
+                                          e.type === "drop" ? "bg-[#9B8CD8]/20 text-[#9B8CD8]" : "bg-[#7598CF]/20 text-[#7598CF]"
+                                        }`}
+                                      >
+                                        {e.name}
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
                         {/* Entradas cadastradas */}
                         {(divisionsPlan[divId]?.entries.length ?? 0) > 0 && (
                           <div className="space-y-1.5">

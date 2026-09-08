@@ -4,7 +4,7 @@
  * Sub-módulo B: Mix de Produtos — arquitetura por categoria e faixa de preço
  */
 
-import { useEffect, useState, useMemo, useRef, type ReactNode } from "react";
+import { Fragment, useEffect, useState, useMemo, useRef, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowLeft,
@@ -72,6 +72,12 @@ import {
   listDivisionScenarios,
   type DivisionScenarioRow,
 } from "../../services/supabase/divisionScenarioService";
+import {
+  getConsolidated,
+  computeAndSaveConsolidated,
+  type ConsolidatedDbRow,
+} from "../../services/supabase/consolidatedHierarchyService";
+import type { PriceTierId } from "../types/pricePyramid";
 import {
   createApprovalRequest,
   hasPendingRequest,
@@ -441,16 +447,89 @@ export default function SortimentPlan() {
     setDivisions(INITIAL_DIVISIONS);
     setScenarios([]);
     setActiveDivId(INITIAL_DIVISIONS[0]?.id ?? "");
-    setActiveMixColId(null);
     setM3InitPending(null);
   };
 
   const [activeDivId, setActiveDivId] = useState<string>(divisions[0]?.id ?? "");
-  const [activeMixColId, setActiveMixColId] = useState<string | null>(null);
-  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
-  // "Nova Categoria" inline: id da linha que está em modo de digitação
-  const [newCatRowId, setNewCatRowId] = useState<string | null>(null);
-  const [newCatDraft, setNewCatDraft]  = useState("");
+
+  // ── Cascata Categoria→Subcategoria→Linha×Faixa de Preço (aba Mix) ───────────
+  // Lê o motor que já existia (consolidatedHierarchyService) cruzando catálogo
+  // real + riskMatrix do M4 + Pirâmide de Preço — antes só alimentava uma
+  // exportação CSV, nunca uma tela. Fase 1: somente leitura. Editar essa
+  // cascata (criar subcategoria, ajustar performance/remarcação) é a Fase 2.
+  const [consolidatedRows, setConsolidatedRows] = useState<ConsolidatedDbRow[]>([]);
+  const [consolidatedLoading, setConsolidatedLoading] = useState(false);
+  const [expandedCascadeCats, setExpandedCascadeCats] = useState<Set<string>>(new Set());
+  const [expandedCascadeSubs, setExpandedCascadeSubs] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id) { setConsolidatedRows([]); return; }
+    const tid = user.tenant_id;
+    setConsolidatedLoading(true);
+    getConsolidated(tid, seasonId).then(async rows => {
+      if (rows.length === 0) {
+        // Nunca calculado (ou catálogo/plano mudou desde o último recálculo) —
+        // calcula agora em vez de mostrar uma tela vazia.
+        await computeAndSaveConsolidated(tid, seasonId);
+        rows = await getConsolidated(tid, seasonId);
+      }
+      setConsolidatedRows(rows);
+    }).catch(() => setConsolidatedRows([]))
+      .finally(() => setConsolidatedLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasonId, user?.tenant_id]);
+
+  const cascadeForActiveDivision = useMemo(
+    () => consolidatedRows.filter(r => r.divisionId === activeDivId),
+    [consolidatedRows, activeDivId],
+  );
+
+  const cascadeTree = useMemo(() => {
+    type Tiers = Record<PriceTierId, number>;
+    const catMap = new Map<string, Map<string, Map<string, Tiers>>>();
+    for (const r of cascadeForActiveDivision) {
+      if (!catMap.has(r.category)) catMap.set(r.category, new Map());
+      const subMap = catMap.get(r.category)!;
+      if (!subMap.has(r.subcategory)) subMap.set(r.subcategory, new Map());
+      const linhaMap = subMap.get(r.subcategory)!;
+      if (!linhaMap.has(r.linha)) linhaMap.set(r.linha, { p1: 0, p2: 0, p3: 0 });
+      linhaMap.get(r.linha)![r.priceTier] += r.revenueEstimate;
+    }
+    const sumTiers = (t: Tiers) => t.p1 + t.p2 + t.p3;
+    const cats = Array.from(catMap.entries()).map(([category, subMap]) => {
+      const subs = Array.from(subMap.entries()).map(([subcategory, linhaMap]) => {
+        const linhas = Array.from(linhaMap.entries())
+          .map(([linha, tiers]) => ({ linha, tiers, total: sumTiers(tiers) }))
+          .sort((a, b) => b.total - a.total);
+        const total = linhas.reduce((s, l) => s + l.total, 0);
+        return { subcategory, linhas, total };
+      }).sort((a, b) => b.total - a.total);
+      const total = subs.reduce((s, sub) => s + sub.total, 0);
+      return { category, subs, total };
+    }).sort((a, b) => b.total - a.total);
+    return cats;
+  }, [cascadeForActiveDivision]);
+
+  const cascadeRisk = useMemo(() => {
+    const first = cascadeForActiveDivision[0];
+    if (!first) return null;
+    return {
+      sustentador: first.pctSustentadorMargem,
+      motorGiro: first.pctMotorGiro,
+      icone: first.pctIconeMarca,
+    };
+  }, [cascadeForActiveDivision]);
+
+  const toggleCascadeCat = (cat: string) => setExpandedCascadeCats(prev => {
+    const next = new Set(prev);
+    if (next.has(cat)) next.delete(cat); else next.add(cat);
+    return next;
+  });
+  const toggleCascadeSub = (key: string) => setExpandedCascadeSubs(prev => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   // ── Plano macro estratégico (Módulo 1) ───────────────────────────────────────
   const [macroPlan, setMacroPlan] = useState<AnnualPlanCycle | null>(null);
@@ -796,26 +875,6 @@ export default function SortimentPlan() {
     };
   }, [divisions, macroPlan]);
 
-  // Coleções de todas as divisões ordenadas por data da primeira entrada (para o Mix)
-  const allColsSorted = useMemo(() => {
-    return divisions
-      .flatMap(div =>
-        div.collections.map(col => ({ col, div }))
-      )
-      .filter(({ col }) => col.entries.length > 0 && col.entries[0].date)
-      .sort((a, b) =>
-        a.col.entries[0].date < b.col.entries[0].date ? -1 : 1
-      );
-  }, [divisions]);
-
-  const activeMixItem = useMemo(() => {
-    if (activeMixColId) {
-      const found = allColsSorted.find(item => item.col.id === activeMixColId);
-      if (found) return found;
-    }
-    return allColsSorted[0] ?? null;
-  }, [activeMixColId, allColsSorted]);
-
   // ── Update helpers ───────────────────────────────────────────────────────────
 
   const updateCollection = (
@@ -947,257 +1006,6 @@ export default function SortimentPlan() {
     );
     updateCollection(divId, colId, { entries });
   };
-
-  // ── Mix de Produtos actions ───────────────────────────────────────────────────
-
-  const addCategoryToMix = (divId: string, colId: string, col: Collection, div: Division) => {
-    const usedCats = new Set(col.categories.map(c => c.category));
-    const nextCat = CATEGORIES.find(c => !usedCats.has(c)) ?? CATEGORIES[0];
-    const newCat: CategoryMix = {
-      id: `cat-${Date.now()}`,
-      category: nextCat,
-      participationPct: 0,
-    };
-    const defaultLayers: TierLayer[] = [
-      { tier: "P1", tierPct: div.pricePyramid.p1, avgPrice: div.avgPriceP1, profile: "Motor de Giro" },
-      { tier: "P2", tierPct: div.pricePyramid.p2, avgPrice: div.avgPriceP2, profile: "Motor de Giro" },
-      { tier: "P3", tierPct: div.pricePyramid.p3, avgPrice: div.avgPriceP3, profile: "Ícone de Marca" },
-    ];
-    updateCollection(divId, colId, {
-      categories: [...col.categories, newCat],
-      tierLayers: { ...col.tierLayers, [newCat.id]: defaultLayers },
-      mixStatus: "em_andamento",
-    });
-  };
-
-  const removeCategoryFromMix = (
-    divId: string,
-    colId: string,
-    catId: string,
-    col: Collection
-  ) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { [catId]: _removed, ...rest } = col.tierLayers;
-    updateCollection(divId, colId, {
-      categories: col.categories.filter(c => c.id !== catId),
-      tierLayers: rest,
-    });
-  };
-
-  const updateCategoryField = (
-    divId: string,
-    colId: string,
-    catId: string,
-    field: keyof CategoryMix,
-    value: string | number,
-    col: Collection
-  ) => {
-    updateCollection(divId, colId, {
-      categories: col.categories.map(c =>
-        c.id !== catId ? c : { ...c, [field]: value }
-      ),
-    });
-  };
-
-  const updateTierLayer = (
-    divId: string,
-    colId: string,
-    catId: string,
-    tier: PriceTier,
-    field: keyof TierLayer,
-    value: number | string,
-    col: Collection
-  ) => {
-    const current = col.tierLayers[catId] ?? [];
-    const updated = current.map(l =>
-      l.tier === tier ? { ...l, [field]: value } : l
-    );
-    updateCollection(divId, colId, {
-      tierLayers: { ...col.tierLayers, [catId]: updated },
-    });
-  };
-
-  const validateMix = (divId: string, colId: string, col: Collection) => {
-    const total = sumCatPct(col.categories);
-    if (Math.abs(total - 100) > 0.01) {
-      alert("A distribuição por categoria precisa somar 100% antes de validar.");
-      return;
-    }
-    updateCollection(divId, colId, { mixStatus: "validado" });
-  };
-
-  // ── Timeline ─────────────────────────────────────────────────────────────────
-
-  const timelineMonths = useMemo((): string[] => {
-    // 1) Usa o intervalo completo da temporada selecionada (mesInicio → mesFim)
-    //    mesInicio/mesFim são nomes PT-BR ("Agosto") — converter para YYYY-MM primeiro
-    const currentSeason = seasonId ? temporadas.find(t => t.id === seasonId) : null;
-    if (currentSeason) {
-      const range = seasonMonthRange(currentSeason);
-      if (range.length > 0) return range;
-    }
-
-    // 2) Fallback: deriva das datas das coleções cadastradas
-    if (activeDivision) {
-      const allDates = activeDivision.collections
-        .flatMap(c => c.entries.map(e => e.date))
-        .filter(Boolean);
-      if (allDates.length > 0) {
-        const sorted = [...allDates].sort();
-        const first = shiftMonth(sorted[0], -1);
-        const last  = shiftMonth(sorted[sorted.length - 1], 1);
-        const months: string[] = [];
-        let cur = first;
-        while (cur <= last) {
-          months.push(cur);
-          cur = shiftMonth(cur, 1);
-        }
-        return months;
-      }
-    }
-
-    // 3) Último recurso: exibe 8 meses a partir do mês atual
-    const now = new Date();
-    const months: string[] = [];
-    for (let i = 0; i < 8; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      months.push(d.toISOString().slice(0, 7));
-    }
-    return months;
-  }, [activeDivision, temporadas, seasonId]);
-
-  // ── Mix histórico: peso ponderado de cada categoria em TODAS as coleções da divisão ──
-  // Retorna { pct: %, revenue: R$ } por categoria do ANO FISCAL ANTERIOR
-  const historicalCatWeights = useMemo((): Record<string, { pct: number; revenue: number }> => {
-    if (!activeDivision || !seasonId) return {};
-
-    const currentSeason     = temporadas.find(t => t.id === seasonId);
-    const currentFiscalYear = currentSeason?.anoFiscal;
-    if (!currentFiscalYear) return {};
-
-    const prevYear    = currentFiscalYear - 1;
-    const prevSeasons = temporadas.filter(t => t.anoFiscal === prevYear);
-    if (prevSeasons.length === 0) return {};
-
-    // Histórico migrado para Supabase — dados de anos anteriores não disponíveis em cache
-    // TODO: carregar via getWorkingPlan para cada ps.id e armazenar em state
-    void prevSeasons; // used above for early-return check
-    const prevDiv: Division | null = null;
-    if (!prevDiv) return {};
-
-    const allCols     = prevDiv.collections;
-    const totalRevPct = allCols.reduce((s, c) => s + (c.revenuePct ?? 0), 0);
-    if (totalRevPct === 0) return {};
-
-    const weights: Record<string, number> = {};
-    for (const c of allCols) {
-      const w = (c.revenuePct ?? 0) / totalRevPct;
-      for (const cat of c.categories) {
-        weights[cat.category] = (weights[cat.category] ?? 0) + cat.participationPct * w;
-      }
-    }
-
-    const result: Record<string, { pct: number; revenue: number }> = {};
-    for (const [name, pct] of Object.entries(weights)) {
-      result[name] = { pct, revenue: prevDiv.revenueTarget * pct / 100 };
-    }
-    return result;
-  }, [activeDivision, temporadas, seasonId]);
-
-  // Categorias customizadas (digitadas pelo usuário, não estão em CATEGORIES)
-  const customCategories = useMemo(() => {
-    const all = divisions.flatMap(d => d.collections.flatMap(c => c.categories.map(cat => cat.category)));
-    return [...new Set(all.filter(c => !CATEGORIES.includes(c)))];
-  }, [divisions]);
-
-  // ── Budget projection (Mix view) ─────────────────────────────────────────────
-
-  const budgetProjection = useMemo((): { month: string; cost: number }[] => {
-    if (!activeMixItem) return [];
-    const { col, div } = activeMixItem;
-    const rev = colRevenue(div, col);
-    const map: Record<string, number> = {};
-
-    for (const cat of col.categories) {
-      const cRev = catRevenue(rev, cat);
-      const layers = col.tierLayers[cat.id] ?? [];
-      for (const layer of layers) {
-        const tRev = tierRev(cRev, layer);
-        const vol  = calcVolume(tRev, layer.avgPrice);
-        const cost = calcMaxCost(layer.avgPrice, div.targetMarginPct);
-        const total = vol * cost;
-        // Distribui entre entradas da coleção
-        const perEntry = total / Math.max(col.entries.length, 1);
-        for (const entry of col.entries) {
-          if (!entry.date) continue;
-          const mOrder    = shiftMonth(entry.date, -3);
-          const mDelivery = entry.date.slice(0, 7);
-          const mPost     = shiftMonth(entry.date, 1);
-          map[mOrder]    = (map[mOrder]    ?? 0) + perEntry * 0.30;
-          map[mDelivery] = (map[mDelivery] ?? 0) + perEntry * 0.40;
-          map[mPost]     = (map[mPost]     ?? 0) + perEntry * 0.30;
-        }
-      }
-    }
-
-    return Object.entries(map)
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([month, cost]) => ({ month, cost }));
-  }, [activeMixItem]);
-
-  // ── Mix summary ──────────────────────────────────────────────────────────────
-
-  const mixSummary = useMemo(() => {
-    if (!activeMixItem) return null;
-    const { col, div } = activeMixItem;
-    const rev = colRevenue(div, col);
-    let totalPieces = 0;
-    let totalInvestment = 0;
-
-    for (const cat of col.categories) {
-      const cRev = catRevenue(rev, cat);
-      const layers = col.tierLayers[cat.id] ?? [];
-      for (const layer of layers) {
-        const tRev = tierRev(cRev, layer);
-        const vol  = calcVolume(tRev, layer.avgPrice);
-        const cost = calcMaxCost(layer.avgPrice, div.targetMarginPct);
-        totalPieces     += vol;
-        totalInvestment += vol * cost;
-      }
-    }
-
-    return {
-      totalPieces,
-      totalInvestment,
-      estimatedSkus: Math.ceil(totalPieces / 12), // base: 12 peças por SKU
-    };
-  }, [activeMixItem]);
-
-  // ── Pyramid deviation (Mix view) ─────────────────────────────────────────────
-
-  const pyramidDeviation = useMemo(() => {
-    if (!activeMixItem) return null;
-    const { col, div } = activeMixItem;
-    const rev = colRevenue(div, col);
-    const tierRevs: Record<PriceTier, number> = { P1: 0, P2: 0, P3: 0 };
-
-    for (const cat of col.categories) {
-      const cRev = catRevenue(rev, cat);
-      const layers = col.tierLayers[cat.id] ?? [];
-      for (const layer of layers) {
-        tierRevs[layer.tier] += tierRev(cRev, layer);
-      }
-    }
-
-    const total = tierRevs.P1 + tierRevs.P2 + tierRevs.P3;
-    if (total === 0) return null;
-
-    return {
-      P1: { actual: (tierRevs.P1 / total) * 100, target: div.pricePyramid.p1, delta: (tierRevs.P1 / total) * 100 - div.pricePyramid.p1 },
-      P2: { actual: (tierRevs.P2 / total) * 100, target: div.pricePyramid.p2, delta: (tierRevs.P2 / total) * 100 - div.pricePyramid.p2 },
-      P3: { actual: (tierRevs.P3 / total) * 100, target: div.pricePyramid.p3, delta: (tierRevs.P3 / total) * 100 - div.pricePyramid.p3 },
-    };
-  }, [activeMixItem]);
 
   // ── Derived validation ────────────────────────────────────────────────────────
 
@@ -1405,7 +1213,7 @@ export default function SortimentPlan() {
             {(
               [
                 { view: "sortiment" as ModuleView, label: "1 · Sortimento", sub: "Estrutura de Coleções por Divisão" },
-                { view: "mix"       as ModuleView, label: "2 · Mix de Produtos", sub: "Categorias e Faixas de Preço" },
+                { view: "mix"       as ModuleView, label: "2 · Cascata do Sortimento", sub: "Categoria, Subcategoria e Faixa de Preço" },
               ] as const
             ).map(({ view, label, sub }) => (
               <button
@@ -1425,7 +1233,7 @@ export default function SortimentPlan() {
           <span className="text-xs text-[#28071C]/30 pr-1">
             {activeView === "sortiment"
               ? "Passo 1: defina quantas coleções e quando lançá-las"
-              : "Passo 2: distribua categorias e faixas de preço dentro de cada coleção"}
+              : "Passo 2: revise a cascata gerada a partir do plano de Divisão (M4)"}
           </span>
         </div>
       </div>
@@ -1514,34 +1322,50 @@ export default function SortimentPlan() {
         {seasonId && activeView === "sortiment" && activeDivision && (
           <div>
 
-            {/* Division tabs */}
-            <div className="flex flex-wrap gap-2 mb-4">
-              {divisions.map(div => {
-                const pct = totalColPct(div.collections);
-                const ok  = Math.abs(pct - 100) < 0.01 &&
-                  div.collections.every(c => c.entries.every(e => e.date));
-                return (
-                  <button
-                    key={div.id}
-                    onClick={() => setActiveDivId(div.id)}
-                    className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium transition-all ${
-                      div.id === activeDivId
-                        ? "bg-[#28071C] text-white"
-                        : "bg-white text-[#28071C] hover:bg-[#28071C]/10 shadow-sm"
-                    }`}
-                  >
-                    {div.name}
-                    {ok ? (
-                      <CheckCircle className="w-4 h-4 text-emerald-400" />
+            {/* Uma divisão por vez — antes eram abas livres (o usuário pulava
+                entre Feminino/Masculino sem concluir nenhuma). Com 1 divisão
+                só, nem aparece seletor: entra direto nela. */}
+            {divisions.length > 1 && (
+              <div className="flex items-center justify-between bg-white rounded-xl shadow-sm px-4 py-3 mb-4">
+                <button
+                  onClick={() => {
+                    const idx = divisions.findIndex(d => d.id === activeDivId);
+                    if (idx > 0) setActiveDivId(divisions[idx - 1].id);
+                  }}
+                  disabled={divisions.findIndex(d => d.id === activeDivId) === 0}
+                  className="p-2 rounded-lg text-[#28071C]/50 hover:bg-[#28071C]/5 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                  aria-label="Divisão anterior"
+                >
+                  <ChevronRight className="w-4 h-4 rotate-180" />
+                </button>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-[#28071C]/40 font-semibold uppercase tracking-wide">
+                    Divisão {divisions.findIndex(d => d.id === activeDivId) + 1} de {divisions.length}
+                  </span>
+                  <span className="text-[#28071C] font-bold">{activeDivision.name}</span>
+                  {(() => {
+                    const pct = totalColPct(activeDivision.collections);
+                    const ok = Math.abs(pct - 100) < 0.01 &&
+                      activeDivision.collections.every(c => c.entries.every(e => e.date));
+                    return ok ? (
+                      <CheckCircle className="w-4 h-4 text-emerald-500" />
                     ) : pct > 0 ? (
-                      <span className={`text-xs font-mono ${div.id === activeDivId ? "opacity-70" : "opacity-50"}`}>
-                        {pct.toFixed(0)}%
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
+                      <span className="text-xs font-mono text-[#28071C]/50">{pct.toFixed(0)}%</span>
+                    ) : null;
+                  })()}
+                </div>
+                <button
+                  onClick={() => {
+                    const idx = divisions.findIndex(d => d.id === activeDivId);
+                    if (idx < divisions.length - 1) setActiveDivId(divisions[idx + 1].id);
+                  }}
+                  disabled={divisions.findIndex(d => d.id === activeDivId) === divisions.length - 1}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-[#28071C] hover:bg-[#28071C]/5 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                >
+                  Próxima divisão <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* ── Card de Metas da Divisão — FIXO durante a rolagem ──────────────── */}
             <div id="tour-sort-divisions" className="sticky top-[156px] z-30 mb-4">
@@ -1986,98 +1810,11 @@ export default function SortimentPlan() {
               Adicionar Coleção / Drop
             </button>
 
-            {/* Timeline — sempre visível na temporada selecionada */}
-            {(
-              <div className="bg-white rounded-2xl p-5 mb-4 shadow-sm">
-                <h3 className="text-sm font-medium text-[#28071C] mb-4 flex items-center gap-2">
-                  <Calendar className="w-4 h-4" />
-                  Mapa de Lançamentos — {activeDivision.name}
-                </h3>
-                <div className="overflow-x-auto">
-                  <div style={{ minWidth: `${timelineMonths.length * 60}px` }}>
-                    {/* Month headers */}
-                    <div
-                      className="grid mb-1"
-                      style={{
-                        gridTemplateColumns: `repeat(${timelineMonths.length}, 1fr)`,
-                      }}
-                    >
-                      {timelineMonths.map(ym => (
-                        <div
-                          key={ym}
-                          className="text-center text-xs text-[#28071C]/40 font-medium border-l border-[#28071C]/10 py-1 px-1"
-                        >
-                          {monthLabel(ym)}
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Collection bars */}
-                    {activeDivision.collections.map((col, colIdx) => {
-                      const color = COLLECTION_COLORS[colIdx % COLLECTION_COLORS.length];
-                      return (
-                        <div
-                          key={col.id}
-                          className="grid mb-1"
-                          style={{
-                            gridTemplateColumns: `repeat(${timelineMonths.length}, 1fr)`,
-                          }}
-                        >
-                          {timelineMonths.map(ym => {
-                            const hasEntry = col.entries.some(e =>
-                              e.date.startsWith(ym)
-                            );
-                            return (
-                              <div
-                                key={ym}
-                                className="h-8 border-l border-[#28071C]/5 relative"
-                              >
-                                {hasEntry && (
-                                  <div
-                                    className="absolute inset-y-1 inset-x-0.5 rounded text-xs text-white flex items-center justify-center overflow-hidden font-medium"
-                                    style={{ backgroundColor: color }}
-                                    title={col.name}
-                                  >
-                                    <span className="truncate px-1 text-[10px]">
-                                      {col.name}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-
-                    {/* Legend */}
-                    <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-[#28071C]/10">
-                      {activeDivision.collections.map((col, colIdx) => (
-                        <div
-                          key={col.id}
-                          className="flex items-center gap-1.5 text-xs text-[#28071C]/60"
-                        >
-                          <div
-                            className="w-3 h-3 rounded flex-shrink-0"
-                            style={{ backgroundColor: COLLECTION_COLORS[colIdx % COLLECTION_COLORS.length] }}
-                          />
-                          {col.name}
-                          {col.entries.length > 0 && col.entries[0].date && (
-                            <span className="opacity-60">
-                              ({col.entries.map(e =>
-                                e.date
-                                  ? new Date(e.date + "T00:00:00").toLocaleDateString("pt-BR", { day: "numeric", month: "short" })
-                                  : "–"
-                              ).join(", ")})
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* O Mapa de Lançamentos morava aqui (Gantt por dia) — passou a
+                viver no Plano de Coleção (M5), junto da régua mês a mês que já
+                existe lá, por pedido explícito: o M6 deve tratar da estrutura
+                de produto (categoria/subcategoria/faixa/risco), não do
+                calendário de lançamento. */}
 
             {/* CTA — Avançar para Mix */}
             <div className="flex items-center justify-between bg-white rounded-2xl p-5 shadow-sm">
@@ -2113,600 +1850,140 @@ export default function SortimentPlan() {
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* SUB-MÓDULO B — MIX DE PRODUTOS                                   */}
         {/* ══════════════════════════════════════════════════════════════════ */}
-        {seasonId && activeView === "mix" && (
+        {seasonId && activeView === "mix" && activeDivision && (
           <div>
-            {allColsSorted.length === 0 ? (
+            {consolidatedLoading ? (
+              <div className="text-center py-24 text-[#28071C]/40">
+                <Layers className="w-14 h-14 mx-auto mb-4 opacity-20 animate-pulse" />
+                <p className="text-sm">Calculando a cascata do sortimento...</p>
+              </div>
+            ) : cascadeTree.length === 0 ? (
               <div className="text-center py-24 text-[#28071C]/40">
                 <Layers className="w-14 h-14 mx-auto mb-4 opacity-20" />
-                <p className="text-lg font-medium mb-2">Nenhuma coleção configurada</p>
-                <p className="text-sm mb-5">
-                  Configure pelo menos uma coleção com data de lançamento no Sortimento.
+                <p className="text-lg font-medium mb-2">Sem catálogo suficiente para montar a cascata</p>
+                <p className="text-sm max-w-md mx-auto">
+                  Esta divisão precisa ter produtos cadastrados (categoria/subcategoria) e a Pirâmide de Preço configurada para {activeDivision.name}.
                 </p>
-                <button
-                  onClick={() => setActiveView("sortiment")}
-                  className="text-[#7598CF] hover:underline text-sm"
-                >
-                  ← Ir para Sortimento
-                </button>
               </div>
             ) : (
               <>
-                {/* Collection selector tabs */}
-                <div className="flex flex-wrap gap-2 mb-4">
-                  {allColsSorted.map(({ col, div }) => {
-                    const active = (activeMixItem?.col.id ?? allColsSorted[0]?.col.id) === col.id;
-                    return (
-                      <button
-                        key={col.id}
-                        onClick={() => setActiveMixColId(col.id)}
-                        className={`flex flex-col items-start px-4 py-2.5 rounded-xl text-sm transition-all border ${
-                          active
-                            ? "border-[#28071C] bg-[#28071C] text-white"
-                            : "border-[#28071C]/20 bg-white text-[#28071C] hover:border-[#28071C]/50"
-                        }`}
-                      >
-                        <span className="font-medium">{col.name}</span>
-                        <span className={`text-xs ${active ? "opacity-60" : "opacity-50"}`}>
-                          {div.name} ·{" "}
-                          {col.entries[0]?.date
-                            ? new Date(col.entries[0].date + "T00:00:00").toLocaleDateString("pt-BR", { day: "numeric", month: "short" })
-                            : "–"}
-                          {col.mixStatus === "validado" && " ✓"}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Content for active collection */}
-                {activeMixItem && (() => {
-                  const { col, div } = activeMixItem;
-                  const rev    = colRevenue(div, col);
-                  const catPct = sumCatPct(col.categories);
-
-                  return (
-                    <div>
-                      {/* Collection targets */}
-                      <div className="bg-white rounded-2xl p-5 mb-5 shadow-sm">
-                        <p className="text-[#28071C]/40 text-xs uppercase tracking-widest mb-3">
-                          Referências desta coleção — {col.name} · {div.name}
+                {/* Risco da divisão — vem do riskMatrix aplicado no Planejamento por Divisão (M4) */}
+                {cascadeRisk && (
+                  <div className="bg-white rounded-2xl p-5 mb-4 shadow-sm">
+                    <p className="text-[#28071C]/40 text-xs uppercase tracking-widest mb-3">
+                      Nível de Risco — {activeDivision.name} (definido no Módulo 4)
+                    </p>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-3">
+                        <p className="text-[#28071C]/50 text-xs">Sustentador de Margem</p>
+                        <p className="text-[#28071C] font-bold text-lg">
+                          {cascadeRisk.sustentador != null ? fmtPct(cascadeRisk.sustentador) : "—"}
                         </p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                          <KpiTip label="Receita da Coleção" value={fmtCurrency(rev)}
-                            tip="Receita que esta coleção deve gerar, calculada sobre a meta da divisão pelo peso atribuído no Sortiment." />
-                          <KpiTip label="Peso na Divisão" value={fmtPct(col.revenuePct)}
-                            tip="Percentual da receita total da divisão que esta coleção representa. Definido na aba Sortiment." />
-                          <KpiTip label="Margem Alvo" value={fmtPct(div.targetMarginPct)}
-                            tip="Margem de contribuição mínima definida pelo financeiro. O custo máximo de cada produto é calculado a partir dela." />
-                          <KpiTip label="Lançamentos" value={
-                            col.entries
-                              .filter(e => e.date)
-                              .map(e => fmtDateBR(e.date))
-                              .join(" · ") || "—"
-                          } small tip="Datas de entrada dos produtos em loja. Usadas para calcular o calendário de compras com antecedência de 90 dias." />
-                        </div>
                       </div>
-
-                      {/* ── Layout 2 colunas: Distribuição + Mix Histórico ──────── */}
-                      <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-5 items-start mb-5">
-
-                        {/* Coluna esquerda: Distribuição por Categoria */}
-                        <div className="bg-white rounded-2xl shadow-sm">
-                        <div className="p-5 border-b border-[#28071C]/10 flex items-center justify-between">
-                          <div>
-                            <h3 className="font-semibold text-[#28071C]">
-                              Distribuição por Categoria
-                            </h3>
-                            <p className="text-xs text-[#28071C]/50 mt-0.5">
-                              {catPct.toFixed(1)}% alocado · {(100 - catPct).toFixed(1)}% restante
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => addCategoryToMix(div.id, col.id, col, div)}
-                            className="flex items-center gap-1.5 px-4 py-2 bg-[#7598CF] text-white rounded-lg text-sm hover:bg-[#7598CF]/90 transition-colors"
-                          >
-                            <Plus className="w-4 h-4" />
-                            Categoria
-                          </button>
-                        </div>
-
-                        {/* Allocation bar */}
-                        <div className="px-5 pt-3">
-                          <div className="h-2 bg-[#F2F2F2] rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${
-                                catPct > 100
-                                  ? "bg-red-500"
-                                  : Math.abs(catPct - 100) < 0.01
-                                  ? "bg-emerald-500"
-                                  : "bg-[#7598CF]"
-                              }`}
-                              style={{ width: `${Math.min(catPct, 100)}%` }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Category rows */}
-                        <div className="divide-y divide-[#28071C]/5">
-                          {col.categories.length === 0 && (
-                            <div className="text-center py-10 text-[#28071C]/40 text-sm">
-                              Nenhuma categoria adicionada. Clique em "Categoria" para começar.
-                            </div>
-                          )}
-
-                          {col.categories.map(cat => {
-                            const cRev       = catRevenue(rev, cat);
-                            const layers     = col.tierLayers[cat.id] ?? [];
-                            const layerPct   = sumTierPct(layers);
-                            const isExpanded = expandedCats.has(cat.id);
-                            const catVol     = layers.reduce(
-                              (s, l) => s + calcVolume(tierRev(cRev, l), l.avgPrice), 0
-                            );
-                            const catInvest  = layers.reduce(
-                              (s, l) => s + calcVolume(tierRev(cRev, l), l.avgPrice) * calcMaxCost(l.avgPrice, div.targetMarginPct), 0
-                            );
-                            const isNewCatRow = newCatRowId === cat.id;
-
-                            return (
-                              <div key={cat.id}>
-                                {/* Category row */}
-                                <div className="px-5 py-4 flex flex-wrap items-center gap-4">
-                                  {/* Selector ou input inline para "Nova Categoria" */}
-                                  {isNewCatRow ? (
-                                    <input
-                                      autoFocus
-                                      value={newCatDraft}
-                                      onChange={e => setNewCatDraft(e.target.value)}
-                                      onKeyDown={e => {
-                                        if (e.key === "Enter" && newCatDraft.trim()) {
-                                          updateCategoryField(div.id, col.id, cat.id, "category", newCatDraft.trim(), col);
-                                          setNewCatRowId(null); setNewCatDraft("");
-                                        }
-                                        if (e.key === "Escape") { setNewCatRowId(null); setNewCatDraft(""); }
-                                      }}
-                                      onBlur={() => {
-                                        if (newCatDraft.trim()) {
-                                          updateCategoryField(div.id, col.id, cat.id, "category", newCatDraft.trim(), col);
-                                        }
-                                        setNewCatRowId(null); setNewCatDraft("");
-                                      }}
-                                      placeholder="Nome da categoria..."
-                                      className="bg-white border-2 border-[#7598CF] rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none w-40"
-                                    />
-                                  ) : (
-                                  <select
-                                    value={cat.category}
-                                    onChange={e => {
-                                      if (e.target.value === "__nova__") {
-                                        setNewCatRowId(cat.id);
-                                        setNewCatDraft("");
-                                      } else {
-                                        updateCategoryField(div.id, col.id, cat.id, "category", e.target.value, col);
-                                      }
-                                    }}
-                                    className="bg-[#F2F2F2] rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50 w-40"
-                                  >
-                                    {[...CATEGORIES, ...customCategories].map(c => (
-                                      <option key={c} value={c}>
-                                        {c}
-                                      </option>
-                                    ))}
-                                    <option disabled>──────────</option>
-                                    <option value="__nova__">+ Nova Categoria</option>
-                                  </select>
-                                  )}
-
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={100}
-                                      step={0.5}
-                                      value={cat.participationPct}
-                                      onChange={e =>
-                                        updateCategoryField(div.id, col.id, cat.id, "participationPct", parseFloat(e.target.value) || 0, col)
-                                      }
-                                      className="w-20 bg-[#F2F2F2] rounded-lg px-3 py-2 text-[#28071C] text-sm focus:outline-none focus:ring-2 focus:ring-[#7598CF]/50"
-                                    />
-                                    <span className="text-sm text-[#28071C]/50">%</span>
-                                    <span className="text-sm text-[#28071C]/70 font-medium">
-                                      <span className="text-xs text-[#28071C]/40 font-normal uppercase tracking-wide">Receita </span>{fmtCurrency(cRev)}
-                                    </span>
-                                  </div>
-
-                                  <div className="flex items-center gap-5 ml-auto">
-                                    <div className="text-center">
-                                      <div className="text-xs text-[#28071C]/40">Peças</div>
-                                      <div className="text-sm font-semibold text-[#28071C]">
-                                        {fmtNum(catVol)}
-                                      </div>
-                                    </div>
-                                    <div className="text-center">
-                                      <div className="text-xs text-[#28071C]/40">Invest. máx.</div>
-                                      <div className="text-sm font-semibold text-[#28071C]">
-                                        {catInvest > 0 ? fmtCurrency(catInvest) : "—"}
-                                      </div>
-                                    </div>
-                                    <button
-                                      onClick={() => {
-                                        const next = new Set(expandedCats);
-                                        isExpanded ? next.delete(cat.id) : next.add(cat.id);
-                                        setExpandedCats(next);
-                                      }}
-                                      className="flex items-center gap-1 text-[#7598CF] text-xs hover:text-[#7598CF]/80"
-                                    >
-                                      {isExpanded ? (
-                                        <ChevronUp className="w-4 h-4" />
-                                      ) : (
-                                        <ChevronDown className="w-4 h-4" />
-                                      )}
-                                      P1/P2/P3
-                                    </button>
-                                    <button
-                                      onClick={() =>
-                                        removeCategoryFromMix(div.id, col.id, cat.id, col)
-                                      }
-                                      className="text-red-400 hover:text-red-600 transition-colors"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {/* P1/P2/P3 architecture (expanded) */}
-                                {isExpanded && (
-                                  <div className="px-5 pb-4 bg-[#F8F8FC]">
-                                    {Math.abs(layerPct - 100) > 0.01 && (
-                                      <p className="flex items-center gap-1.5 mb-2 text-amber-600 text-xs pt-3">
-                                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                                        Soma das faixas: {layerPct.toFixed(0)}% — deve ser 100%
-                                      </p>
-                                    )}
-                                    <div className="overflow-x-auto">
-                                      <table className="w-full text-sm mt-3">
-                                        <thead>
-                                          <tr className="border-b border-[#28071C]/10">
-                                            {["Faixa","% Categoria","Receita","PMV (R$)","Volume","Custo máx.","Perfil"].map(h => (
-                                              <th key={h} className="text-left text-[#28071C]/40 text-xs py-2 pr-4 font-medium whitespace-nowrap">
-                                                {h}
-                                              </th>
-                                            ))}
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {layers.map(layer => {
-                                            const tRev  = tierRev(cRev, layer);
-                                            const vol   = calcVolume(tRev, layer.avgPrice);
-                                            const cost  = calcMaxCost(layer.avgPrice, div.targetMarginPct);
-                                            const tgt   = layer.tier === "P1" ? div.pricePyramid.p1 : layer.tier === "P2" ? div.pricePyramid.p2 : div.pricePyramid.p3;
-                                            const delta = layer.tierPct - tgt;
-                                            const deviationClass =
-                                              Math.abs(delta) > 5
-                                                ? "text-red-500"
-                                                : Math.abs(delta) > 2
-                                                ? "text-amber-500"
-                                                : "text-emerald-500";
-
-                                            return (
-                                              <tr key={layer.tier} className="border-b border-[#28071C]/5">
-                                                <td className="py-2.5 pr-4">
-                                                  <span
-                                                    className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                                      layer.tier === "P1"
-                                                        ? "bg-blue-100 text-blue-700"
-                                                        : layer.tier === "P2"
-                                                        ? "bg-violet-100 text-violet-700"
-                                                        : "bg-rose-100 text-rose-700"
-                                                    }`}
-                                                  >
-                                                    {layer.tier}
-                                                  </span>
-                                                </td>
-                                                <td className="py-2.5 pr-4">
-                                                  <div className="flex items-center gap-1">
-                                                    <input
-                                                      type="number"
-                                                      min={0}
-                                                      max={100}
-                                                      step={1}
-                                                      value={layer.tierPct}
-                                                      onChange={e =>
-                                                        updateTierLayer(div.id, col.id, cat.id, layer.tier, "tierPct", parseFloat(e.target.value) || 0, col)
-                                                      }
-                                                      className="w-14 bg-white border border-[#28071C]/10 rounded px-2 py-1 text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50 text-xs"
-                                                    />
-                                                    <span className="text-xs text-[#28071C]/40">%</span>
-                                                    <span className={`text-xs ml-1 ${deviationClass}`} title={`Meta Módulo 4: ${tgt}%`}>
-                                                      ({delta > 0 ? "+" : ""}{delta.toFixed(0)}pp)
-                                                    </span>
-                                                  </div>
-                                                </td>
-                                                <td className="py-2.5 pr-4 text-[#28071C]/60 text-xs whitespace-nowrap">
-                                                  {fmtCurrency(tRev)}
-                                                </td>
-                                                <td className="py-2.5 pr-4">
-                                                  <div className="flex items-center gap-1">
-                                                    <span className="text-xs text-[#28071C]/40">R$</span>
-                                                    <input
-                                                      type="number"
-                                                      min={0}
-                                                      step={1}
-                                                      value={layer.avgPrice}
-                                                      onChange={e =>
-                                                        updateTierLayer(div.id, col.id, cat.id, layer.tier, "avgPrice", parseFloat(e.target.value) || 0, col)
-                                                      }
-                                                      className="w-20 bg-white border border-[#28071C]/10 rounded px-2 py-1 text-[#28071C] focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50 text-xs"
-                                                    />
-                                                  </div>
-                                                </td>
-                                                <td className="py-2.5 pr-4 text-[#28071C] font-semibold text-xs">
-                                                  {fmtNum(vol)} pç
-                                                </td>
-                                                <td className="py-2.5 pr-4 text-[#28071C]/60 text-xs whitespace-nowrap">
-                                                  {layer.avgPrice > 0
-                                                    ? fmtCurrency(cost)
-                                                    : "—"}
-                                                </td>
-                                                <td className="py-2.5">
-                                                  <select
-                                                    value={layer.profile}
-                                                    onChange={e =>
-                                                      updateTierLayer(div.id, col.id, cat.id, layer.tier, "profile", e.target.value, col)
-                                                    }
-                                                    className="bg-white border border-[#28071C]/10 rounded px-2 py-1 text-[#28071C] text-xs focus:outline-none focus:ring-1 focus:ring-[#7598CF]/50"
-                                                  >
-                                                    {PROFILES.map(p => (
-                                                      <option key={p} value={p}>
-                                                        {p}
-                                                      </option>
-                                                    ))}
-                                                  </select>
-                                                </td>
-                                              </tr>
-                                            );
-                                          })}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                        </div>{/* /coluna esquerda */}
-
-                        {/* Coluna direita: Mix Histórico — sticky */}
-                        <div className="sticky top-[220px] bg-white rounded-2xl shadow-sm overflow-hidden max-h-[calc(100vh-240px)] flex flex-col">
-                          <div className="p-4 border-b border-[#28071C]/8 shrink-0">
-                            <h3 className="font-semibold text-[#28071C] text-sm">Mix Histórico — {div.name}</h3>
-                            <p className="text-xs text-[#28071C]/40 mt-0.5">Ano anterior · receita e % por categoria</p>
-                          </div>
-                          {/* cabeçalho das colunas */}
-                          <div className="px-4 py-1.5 grid grid-cols-[1fr_auto_auto_auto] gap-3 bg-[#28071C]/3 border-b border-[#28071C]/5 shrink-0">
-                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider">Categoria</span>
-                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-20">Receita aa</span>
-                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-12">% aa</span>
-                            <span className="text-[10px] font-semibold text-[#28071C]/40 uppercase tracking-wider text-right w-16">Atual</span>
-                          </div>
-                          <div className="divide-y divide-[#28071C]/5 overflow-y-auto flex-1">
-                            {Object.keys(historicalCatWeights).length === 0 ? (
-                              <div className="px-4 py-8 text-center text-xs text-[#28071C]/30">
-                                Sem dados do ano anterior para esta divisão.
-                              </div>
-                            ) : (
-                              Object.entries(historicalCatWeights)
-                                .sort(([, a], [, b]) => b.pct - a.pct)
-                                .map(([catName, hist]) => {
-                                  const currentPct = col.categories.find(c => c.category === catName)?.participationPct ?? null;
-                                  const delta = currentPct !== null ? currentPct - hist.pct : null;
-                                  const arrow  = delta === null ? null : delta > 0.05 ? "↑" : delta < -0.05 ? "↓" : "=";
-                                  const arrowColor = arrow === "↑" ? "text-emerald-600" : arrow === "↓" ? "text-red-500" : "text-[#28071C]/30";
-                                  return (
-                                    <div key={catName} className="px-4 py-3 grid grid-cols-[1fr_auto_auto_auto] gap-3 items-center">
-                                      <span className="text-sm text-[#28071C] truncate">{catName}</span>
-                                      <span className="text-xs text-[#28071C]/50 text-right w-20 tabular-nums">
-                                        {fmtCurrency(hist.revenue)}
-                                      </span>
-                                      <span className="text-xs text-[#28071C]/50 text-right w-12 tabular-nums">
-                                        {hist.pct.toFixed(1)}%
-                                      </span>
-                                      <div className="flex items-center justify-end gap-1 w-16">
-                                        {currentPct !== null ? (
-                                          <>
-                                            <span className="text-xs font-semibold text-[#28071C] tabular-nums">
-                                              {currentPct.toFixed(1)}%
-                                            </span>
-                                            {arrow && (
-                                              <span className={`text-xs font-bold ${arrowColor}`}>{arrow}</span>
-                                            )}
-                                          </>
-                                        ) : (
-                                          <span className="text-xs text-[#28071C]/20">—</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  );
-                                })
-                            )}
-                          </div>
-                        </div>{/* /coluna direita */}
-
-                      </div>{/* /grid 2 colunas */}
-
-                      {/* Pyramid traffic light */}
-                      {pyramidDeviation && (
-                        <div className="bg-white rounded-2xl p-5 mb-5 shadow-sm">
-                          <h3 className="font-semibold text-[#28071C] mb-3 flex items-center gap-2">
-                            <BarChart2 className="w-4 h-4" />
-                            Validação da Pirâmide de Preços
-                          </h3>
-                          <div className="grid grid-cols-3 gap-4">
-                            {(["P1", "P2", "P3"] as PriceTier[]).map(tier => {
-                              const d = pyramidDeviation[tier];
-                              const isRed    = Math.abs(d.delta) > 5;
-                              const isAmber  = !isRed && Math.abs(d.delta) > 2;
-                              const color    = isRed ? "red" : isAmber ? "amber" : "emerald";
-                              return (
-                                <div
-                                  key={tier}
-                                  className={`rounded-xl p-4 border ${
-                                    color === "red"
-                                      ? "border-red-200 bg-red-50"
-                                      : color === "amber"
-                                      ? "border-amber-200 bg-amber-50"
-                                      : "border-emerald-200 bg-emerald-50"
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between mb-2">
-                                    <span
-                                      className={`font-bold text-xs px-2 py-0.5 rounded ${
-                                        tier === "P1"
-                                          ? "bg-blue-100 text-blue-700"
-                                          : tier === "P2"
-                                          ? "bg-violet-100 text-violet-700"
-                                          : "bg-rose-100 text-rose-700"
-                                      }`}
-                                    >
-                                      {tier}
-                                    </span>
-                                    {color === "emerald" ? (
-                                      <CheckCircle className="w-4 h-4 text-emerald-500" />
-                                    ) : (
-                                      <AlertTriangle className={`w-4 h-4 ${color === "red" ? "text-red-500" : "text-amber-500"}`} />
-                                    )}
-                                  </div>
-                                  <div className="text-xl font-bold text-[#28071C]">
-                                    {d.actual.toFixed(1)}%
-                                  </div>
-                                  <div className="text-xs text-[#28071C]/60 mt-0.5">
-                                    Meta: {d.target}% · Δ {d.delta > 0 ? "+" : ""}{d.delta.toFixed(1)}pp
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                          <p className="flex items-center gap-1.5 mt-3 text-xs text-[#28071C]/40">
-                            <Info className="w-3.5 h-3.5 flex-shrink-0" />
-                            Desvio acima de 5pp = alerta. O sistema nunca bloqueia por desvio de pirâmide — a decisão final é do estilo.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Budget projection */}
-                      {budgetProjection.length > 0 && (
-                        <div className="bg-white rounded-2xl p-5 mb-5 shadow-sm">
-                          <h3 className="font-semibold text-[#28071C] mb-1 flex items-center gap-2">
-                            <Clock className="w-4 h-4" />
-                            Projeção de Orçamento por Mês
-                          </h3>
-                          <p className="text-xs text-[#28071C]/40 mb-4">
-                            Lead time estimado: 90 dias
-                          </p>
-                          <div className="overflow-x-auto">
-                            <div className="flex gap-3 pb-1">
-                              {(() => {
-                                const maxCostVal = Math.max(...budgetProjection.map(b => b.cost), 1);
-                                return budgetProjection.map(({ month, cost }) => (
-                                  <div
-                                    key={month}
-                                    className="flex-shrink-0 bg-[#F2F2F2] rounded-xl p-4 min-w-[110px]"
-                                  >
-                                    <div className="text-xs text-[#28071C]/50 mb-1">
-                                      {monthLabel(month)}
-                                    </div>
-                                    <div className="text-sm font-semibold text-[#28071C]">
-                                      {fmtCurrency(cost)}
-                                    </div>
-                                    <div className="h-1.5 bg-[#28071C]/10 rounded-full mt-2 overflow-hidden">
-                                      <div
-                                        className="h-full bg-[#7598CF] rounded-full"
-                                        style={{ width: `${(cost / maxCostVal) * 100}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                ));
-                              })()}
-                            </div>
-                          </div>
-                          <p className="flex items-center gap-1.5 mt-3 text-xs text-amber-600">
-                            <Info className="w-3.5 h-3.5 flex-shrink-0" />
-                            Estimativa com base no custo-meta. Revisada quando o PLM retornar fornecedores e condições de pagamento reais.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Mix summary */}
-                      {mixSummary && mixSummary.totalPieces > 0 && (
-                        <div className="bg-white rounded-2xl p-5 mb-5 shadow-sm">
-                          <h3 className="font-semibold text-[#28071C] mb-4">Resumo do Mix</h3>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="bg-[#F2F2F2] rounded-xl p-4">
-                              <div className="text-xs text-[#28071C]/50 mb-1">Total de Peças</div>
-                              <div className="text-xl font-bold text-[#28071C]">
-                                {fmtNum(mixSummary.totalPieces)}
-                              </div>
-                            </div>
-                            <div className="bg-[#F2F2F2] rounded-xl p-4">
-                              <div className="text-xs text-[#28071C]/50 mb-1">SKUs Estimados</div>
-                              <div className="text-xl font-bold text-[#28071C]">
-                                {fmtNum(mixSummary.estimatedSkus)}
-                              </div>
-                              <div className="text-xs text-[#28071C]/30 mt-0.5">base: 12 pç/SKU</div>
-                            </div>
-                            <div className="bg-[#F2F2F2] rounded-xl p-4">
-                              <div className="text-xs text-[#28071C]/50 mb-1">Investimento Máximo</div>
-                              <div className="text-xl font-bold text-[#28071C]">
-                                {fmtCurrency(mixSummary.totalInvestment)}
-                              </div>
-                              <div className="text-xs text-[#28071C]/30 mt-0.5">custo-meta × volume</div>
-                            </div>
-                            <div className="bg-[#F2F2F2] rounded-xl p-4">
-                              <div className="text-xs text-[#28071C]/50 mb-1">Margem Alvo</div>
-                              <div className="text-xl font-bold text-[#28071C]">
-                                {div.targetMarginPct}%
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Action buttons */}
-                      <div className="flex flex-wrap items-center justify-between gap-3 bg-white rounded-2xl p-5 shadow-sm">
-                        <p className="flex items-center gap-1.5 text-xs text-[#28071C]/40">
-                          <Info className="w-3.5 h-3.5 flex-shrink-0" />
-                          Integração PLM — quando dados de fornecedor forem importados, o sistema revisará custo e margem automaticamente
+                      <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-3">
+                        <p className="text-[#28071C]/50 text-xs">Motor de Giro</p>
+                        <p className="text-[#28071C] font-bold text-lg">
+                          {cascadeRisk.motorGiro != null ? fmtPct(cascadeRisk.motorGiro) : "—"}
                         </p>
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => alert("Exportar Briefing — geração de PDF em desenvolvimento")}
-                            className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/20 rounded-xl text-sm text-[#28071C] hover:bg-[#28071C]/5 transition-colors"
-                          >
-                            <FileText className="w-4 h-4" />
-                            Exportar Briefing
-                          </button>
-                          <button
-                            onClick={() => validateMix(div.id, col.id, col)}
-                            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                              col.mixStatus === "validado"
-                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                                : "bg-[#28071C] text-white hover:bg-[#28071C]/90"
-                            }`}
-                          >
-                            {col.mixStatus === "validado" ? (
-                              <>
-                                <CheckCircle className="w-4 h-4" />
-                                Mix Validado
-                              </>
-                            ) : (
-                              "Validar Mix"
-                            )}
-                          </button>
-                        </div>
+                      </div>
+                      <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-3">
+                        <p className="text-[#28071C]/50 text-xs">Ícone de Marca</p>
+                        <p className="text-[#28071C] font-bold text-lg">
+                          {cascadeRisk.icone != null ? fmtPct(cascadeRisk.icone) : "—"}
+                        </p>
                       </div>
                     </div>
-                  );
-                })()}
+                  </div>
+                )}
+
+                {/* Cascata Categoria → Subcategoria → Linha × Faixa de Preço —
+                    resultado do que já foi planejado até o M4, não um formulário
+                    em branco. Clique numa linha para abrir o próximo nível. */}
+                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                  <div className="p-5 border-b border-[#28071C]/10">
+                    <h3 className="font-semibold text-[#28071C]">Cascata do Sortimento — {activeDivision.name}</h3>
+                    <p className="text-xs text-[#28071C]/50 mt-0.5">
+                      Categoria → Subcategoria → Linha, por faixa de preço. Distribuição estimada a partir do catálogo real e do plano aplicado.
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-[#28071C]/40 text-xs uppercase tracking-wide border-b border-[#28071C]/10">
+                          <th className="text-left py-2.5 px-5">Estrutura</th>
+                          <th className="text-right py-2.5 px-3">P1</th>
+                          <th className="text-right py-2.5 px-3">P2</th>
+                          <th className="text-right py-2.5 px-3">P3</th>
+                          <th className="text-right py-2.5 px-5">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cascadeTree.map(cat => {
+                          const catOpen = expandedCascadeCats.has(cat.category);
+                          const catTiers = cat.subs.reduce((acc, s) => {
+                            for (const l of s.linhas) { acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3; }
+                            return acc;
+                          }, { p1: 0, p2: 0, p3: 0 });
+                          return (
+                            <Fragment key={cat.category}>
+                              <tr
+                                className="border-b border-[#28071C]/5 hover:bg-[#F2F2F2]/40 cursor-pointer"
+                                onClick={() => toggleCascadeCat(cat.category)}
+                              >
+                                <td className="py-2.5 px-5 font-semibold text-[#28071C]">
+                                  <span className="flex items-center gap-2">
+                                    {catOpen ? <ChevronUp className="w-3.5 h-3.5 text-[#28071C]/40" /> : <ChevronDown className="w-3.5 h-3.5 text-[#28071C]/40" />}
+                                    {cat.category}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p1)}</td>
+                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p2)}</td>
+                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p3)}</td>
+                                <td className="py-2.5 px-5 text-right font-semibold text-[#28071C]">{fmtCurrency(cat.total)}</td>
+                              </tr>
+                              {catOpen && cat.subs.map(sub => {
+                                const subKey = `${cat.category}::${sub.subcategory}`;
+                                const subOpen = expandedCascadeSubs.has(subKey);
+                                const subTiers = sub.linhas.reduce((acc, l) => {
+                                  acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3;
+                                  return acc;
+                                }, { p1: 0, p2: 0, p3: 0 });
+                                return (
+                                  <Fragment key={subKey}>
+                                    <tr
+                                      className="border-b border-[#28071C]/5 hover:bg-[#F2F2F2]/30 cursor-pointer bg-[#F2F2F2]/15"
+                                      onClick={() => toggleCascadeSub(subKey)}
+                                    >
+                                      <td className="py-2 pl-10 pr-5 text-[#28071C]/80">
+                                        <span className="flex items-center gap-2">
+                                          {subOpen ? <ChevronUp className="w-3 h-3 text-[#28071C]/30" /> : <ChevronDown className="w-3 h-3 text-[#28071C]/30" />}
+                                          {sub.subcategory}
+                                        </span>
+                                      </td>
+                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p1)}</td>
+                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p2)}</td>
+                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p3)}</td>
+                                      <td className="py-2 px-5 text-right text-[#28071C]/80 text-xs font-medium">{fmtCurrency(sub.total)}</td>
+                                    </tr>
+                                    {subOpen && sub.linhas.map(l => (
+                                      <tr key={`${subKey}::${l.linha}`} className="border-b border-[#28071C]/5">
+                                        <td className="py-1.5 pl-16 pr-5 text-[#28071C]/60 text-xs">{l.linha}</td>
+                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p1 > 0 ? fmtCurrency(l.tiers.p1) : "—"}</td>
+                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p2 > 0 ? fmtCurrency(l.tiers.p2) : "—"}</td>
+                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p3 > 0 ? fmtCurrency(l.tiers.p3) : "—"}</td>
+                                        <td className="py-1.5 px-5 text-right text-[#28071C]/60 text-xs">{fmtCurrency(l.total)}</td>
+                                      </tr>
+                                    ))}
+                                  </Fragment>
+                                );
+                              })}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </>
             )}
           </div>
