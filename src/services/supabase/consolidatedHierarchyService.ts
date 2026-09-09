@@ -99,11 +99,26 @@ export async function computeConsolidatedRows(
 
   const rows: ConsolidatedRow[] = []
 
+  // BUG real corrigido aqui (2026-09-08): a cascata do M6 nunca gerava
+  // nenhuma linha, pra NENHUM tenant — `consolidated.divisionBreakdown` é um
+  // stub sempre gravado como `{}` (useModule3.ts/module3ScenarioService.ts
+  // nunca o populam) e `block.indicators.revenue` nunca é escrito em lugar
+  // nenhum (é sempre calculado on-the-fly como macroRevenue×participação, não
+  // persistido no indicador). `divisionRevenue` caía sempre em 0, então TODA
+  // divisão era pulada e a cascata voltava vazia — mesmo com catálogo e
+  // Pirâmide de Preço completos. `consolidated.totalRevenue` é o campo que
+  // REALMENTE existe (gravado por calculateScenarioConsolidated a cada save,
+  // é a receita macro total da temporada, não da divisão) — a receita por
+  // divisão se deriva dele × participação, do mesmo jeito que a tela do M6
+  // já faz para montar o card "Metas Estratégicas".
+  const totalRevenueSeason: number = consolidated?.totalRevenue ?? 0
+
   for (const [divisionId, block] of Object.entries(divisions)) {
+    const participation: number = block?.participation ?? 0
     const divisionRevenue: number =
-      consolidated?.divisionBreakdown?.[divisionId]?.revenue ??
-      block?.indicators?.revenue ??
-      0
+      totalRevenueSeason > 0 && participation > 0
+        ? totalRevenueSeason * (participation / 100)
+        : (block?.indicators?.revenue ?? 0)
     if (!divisionRevenue) continue // sem receita planejada, nada a distribuir
 
     const riskMatrix = block?.riskMatrix ?? {}

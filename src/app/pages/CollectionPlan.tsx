@@ -40,6 +40,8 @@ import { useTour } from "../hooks/useTour";
 import { getTemporadas, MONTHS, type Temporada } from "../../services/temporadaService";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import { initPlanCycles } from "../types/planCycle";
+import { supabase } from "../../lib/supabase";
+import { seasonFiscalYearsTouched } from "../../services/supabase/planningScenarioService";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import {
   getAppliedDivisionSeasonIds,
@@ -114,9 +116,17 @@ export default function CollectionPlan() {
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>("");
 
   const [realDivisions, setRealDivisions] = useState<TenantDivision[]>([]);
-  const [targets, setTargets] = useState<Record<string, { targetPieces: number; unitsExpectedSold: number; initialStock: number }>>({});
+  const [targets, setTargets] = useState<Record<string, {
+    targetPieces: number; unitsExpectedSold: number; initialStock: number;
+    participation: number; avgPrice: number;
+  }>>({});
   const [divisionsPlan, setDivisionsPlan] = useState<Record<string, CollectionPlanDivision>>({});
   const [histProfiles, setHistProfiles] = useState<DivisionMonthProfile[]>([]);
+  // Curva real de receita por mês, já aplicada na Sazonalidade (M3) — mesma
+  // leitura usada no M4 (Module3DivisionPlanning.tsx). É a base real da
+  // "necessidade de peças": sem isso, a necessidade seria estimada por peso
+  // histórico em vez do que foi de fato planejado mês a mês.
+  const [sazonalidadeMonthlyTotal, setSazonalidadeMonthlyTotal] = useState<Record<string, number> | null>(null);
 
   const [scenarios, setScenarios] = useState<CollectionPlanScenario[]>([]);
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
@@ -173,7 +183,10 @@ export default function CollectionPlan() {
       listCollectionPlanScenarios(tenantId, selectedSeasonId),
     ]).then(([divScenario, working, scenarioList]) => {
       const divs = (divScenario?.divisions ?? {}) as Record<string, DivisionPlanBlock>;
-      const nextTargets: Record<string, { targetPieces: number; unitsExpectedSold: number; initialStock: number }> = {};
+      const nextTargets: Record<string, {
+        targetPieces: number; unitsExpectedSold: number; initialStock: number;
+        participation: number; avgPrice: number;
+      }> = {};
       for (const [divId, block] of Object.entries(divs)) {
         const vc = block?.volumeCoverage;
         if (!vc) continue;
@@ -181,6 +194,8 @@ export default function CollectionPlan() {
           targetPieces: vc.productionVolume ?? 0,
           unitsExpectedSold: vc.unitsExpectedSold ?? 0,
           initialStock: vc.initialStock ?? 0,
+          participation: block?.participation ?? 0,
+          avgPrice: block?.indicators?.avgPrice ?? 0,
         };
       }
       setTargets(nextTargets);
@@ -209,6 +224,45 @@ export default function CollectionPlan() {
       .map(({ month }) => MONTHS[month - 1]);
   }, [selectedTemporada]);
 
+  // ─── Curva real de receita por mês, já aplicada na Sazonalidade (M3) ─────
+  // Mesma leitura usada no M4 (Module3DivisionPlanning.tsx): uma temporada de
+  // Verão cruza 2 anos fiscais — busca o plano aplicado de cada ano que ela
+  // toca (cycle_id, não seasonId) e soma só os meses desta temporada.
+  useEffect(() => {
+    if (!tenantId || !selectedTemporada?.anoFiscal) { setSazonalidadeMonthlyTotal(null); return; }
+    const season = selectedTemporada;
+    const db = supabase as any;
+
+    const touchedYears = seasonFiscalYearsTouched(season.mesInicio, season.mesFim, season.anoFiscal!);
+    const seasonMonthNames = new Set(seasonMonths);
+
+    Promise.all(
+      touchedYears.map((year) =>
+        db.from("annual_plan_cycles").select("id").eq("tenant_id", tenantId).eq("year", year).maybeSingle()
+          .then(({ data: cycle }: any) => {
+            if (!cycle) return null;
+            return db.from("planning_scenarios").select("values")
+              .eq("tenant_id", tenantId).eq("cycle_id", cycle.id).eq("is_applied", true)
+              .maybeSingle()
+              .then(({ data }: any) => (data?.values?.plannedRevenue as Record<string, Record<string, number>> | undefined) ?? null);
+          }),
+      ),
+    ).then((results) => {
+      const monthlyTotal: Record<string, number> = {};
+      let hasAny = false;
+      for (const plannedRevenue of results) {
+        if (!plannedRevenue) continue;
+        hasAny = true;
+        for (const canalMonths of Object.values(plannedRevenue)) {
+          for (const [month, rev] of Object.entries(canalMonths ?? {})) {
+            if (seasonMonthNames.has(month)) monthlyTotal[month] = (monthlyTotal[month] ?? 0) + (rev ?? 0);
+          }
+        }
+      }
+      setSazonalidadeMonthlyTotal(hasAny ? monthlyTotal : null);
+    }).catch(() => setSazonalidadeMonthlyTotal(null));
+  }, [tenantId, selectedTemporada, seasonMonths]);
+
   // ─── Persistência: debounce write-through → Supabase (mesmo padrão da Pirâmide de Preço) ──
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persist = useCallback((next: Record<string, CollectionPlanDivision>) => {
@@ -227,43 +281,70 @@ export default function CollectionPlan() {
     });
   };
 
-  // ─── Vendas esperadas por mês, por divisão — perfil histórico (getDivisionSeasonality)
-  // renormalizado só sobre os meses desta temporada, distribuindo unitsExpectedSold do M4. ──
+  // ─── Venda esperada por mês, por divisão — a partir da receita REAL já
+  // aplicada na Sazonalidade (M3), não de peso histórico. Exemplo: R$200 mil
+  // vendidos em agosto na Sazonalidade × 40% de participação da divisão
+  // (definida no M4, já refletindo qualquer crescimento decidido lá) ÷ PMV
+  // da divisão = peças que a divisão precisa vender em agosto. Cai para peso
+  // histórico (getDivisionSeasonality) só quando a Sazonalidade real ainda
+  // não está disponível (ex.: cenário legado sem plannedRevenue salvo). ──
   const monthlyExpectedSold = useCallback((divisionId: string): Record<string, number> => {
     const target = targets[divisionId];
-    if (!target || !target.unitsExpectedSold || seasonMonths.length === 0) return {};
+    if (!target || seasonMonths.length === 0) return {};
+    const { participation, avgPrice, unitsExpectedSold } = target;
+
+    if (sazonalidadeMonthlyTotal && avgPrice > 0 && participation > 0) {
+      const result: Record<string, number> = {};
+      seasonMonths.forEach(m => {
+        const receitaMes = sazonalidadeMonthlyTotal[m] ?? 0;
+        result[m] = (receitaMes * (participation / 100)) / avgPrice;
+      });
+      return result;
+    }
+
+    // Fallback: peso histórico distribuindo o total de peças da temporada.
+    if (!unitsExpectedSold) return {};
     const profile = histProfiles.find(p => p.division === divisionId);
     const weights = seasonMonths.map(m => profile?.monthlyPcts[m] ?? 0);
     const sumW = weights.reduce((s, w) => s + w, 0);
     const norm = sumW > 0 ? weights.map(w => w / sumW) : seasonMonths.map(() => 1 / seasonMonths.length);
     const result: Record<string, number> = {};
-    seasonMonths.forEach((m, i) => { result[m] = target.unitsExpectedSold * norm[i]; });
+    seasonMonths.forEach((m, i) => { result[m] = unitsExpectedSold * norm[i]; });
     return result;
-  }, [targets, histProfiles, seasonMonths]);
+  }, [targets, histProfiles, seasonMonths, sazonalidadeMonthlyTotal]);
 
-  // ─── Timeline mensal: peças entrando, venda esperada, estoque e cobertura ──
-  // Projeção própria desta tela (não usa o cluster T2 do M4, que só tem
-  // Giro↔Estoque Médio desde 2026-09-08): estoque acumulado ao fim do mês ÷
-  // ritmo de venda esperado do mês × ~30 dias. Não é o Forward Coverage real
-  // (que usa estoque INICIAL e janela fixa de 90 dias) — alinhar isso é
-  // trabalho pendente, ver src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
+  // ─── Timeline mensal: 4 linhas pedidas pela usuária —
+  //   1. Necessidade de entrada: peças que PRECISAM entrar neste mês pra
+  //      cobrir a venda esperada, descontado o estoque já projetado no
+  //      início do mês (o "MRP" do plano — independe do que já foi montado
+  //      em coleções).
+  //   2. Coleções: peças que a estilista de fato planejou (via "entries"
+  //      abaixo) — o que era "Peças entrando".
+  //   3. Diferença: Coleções − Necessidade (negativo = falta planejar mais).
+  //   4. Cobertura: projeção própria desta tela (não usa o cluster T2 do M4,
+  //      que só tem Giro↔Estoque Médio desde 2026-09-08) — não é o Forward
+  //      Coverage real (que usa estoque INICIAL e janela fixa de 90 dias);
+  //      alinhar isso é trabalho pendente, ver
+  //      src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
+  // Importante: o estoque projetado (stockEnd) usa SEMPRE o que foi de fato
+  // planejado em coleções (entered), nunca a necessidade — a necessidade é
+  // só uma referência para a estilista decidir se ajusta o plano.
   const buildTimeline = useCallback((divisionId: string) => {
     const div = divisionsPlan[divisionId];
     const target = targets[divisionId];
     if (!div) return [];
     const expected = monthlyExpectedSold(divisionId);
-    let cumEntered = 0;
-    let cumSold = 0;
-    const initialStock = target?.initialStock ?? 0;
+    let stockStart = target?.initialStock ?? 0;
     return seasonMonths.map(month => {
       const entries = div.entries.filter(e => e.month === month);
       const entered = entries.reduce((s, e) => s + e.plannedPieces, 0);
-      cumEntered += entered;
       const soldExpected = expected[month] ?? 0;
-      cumSold += soldExpected;
-      const stockEnd = initialStock + cumEntered - cumSold;
+      const necessidadeEntrada = Math.max(0, soldExpected - stockStart);
+      const diferenca = entered - necessidadeEntrada;
+      const stockEnd = stockStart + entered - soldExpected;
       const coverageDays = soldExpected > 0 ? (stockEnd / soldExpected) * 30 : (stockEnd > 0 ? Infinity : 0);
-      return { month, entries, entered, soldExpected, stockEnd, coverageDays };
+      stockStart = stockEnd;
+      return { month, entries, necessidadeEntrada, entered, diferenca, soldExpected, stockEnd, coverageDays };
     });
   }, [divisionsPlan, targets, monthlyExpectedSold, seasonMonths]);
 
@@ -548,7 +629,13 @@ export default function CollectionPlan() {
 
                     {isExpanded && (
                       <div className="border-t border-[#28071C]/8 px-5 py-4 space-y-4">
-                        {/* Timeline mensal */}
+                        {/* Timeline mensal — 4 linhas:
+                            1. Necessidade: peças que precisam entrar pra cobrir a venda
+                               esperada (real, da Sazonalidade), descontado o estoque já
+                               projetado no início do mês — o "MRP" do plano.
+                            2. Coleções: o que a estilista de fato planejou (era "Peças entrando").
+                            3. Diferença: Coleções − Necessidade.
+                            4. Cobertura: projeção de estoque desta tela. */}
                         <div id="tour-cp-timeline" className="overflow-x-auto">
                           <table className="min-w-full text-xs">
                             <thead>
@@ -559,7 +646,15 @@ export default function CollectionPlan() {
                             </thead>
                             <tbody>
                               <tr className="border-t border-[#28071C]/5">
-                                <td className="py-1.5 pr-4 text-[#28071C]/60 font-semibold">Peças entrando</td>
+                                <td className="py-1.5 pr-4 text-[#28071C]/60 font-semibold">Necessidade</td>
+                                {timeline.map(t => (
+                                  <td key={t.month} className="text-center py-1.5 px-2 text-[#28071C]/50">
+                                    {Math.round(t.necessidadeEntrada) > 0 ? fmtPieces(t.necessidadeEntrada) : "—"}
+                                  </td>
+                                ))}
+                              </tr>
+                              <tr className="border-t border-[#28071C]/5">
+                                <td className="py-1.5 pr-4 text-[#28071C]/60 font-semibold">Coleções</td>
                                 {timeline.map(t => (
                                   <td key={t.month} className="text-center py-1.5 px-2 text-[#28071C]">
                                     {t.entered > 0 ? fmtPieces(t.entered) : "—"}
@@ -567,10 +662,15 @@ export default function CollectionPlan() {
                                 ))}
                               </tr>
                               <tr className="border-t border-[#28071C]/5">
-                                <td className="py-1.5 pr-4 text-[#28071C]/60 font-semibold">Venda esperada</td>
+                                <td className="py-1.5 pr-4 text-[#28071C]/60 font-semibold">Diferença</td>
                                 {timeline.map(t => (
-                                  <td key={t.month} className="text-center py-1.5 px-2 text-[#28071C]/50">
-                                    {Math.round(t.soldExpected) > 0 ? fmtPieces(t.soldExpected) : "—"}
+                                  <td
+                                    key={t.month}
+                                    className={`text-center py-1.5 px-2 font-medium ${
+                                      Math.round(t.diferenca) < 0 ? "text-red-600" : Math.round(t.diferenca) > 0 ? "text-emerald-600" : "text-[#28071C]/40"
+                                    }`}
+                                  >
+                                    {Math.round(t.diferenca) !== 0 ? `${t.diferenca > 0 ? "+" : ""}${fmtPieces(t.diferenca)}` : "—"}
                                   </td>
                                 ))}
                               </tr>
@@ -588,50 +688,6 @@ export default function CollectionPlan() {
                             </tbody>
                           </table>
                         </div>
-
-                        {/* Mapa de Lançamento — visão gráfica mês a mês das
-                            coleções/drops desta divisão. Antes vivia no M6
-                            (Engenharia de Sortimento) como um Gantt por dia;
-                            movido pra cá porque é aqui que o usuário decide o
-                            calendário de entrada — o M6 cuida da estrutura de
-                            produto (categoria/subcategoria/faixa/risco), não
-                            do calendário. Granularidade de mês, igual ao
-                            resto do módulo (não há data exata aqui). */}
-                        {(divisionsPlan[divId]?.entries.length ?? 0) > 0 && (
-                          <div className="overflow-x-auto">
-                            <p className="text-[10px] text-[#28071C]/40 uppercase tracking-wide font-semibold mb-1.5">
-                              Mapa de Lançamento
-                            </p>
-                            <div
-                              className="grid gap-1"
-                              style={{ gridTemplateColumns: `repeat(${seasonMonths.length}, minmax(64px, 1fr))` }}
-                            >
-                              {seasonMonths.map(m => (
-                                <div key={`h-${m}`} className="text-center text-[10px] text-[#28071C]/40 font-medium pb-1 border-b border-[#28071C]/10">
-                                  {m.slice(0, 3)}
-                                </div>
-                              ))}
-                              {seasonMonths.map(m => {
-                                const entriesInMonth = divisionsPlan[divId].entries.filter(e => e.month === m);
-                                return (
-                                  <div key={`b-${m}`} className="min-h-[32px] flex flex-col gap-1 pt-1">
-                                    {entriesInMonth.map(e => (
-                                      <div
-                                        key={e.id}
-                                        title={`${e.name} · ${fmtPieces(e.plannedPieces)} pçs`}
-                                        className={`rounded px-1.5 py-1 text-[10px] font-medium truncate ${
-                                          e.type === "drop" ? "bg-[#9B8CD8]/20 text-[#9B8CD8]" : "bg-[#7598CF]/20 text-[#7598CF]"
-                                        }`}
-                                      >
-                                        {e.name}
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
 
                         {/* Entradas cadastradas */}
                         {(divisionsPlan[divId]?.entries.length ?? 0) > 0 && (
@@ -707,6 +763,61 @@ export default function CollectionPlan() {
                             <Plus className="w-4 h-4" /> Adicionar
                           </button>
                         </div>
+
+                        {/* Mapa de Lançamento — calendário mês a mês das
+                            coleções/drops desta divisão. Antes vivia no M6
+                            (Engenharia de Sortimento) como um Gantt por dia;
+                            movido pra cá porque é aqui que o usuário decide o
+                            calendário de entrada — o M6 cuida da estrutura de
+                            produto (categoria/subcategoria/faixa/risco), não
+                            do calendário. Granularidade de mês, igual ao
+                            resto do módulo (não há data exata aqui). */}
+                        {(divisionsPlan[divId]?.entries.length ?? 0) > 0 && (
+                          <div className="pt-2 border-t border-[#28071C]/5">
+                            <p className="text-[10px] text-[#28071C]/40 uppercase tracking-wide font-semibold mb-2">
+                              Mapa de Lançamento
+                            </p>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                              {seasonMonths.map(m => {
+                                const entriesInMonth = divisionsPlan[divId].entries.filter(e => e.month === m);
+                                return (
+                                  <div
+                                    key={m}
+                                    className={`rounded-xl border overflow-hidden ${
+                                      entriesInMonth.length > 0 ? "border-[#7598CF]/30 bg-[#7598CF]/4" : "border-[#28071C]/8 bg-[#F2F2F2]/40"
+                                    }`}
+                                  >
+                                    <div className="px-2.5 py-1.5 border-b border-[#28071C]/8 flex items-center justify-between">
+                                      <span className="text-xs font-bold text-[#28071C]">{m}</span>
+                                      {entriesInMonth.length > 0 && (
+                                        <span className="text-[10px] text-[#28071C]/40">
+                                          {fmtPieces(entriesInMonth.reduce((s, e) => s + e.plannedPieces, 0))} pçs
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="p-2 min-h-[40px] flex flex-col gap-1">
+                                      {entriesInMonth.length === 0 ? (
+                                        <span className="text-[10px] text-[#28071C]/25">—</span>
+                                      ) : (
+                                        entriesInMonth.map(e => (
+                                          <div
+                                            key={e.id}
+                                            title={`${e.name} · ${fmtPieces(e.plannedPieces)} pçs`}
+                                            className={`rounded px-1.5 py-1 text-[10px] font-medium truncate ${
+                                              e.type === "drop" ? "bg-[#9B8CD8]/20 text-[#9B8CD8]" : "bg-[#7598CF]/20 text-[#7598CF]"
+                                            }`}
+                                          >
+                                            {e.name}
+                                          </div>
+                                        ))
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
