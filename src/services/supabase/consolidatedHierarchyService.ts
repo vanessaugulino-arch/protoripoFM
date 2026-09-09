@@ -31,6 +31,7 @@ export interface HierarchyRevenueWeight {
   category: string
   subcategory: string | null
   linha: string | null
+  riskLevel: string | null
   totalRevenue: number
 }
 
@@ -57,7 +58,22 @@ export async function getHierarchyRevenueByPath(tenantId: string): Promise<Hiera
     console.warn('[consolidatedHierarchy] get_hierarchy_revenue_by_path:', error.message)
     return []
   }
-  return (data ?? []) as HierarchyRevenueWeight[]
+  // BUG real corrigido aqui (2026-09-08): a função RPC devolve colunas
+  // snake_case (total_revenue, risk_level) — o cast direto pra
+  // HierarchyRevenueWeight (camelCase) nunca mapeava os campos, então todo
+  // peso histórico (w.totalRevenue) sempre lia `undefined`. distributeByWeight
+  // caía sempre no fallback "sem histórico, divide igualmente" — por isso
+  // categoria/subcategoria/linha sempre apareciam com splits perfeitamente
+  // iguais na Cascata do Sortimento, nunca refletindo o histórico real.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((data ?? []) as any[]).map(r => ({
+    division:     r.division as string,
+    category:     r.category as string,
+    subcategory:  (r.subcategory as string) ?? null,
+    linha:        (r.linha as string) ?? null,
+    riskLevel:    (r.risk_level as string) ?? null,
+    totalRevenue: Number(r.total_revenue) || 0,
+  }))
 }
 
 // ── Composição: aplica os inputs reais (M3 + Pirâmide) sobre a hierarquia real,

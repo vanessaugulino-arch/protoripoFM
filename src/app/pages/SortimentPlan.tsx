@@ -82,6 +82,15 @@ import {
   computeAndSaveConsolidated,
   type ConsolidatedDbRow,
 } from "../../services/supabase/consolidatedHierarchyService";
+import {
+  computeCategoryGrids,
+  saveGridCellAdjustment,
+  RISK_LEVELS,
+  RISK_LEVEL_LABELS,
+  PRICE_TIER_LABELS,
+  type CategoryGrid,
+  type RiskLevelId,
+} from "../../services/supabase/sortimentGridService";
 import type { PriceTierId } from "../types/pricePyramid";
 import {
   createApprovalRequest,
@@ -524,6 +533,33 @@ export default function SortimentPlan() {
     };
   }, [cascadeForActiveDivision]);
 
+  // ── Aba 1 — grid Faixa de Preço × Nível de Risco, por categoria ────────────
+  const [categoryGrids, setCategoryGrids] = useState<CategoryGrid[]>([]);
+  const [gridsLoading, setGridsLoading] = useState(false);
+  const [gridUnit, setGridUnit] = useState<"pieces" | "revenue">("revenue");
+
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id || !activeDivId || cascadeTree.length === 0) {
+      setCategoryGrids([]);
+      return;
+    }
+    const tid = user.tenant_id;
+    const categoryRevenues = new Map(cascadeTree.map(cat => [cat.category, cat.total]));
+    setGridsLoading(true);
+    computeCategoryGrids(tid, seasonId, activeDivId, categoryRevenues)
+      .then(setCategoryGrids)
+      .catch(() => setCategoryGrids([]))
+      .finally(() => setGridsLoading(false));
+  }, [seasonId, user?.tenant_id, activeDivId, cascadeTree]);
+
+  const handleGridCellEdit = async (grid: CategoryGrid, tier: PriceTierId, risk: RiskLevelId, newPct: number) => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) return;
+    const updated = await saveGridCellAdjustment(
+      user.tenant_id, seasonId, activeDivId, grid.category, grid, tier, risk, newPct, user.email,
+    );
+    setCategoryGrids(prev => prev.map(g => g.category === grid.category ? updated : g));
+  };
+
   const toggleCascadeCat = (cat: string) => setExpandedCascadeCats(prev => {
     const next = new Set(prev);
     if (next.has(cat)) next.delete(cat); else next.add(cat);
@@ -825,6 +861,12 @@ export default function SortimentPlan() {
   }, [m3InitPending, temporadas, seasonId]);
 
   const activeDivision = divisions.find(d => d.id === activeDivId) ?? divisions[0];
+
+  const avgPriceByTier: Record<PriceTierId, number> = {
+    p1: activeDivision?.avgPriceP1 ?? 0,
+    p2: activeDivision?.avgPriceP2 ?? 0,
+    p3: activeDivision?.avgPriceP3 ?? 0,
+  };
 
   // ── KPIs do topbar ───────────────────────────────────────────────────────────
   const topbarKpis = useMemo(() => {
@@ -1510,88 +1552,164 @@ export default function SortimentPlan() {
                     resultado do que já foi planejado até o M4, não um formulário
                     em branco. Clique numa linha para abrir o próximo nível. */}
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  <div className="p-5 border-b border-[#28071C]/10">
-                    <h3 className="font-semibold text-[#28071C]">Cascata do Sortimento — {activeDivision.name}</h3>
-                    <p className="text-xs text-[#28071C]/50 mt-0.5">
-                      Categoria → Subcategoria → Linha, por faixa de preço. Distribuição estimada a partir do catálogo real e do plano aplicado.
-                    </p>
+                  <div className="p-5 border-b border-[#28071C]/10 flex items-center justify-between">
+                    <div>
+                      <h3 className="font-semibold text-[#28071C]">Cascata do Sortimento — {activeDivision.name}</h3>
+                      <p className="text-xs text-[#28071C]/50 mt-0.5">
+                        Participação por Categoria: Faixa de Preço × Nível de Risco. Ajuste em %, revise em peças ou receita.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 bg-[#F2F2F2] rounded-lg p-0.5">
+                      <button
+                        onClick={() => setGridUnit("revenue")}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "revenue" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                      >
+                        R$
+                      </button>
+                      <button
+                        onClick={() => setGridUnit("pieces")}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "pieces" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                      >
+                        Peças
+                      </button>
+                    </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-[#28071C]/40 text-xs uppercase tracking-wide border-b border-[#28071C]/10">
-                          <th className="text-left py-2.5 px-5">Estrutura</th>
-                          <th className="text-right py-2.5 px-3">P1</th>
-                          <th className="text-right py-2.5 px-3">P2</th>
-                          <th className="text-right py-2.5 px-3">P3</th>
-                          <th className="text-right py-2.5 px-5">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {cascadeTree.map(cat => {
-                          const catOpen = expandedCascadeCats.has(cat.category);
-                          const catTiers = cat.subs.reduce((acc, s) => {
-                            for (const l of s.linhas) { acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3; }
-                            return acc;
-                          }, { p1: 0, p2: 0, p3: 0 });
-                          return (
-                            <Fragment key={cat.category}>
-                              <tr
-                                className="border-b border-[#28071C]/5 hover:bg-[#F2F2F2]/40 cursor-pointer"
-                                onClick={() => toggleCascadeCat(cat.category)}
-                              >
-                                <td className="py-2.5 px-5 font-semibold text-[#28071C]">
-                                  <span className="flex items-center gap-2">
-                                    {catOpen ? <ChevronUp className="w-3.5 h-3.5 text-[#28071C]/40" /> : <ChevronDown className="w-3.5 h-3.5 text-[#28071C]/40" />}
-                                    {cat.category}
+
+                  <div className="p-5 space-y-4">
+                    {gridsLoading ? (
+                      <div className="text-center py-10 text-[#28071C]/40 text-sm">Calculando participação por categoria...</div>
+                    ) : (
+                      categoryGrids.map(grid => {
+                        const catTree = cascadeTree.find(c => c.category === grid.category);
+                        const detailOpen = expandedCascadeCats.has(grid.category);
+                        const sumPct = grid.cells.reduce((s, c) => s + c.pct, 0);
+                        return (
+                          <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
+                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center justify-between">
+                              <span className="font-semibold text-[#28071C]">{grid.category}</span>
+                              <div className="flex items-center gap-3">
+                                {Math.abs(sumPct - 100) > 0.5 && (
+                                  <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                                    {sumPct.toFixed(1)}% alocado
                                   </span>
-                                </td>
-                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p1)}</td>
-                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p2)}</td>
-                                <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(catTiers.p3)}</td>
-                                <td className="py-2.5 px-5 text-right font-semibold text-[#28071C]">{fmtCurrency(cat.total)}</td>
-                              </tr>
-                              {catOpen && cat.subs.map(sub => {
-                                const subKey = `${cat.category}::${sub.subcategory}`;
-                                const subOpen = expandedCascadeSubs.has(subKey);
-                                const subTiers = sub.linhas.reduce((acc, l) => {
-                                  acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3;
-                                  return acc;
-                                }, { p1: 0, p2: 0, p3: 0 });
-                                return (
-                                  <Fragment key={subKey}>
-                                    <tr
-                                      className="border-b border-[#28071C]/5 hover:bg-[#F2F2F2]/30 cursor-pointer bg-[#F2F2F2]/15"
-                                      onClick={() => toggleCascadeSub(subKey)}
-                                    >
-                                      <td className="py-2 pl-10 pr-5 text-[#28071C]/80">
-                                        <span className="flex items-center gap-2">
-                                          {subOpen ? <ChevronUp className="w-3 h-3 text-[#28071C]/30" /> : <ChevronDown className="w-3 h-3 text-[#28071C]/30" />}
-                                          {sub.subcategory}
-                                        </span>
-                                      </td>
-                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p1)}</td>
-                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p2)}</td>
-                                      <td className="py-2 px-3 text-right text-[#28071C]/60 text-xs">{fmtCurrency(subTiers.p3)}</td>
-                                      <td className="py-2 px-5 text-right text-[#28071C]/80 text-xs font-medium">{fmtCurrency(sub.total)}</td>
-                                    </tr>
-                                    {subOpen && sub.linhas.map(l => (
-                                      <tr key={`${subKey}::${l.linha}`} className="border-b border-[#28071C]/5">
-                                        <td className="py-1.5 pl-16 pr-5 text-[#28071C]/60 text-xs">{l.linha}</td>
-                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p1 > 0 ? fmtCurrency(l.tiers.p1) : "—"}</td>
-                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p2 > 0 ? fmtCurrency(l.tiers.p2) : "—"}</td>
-                                        <td className="py-1.5 px-3 text-right text-[#28071C]/50 text-xs">{l.tiers.p3 > 0 ? fmtCurrency(l.tiers.p3) : "—"}</td>
-                                        <td className="py-1.5 px-5 text-right text-[#28071C]/60 text-xs">{fmtCurrency(l.total)}</td>
-                                      </tr>
+                                )}
+                                <span className="text-sm text-[#28071C]/60">{fmtCurrency(grid.categoryRevenue)}</span>
+                              </div>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-[#28071C]/40 uppercase tracking-wide">
+                                    <th className="text-left py-2 px-3">Faixa</th>
+                                    {RISK_LEVELS.map(rl => (
+                                      <th key={rl} className="text-center py-2 px-2 font-medium">{RISK_LEVEL_LABELS[rl]}</th>
                                     ))}
-                                  </Fragment>
-                                );
-                              })}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(["p1", "p2", "p3"] as PriceTierId[]).map(tier => (
+                                    <tr key={tier} className="border-t border-[#28071C]/5">
+                                      <td className="py-2 px-3 font-semibold text-[#28071C]">{PRICE_TIER_LABELS[tier]}</td>
+                                      {RISK_LEVELS.map(rl => {
+                                        const cell = grid.cells.find(c => c.priceTier === tier && c.riskLevel === rl);
+                                        const pct = cell?.pct ?? 0;
+                                        const cellRevenue = grid.categoryRevenue * (pct / 100);
+                                        const cellPieces = avgPriceByTier[tier] > 0 ? cellRevenue / avgPriceByTier[tier] : 0;
+                                        return (
+                                          <td key={rl} className="py-2 px-2 text-center">
+                                            <div className="flex items-center justify-center gap-0.5">
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                max={100}
+                                                step={0.1}
+                                                value={Math.round(pct * 10) / 10}
+                                                onChange={e => handleGridCellEdit(grid, tier, rl, parseFloat(e.target.value) || 0)}
+                                                className="w-14 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                              />
+                                              <span className="text-[9px] text-[#28071C]/40">%</span>
+                                            </div>
+                                            <div className="text-[9px] text-[#28071C]/50 mt-0.5">
+                                              {gridUnit === "revenue"
+                                                ? fmtCurrency(cellRevenue)
+                                                : `${Math.round(cellPieces).toLocaleString("pt-BR")} pçs`}
+                                            </div>
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            {catTree && (
+                              <button
+                                onClick={() => toggleCascadeCat(grid.category)}
+                                className="w-full text-left px-4 py-2 text-xs text-[#7598CF] hover:bg-[#7598CF]/5 border-t border-[#28071C]/5 flex items-center gap-1"
+                              >
+                                {detailOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                {detailOpen ? "Ocultar" : "Ver"} detalhe por subcategoria/linha
+                              </button>
+                            )}
+
+                            {detailOpen && catTree && (
+                              <div className="overflow-x-auto border-t border-[#28071C]/5">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-[#28071C]/40 text-[10px] uppercase tracking-wide">
+                                      <th className="text-left py-2 pl-8 pr-3">Estrutura</th>
+                                      <th className="text-right py-2 px-2">P1</th>
+                                      <th className="text-right py-2 px-2">P2</th>
+                                      <th className="text-right py-2 px-2">P3</th>
+                                      <th className="text-right py-2 px-4">Total</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {catTree.subs.map(sub => {
+                                      const subKey = `${grid.category}::${sub.subcategory}`;
+                                      const subOpen = expandedCascadeSubs.has(subKey);
+                                      const subTiers = sub.linhas.reduce((acc, l) => {
+                                        acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3;
+                                        return acc;
+                                      }, { p1: 0, p2: 0, p3: 0 });
+                                      return (
+                                        <Fragment key={subKey}>
+                                          <tr
+                                            className="border-t border-[#28071C]/5 hover:bg-[#F2F2F2]/30 cursor-pointer"
+                                            onClick={() => toggleCascadeSub(subKey)}
+                                          >
+                                            <td className="py-1.5 pl-8 pr-3 text-[#28071C]/80">
+                                              <span className="flex items-center gap-1.5">
+                                                {subOpen ? <ChevronUp className="w-3 h-3 text-[#28071C]/30" /> : <ChevronDown className="w-3 h-3 text-[#28071C]/30" />}
+                                                {sub.subcategory}
+                                              </span>
+                                            </td>
+                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p1)}</td>
+                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p2)}</td>
+                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p3)}</td>
+                                            <td className="py-1.5 px-4 text-right text-[#28071C]/80 font-medium">{fmtCurrency(sub.total)}</td>
+                                          </tr>
+                                          {subOpen && sub.linhas.map(l => (
+                                            <tr key={`${subKey}::${l.linha}`} className="border-t border-[#28071C]/5">
+                                              <td className="py-1 pl-14 pr-3 text-[#28071C]/60">{l.linha}</td>
+                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p1 > 0 ? fmtCurrency(l.tiers.p1) : "—"}</td>
+                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p2 > 0 ? fmtCurrency(l.tiers.p2) : "—"}</td>
+                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p3 > 0 ? fmtCurrency(l.tiers.p3) : "—"}</td>
+                                              <td className="py-1 px-4 text-right text-[#28071C]/60">{fmtCurrency(l.total)}</td>
+                                            </tr>
+                                          ))}
+                                        </Fragment>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               </>
