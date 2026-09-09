@@ -395,3 +395,67 @@ export async function saveCategoryIndicator(
     )
   if (error) console.warn('[sortimentGrid] saveCategoryIndicator:', error.message)
 }
+
+// ─── Fase E — notas de decisão por categoria (relatório de decisões) ───────
+// Log cronológico, não um campo único — cada nota registra uma decisão
+// pontual (ex.: "aumento da participação sobre shorts para lançamento da
+// modelagem over em alta tendência já aceita pelo público").
+
+export interface CategoryNote {
+  id: string
+  note: string
+  createdAt: string
+  createdBy: string | null
+}
+
+export async function getCategoryNotes(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+): Promise<Map<string, CategoryNote[]>> {
+  const { data, error } = await db
+    .from('sortiment_category_notes')
+    .select('id, category, note, created_at, created_by')
+    .eq('tenant_id', tenantId)
+    .eq('season_id', seasonId)
+    .eq('division_id', divisionId)
+    .order('created_at', { ascending: false })
+  if (error) {
+    console.warn('[sortimentGrid] getCategoryNotes:', error.message)
+    return new Map()
+  }
+  const map = new Map<string, CategoryNote[]>()
+  for (const r of (data ?? []) as { id: string; category: string; note: string; created_at: string; created_by: string | null }[]) {
+    const list = map.get(r.category) ?? []
+    list.push({ id: r.id, note: r.note, createdAt: r.created_at, createdBy: r.created_by })
+    map.set(r.category, list)
+  }
+  return map
+}
+
+export async function addCategoryNote(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+  category: string,
+  note: string,
+  userEmail?: string,
+): Promise<CategoryNote | null> {
+  const { data, error } = await db
+    .from('sortiment_category_notes')
+    .insert({
+      tenant_id: tenantId,
+      season_id: seasonId,
+      division_id: divisionId,
+      category,
+      note,
+      created_by: userEmail ?? null,
+    })
+    .select('id, note, created_at, created_by')
+    .single()
+  if (error) {
+    console.warn('[sortimentGrid] addCategoryNote:', error.message)
+    return null
+  }
+  return { id: data.id, note: data.note, createdAt: data.created_at, createdBy: data.created_by }
+}
