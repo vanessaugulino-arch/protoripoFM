@@ -1794,7 +1794,7 @@ export default function SortimentPlan() {
                         const pieces = avgPrice > 0 ? categoryRevenue / avgPrice : 0;
                         return (
                           <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
-                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center justify-between gap-4 flex-wrap">
+                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center gap-10 flex-wrap">
                               <div className="flex items-center gap-[30px] flex-wrap">
                                 <span className="font-semibold text-[#28071C] min-w-[90px]">{grid.category}</span>
 
