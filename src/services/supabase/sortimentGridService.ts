@@ -254,3 +254,79 @@ export async function saveHierarchyNodeAdjustment(
 
   return next
 }
+
+// ─── Fase C — criar um nó novo (subcategoria ou linha), espelhado num irmão ─
+// Ainda não existe no catálogo/histórico real (ex.: modelagem nova). O novo
+// nó nasce dividindo ao meio a participação do irmão escolhido como
+// referência — os dois ficam com metade cada, os demais irmãos não mudam
+// (a soma continua em 100%, sem precisar de um rebalanceio geral). O
+// usuário ajusta os dois (e os demais) dali em diante com a mesma edição
+// por participação % já existente (Fase B).
+
+export interface CreatedNode {
+  nodeName: string
+  mirrorOf: string
+}
+
+export async function getCreatedNodes(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+): Promise<Map<string, CreatedNode[]>> {
+  const { data, error } = await db
+    .from('sortiment_created_nodes')
+    .select('parent_path, node_name, mirror_of')
+    .eq('tenant_id', tenantId)
+    .eq('season_id', seasonId)
+    .eq('division_id', divisionId)
+  if (error) {
+    console.warn('[sortimentGrid] getCreatedNodes:', error.message)
+    return new Map()
+  }
+  const map = new Map<string, CreatedNode[]>()
+  for (const r of (data ?? []) as { parent_path: string; node_name: string; mirror_of: string }[]) {
+    const list = map.get(r.parent_path) ?? []
+    list.push({ nodeName: r.node_name, mirrorOf: r.mirror_of })
+    map.set(r.parent_path, list)
+  }
+  return map
+}
+
+export async function createHierarchyNode(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+  parentPath: string,
+  siblings: { nodeName: string; pct: number }[],
+  newNodeName: string,
+  mirrorOf: string,
+  userEmail?: string,
+): Promise<{ nodeName: string; pct: number }[]> {
+  const mirror = siblings.find(s => s.nodeName === mirrorOf)
+  const mirrorPct = mirror?.pct ?? (100 / (siblings.length + 1))
+  const half = mirrorPct / 2
+
+  const next = [
+    ...siblings.map(s => s.nodeName === mirrorOf ? { nodeName: s.nodeName, pct: half } : s),
+    { nodeName: newNodeName, pct: half },
+  ]
+
+  const { error: insErr } = await db.from('sortiment_created_nodes').insert({
+    tenant_id: tenantId, season_id: seasonId, division_id: divisionId,
+    parent_path: parentPath, node_name: newNodeName, mirror_of: mirrorOf,
+    created_by: userEmail ?? null,
+  })
+  if (insErr) console.warn('[sortimentGrid] createHierarchyNode (insert):', insErr.message)
+
+  const rows = next.map(s => ({
+    tenant_id: tenantId, season_id: seasonId, division_id: divisionId,
+    parent_path: parentPath, node_name: s.nodeName, pct: s.pct,
+    updated_at: new Date().toISOString(), updated_by: userEmail ?? null,
+  }))
+  const { error: upErr } = await db
+    .from('sortiment_hierarchy_adjustments')
+    .upsert(rows, { onConflict: 'tenant_id,season_id,division_id,parent_path,node_name' })
+  if (upErr) console.warn('[sortimentGrid] createHierarchyNode (upsert pct):', upErr.message)
+
+  return next
+}

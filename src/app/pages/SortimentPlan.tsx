@@ -87,11 +87,14 @@ import {
   saveGridCellAdjustment,
   getHierarchyAdjustments,
   saveHierarchyNodeAdjustment,
+  getCreatedNodes,
+  createHierarchyNode,
   RISK_LEVELS,
   RISK_LEVEL_LABELS,
   PRICE_TIER_LABELS,
   type CategoryGrid,
   type RiskLevelId,
+  type CreatedNode,
 } from "../../services/supabase/sortimentGridService";
 import type { PriceTierId } from "../types/pricePyramid";
 import {
@@ -575,6 +578,42 @@ export default function SortimentPlan() {
   /** % efetiva de um nó dentro do pai — override salvo, ou o peso real da cascata. */
   const effectivePct = (parentPath: string, nodeName: string, naturalPct: number) =>
     hierarchyOverrides.get(`${parentPath}::${nodeName}`) ?? naturalPct;
+
+  // ── Fase C — criar subcategoria/linha nova, espelhada num irmão ──────────
+  const [createdNodes, setCreatedNodes] = useState<Map<string, CreatedNode[]>>(new Map());
+  // Só um painel de "criar nó" aberto por vez — evita estado espalhado por nível.
+  const [addNodePanel, setAddNodePanel] = useState<{ parentPath: string; siblings: { nodeName: string; pct: number }[] } | null>(null);
+  const [addNodeName, setAddNodeName] = useState("");
+  const [addNodeMirror, setAddNodeMirror] = useState("");
+
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) { setCreatedNodes(new Map()); return; }
+    getCreatedNodes(user.tenant_id, seasonId, activeDivId)
+      .then(setCreatedNodes)
+      .catch(() => setCreatedNodes(new Map()));
+  }, [seasonId, user?.tenant_id, activeDivId]);
+
+  const handleCreateNode = async () => {
+    if (!addNodePanel || !addNodeName.trim() || !addNodeMirror || !seasonId || !user?.tenant_id || !activeDivId) return;
+    const next = await createHierarchyNode(
+      user.tenant_id, seasonId, activeDivId, addNodePanel.parentPath,
+      addNodePanel.siblings, addNodeName.trim(), addNodeMirror, user.email,
+    );
+    setHierarchyOverrides(prev => {
+      const merged = new Map(prev);
+      for (const n of next) merged.set(`${addNodePanel.parentPath}::${n.nodeName}`, n.pct);
+      return merged;
+    });
+    setCreatedNodes(prev => {
+      const merged = new Map(prev);
+      const list = merged.get(addNodePanel.parentPath) ?? [];
+      merged.set(addNodePanel.parentPath, [...list, { nodeName: addNodeName.trim(), mirrorOf: addNodeMirror }]);
+      return merged;
+    });
+    setAddNodePanel(null);
+    setAddNodeName("");
+    setAddNodeMirror("");
+  };
 
   const handleHierarchyEdit = async (
     parentPath: string,
@@ -1703,9 +1742,20 @@ export default function SortimentPlan() {
                                   ? fmtCurrency(revenue)
                                   : `${Math.round(blendedAvgPrice > 0 ? revenue / blendedAvgPrice : 0).toLocaleString("pt-BR")} pçs`;
 
-                              const subSiblings = catTree.subs.map(s => ({
+                              // Mescla subcategorias reais (catálogo/histórico) com as
+                              // criadas manualmente pelo usuário (Fase C) — estas nascem
+                              // sem receita própria (total:0); a % delas vem inteira do
+                              // override salvo em createHierarchyNode (metade do espelho).
+                              const createdSubs = createdNodes.get(grid.category) ?? [];
+                              const allSubs = [
+                                ...catTree.subs,
+                                ...createdSubs
+                                  .filter(cn => !catTree.subs.some(s => s.subcategory === cn.nodeName))
+                                  .map(cn => ({ subcategory: cn.nodeName, linhas: [] as typeof catTree.subs[number]["linhas"], total: 0 })),
+                              ];
+                              const subSiblings = allSubs.map(s => ({
                                 nodeName: s.subcategory,
-                                pct: catTree.total > 0 ? (s.total / catTree.total) * 100 : 100 / catTree.subs.length,
+                                pct: catTree.total > 0 ? (s.total / catTree.total) * 100 : 100 / allSubs.length,
                               }));
 
                               return (
@@ -1719,15 +1769,22 @@ export default function SortimentPlan() {
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {catTree.subs.map(sub => {
+                                      {allSubs.map(sub => {
                                         const subKey = `${grid.category}::${sub.subcategory}`;
                                         const subOpen = expandedCascadeSubs.has(subKey);
-                                        const naturalSubPct = catTree.total > 0 ? (sub.total / catTree.total) * 100 : 100 / catTree.subs.length;
+                                        const naturalSubPct = catTree.total > 0 ? (sub.total / catTree.total) * 100 : 100 / allSubs.length;
                                         const subPct = effectivePct(grid.category, sub.subcategory, naturalSubPct);
                                         const subRevenue = grid.categoryRevenue * (subPct / 100);
-                                        const linhaSiblings = sub.linhas.map(l => ({
+                                        const createdLinhas = createdNodes.get(subKey) ?? [];
+                                        const allLinhas = [
+                                          ...sub.linhas,
+                                          ...createdLinhas
+                                            .filter(cn => !sub.linhas.some(l => l.linha === cn.nodeName))
+                                            .map(cn => ({ linha: cn.nodeName, tiers: { p1: 0, p2: 0, p3: 0 }, total: 0 })),
+                                        ];
+                                        const linhaSiblings = allLinhas.map(l => ({
                                           nodeName: l.linha,
-                                          pct: sub.total > 0 ? (l.total / sub.total) * 100 : 100 / sub.linhas.length,
+                                          pct: sub.total > 0 ? (l.total / sub.total) * 100 : 100 / allLinhas.length,
                                         }));
                                         return (
                                           <Fragment key={subKey}>
@@ -1750,8 +1807,8 @@ export default function SortimentPlan() {
                                               </td>
                                               <td className="py-1.5 px-4 text-right text-[#28071C]/80 font-medium">{fmtUnit(subRevenue)}</td>
                                             </tr>
-                                            {subOpen && sub.linhas.map(l => {
-                                              const naturalLinhaPct = sub.total > 0 ? (l.total / sub.total) * 100 : 100 / sub.linhas.length;
+                                            {subOpen && allLinhas.map(l => {
+                                              const naturalLinhaPct = sub.total > 0 ? (l.total / sub.total) * 100 : 100 / allLinhas.length;
                                               const linhaPct = effectivePct(subKey, l.linha, naturalLinhaPct);
                                               const linhaRevenue = subRevenue * (linhaPct / 100);
                                               return (
@@ -1770,9 +1827,71 @@ export default function SortimentPlan() {
                                                 </tr>
                                               );
                                             })}
+                                            {subOpen && (
+                                              <tr className="border-t border-[#28071C]/5">
+                                                <td colSpan={3} className="py-1 pl-14 pr-3">
+                                                  {addNodePanel?.parentPath === subKey ? (
+                                                    <div className="flex items-center gap-1.5 py-0.5">
+                                                      <input
+                                                        type="text" placeholder="Nome da linha" value={addNodeName}
+                                                        onChange={e => setAddNodeName(e.target.value)}
+                                                        className="w-28 bg-white border border-[#28071C]/15 rounded px-1.5 py-0.5 text-[11px]"
+                                                      />
+                                                      <span className="text-[10px] text-[#28071C]/40">espelha</span>
+                                                      <select
+                                                        value={addNodeMirror} onChange={e => setAddNodeMirror(e.target.value)}
+                                                        className="bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[11px]"
+                                                      >
+                                                        <option value="">selecione…</option>
+                                                        {allLinhas.map(l => <option key={l.linha} value={l.linha}>{l.linha}</option>)}
+                                                      </select>
+                                                      <button onClick={handleCreateNode} className="text-[11px] font-semibold text-[#7598CF] hover:underline">Criar</button>
+                                                      <button onClick={() => setAddNodePanel(null)} className="text-[11px] text-[#28071C]/40 hover:underline">Cancelar</button>
+                                                    </div>
+                                                  ) : (
+                                                    <button
+                                                      onClick={() => { setAddNodePanel({ parentPath: subKey, siblings: linhaSiblings }); setAddNodeName(""); setAddNodeMirror(""); }}
+                                                      className="flex items-center gap-1 text-[11px] text-[#7598CF] hover:underline py-0.5"
+                                                    >
+                                                      <Plus className="w-3 h-3" /> Nova linha (espelhando um irmão)
+                                                    </button>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            )}
                                           </Fragment>
                                         );
                                       })}
+                                      <tr className="border-t border-[#28071C]/5">
+                                        <td colSpan={3} className="py-1.5 pl-8 pr-3">
+                                          {addNodePanel?.parentPath === grid.category ? (
+                                            <div className="flex items-center gap-1.5 py-0.5">
+                                              <input
+                                                type="text" placeholder="Nome da subcategoria" value={addNodeName}
+                                                onChange={e => setAddNodeName(e.target.value)}
+                                                className="w-28 bg-white border border-[#28071C]/15 rounded px-1.5 py-0.5 text-[11px]"
+                                              />
+                                              <span className="text-[10px] text-[#28071C]/40">espelha</span>
+                                              <select
+                                                value={addNodeMirror} onChange={e => setAddNodeMirror(e.target.value)}
+                                                className="bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[11px]"
+                                              >
+                                                <option value="">selecione…</option>
+                                                {allSubs.map(s => <option key={s.subcategory} value={s.subcategory}>{s.subcategory}</option>)}
+                                              </select>
+                                              <button onClick={handleCreateNode} className="text-[11px] font-semibold text-[#7598CF] hover:underline">Criar</button>
+                                              <button onClick={() => setAddNodePanel(null)} className="text-[11px] text-[#28071C]/40 hover:underline">Cancelar</button>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              onClick={() => { setAddNodePanel({ parentPath: grid.category, siblings: subSiblings }); setAddNodeName(""); setAddNodeMirror(""); }}
+                                              className="flex items-center gap-1 text-[11px] text-[#7598CF] hover:underline py-0.5"
+                                            >
+                                              <Plus className="w-3 h-3" /> Nova subcategoria (espelhando um irmão)
+                                            </button>
+                                          )}
+                                        </td>
+                                      </tr>
                                     </tbody>
                                   </table>
                                 </div>
