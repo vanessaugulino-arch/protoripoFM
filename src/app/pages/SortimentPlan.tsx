@@ -448,6 +448,11 @@ function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Div
     .sort((a, b) => b.revenueTarget - a.revenueTarget);
 }
 
+// Sentinel parent_path para tratar CATEGORIAS como irmãs entre si (mesma
+// tabela/mecânica genérica de sortiment_hierarchy_adjustments usada para
+// subcategoria dentro de categoria e linha dentro de subcategoria).
+const CATEGORY_ROOT_PATH = "__categorias__";
+
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 
 export default function SortimentPlan() {
@@ -494,6 +499,7 @@ export default function SortimentPlan() {
   const [consolidatedLoading, setConsolidatedLoading] = useState(false);
   const [expandedCascadeCats, setExpandedCascadeCats] = useState<Set<string>>(new Set());
   const [expandedCascadeSubs, setExpandedCascadeSubs] = useState<Set<string>>(new Set());
+  const [expandedGridCats, setExpandedGridCats] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!seasonId || !user?.tenant_id) { setConsolidatedRows([]); return; }
@@ -594,6 +600,20 @@ export default function SortimentPlan() {
   const effectivePct = (parentPath: string, nodeName: string, naturalPct: number) =>
     hierarchyOverrides.get(`${parentPath}::${nodeName}`) ?? naturalPct;
 
+  /** Receita total da divisão (soma das categorias) — base para a Participação por categoria. */
+  const totalDivisionRevenue = useMemo(
+    () => categoryGrids.reduce((s, g) => s + g.categoryRevenue, 0),
+    [categoryGrids],
+  );
+  /** Soma das participações efetivas de todas as categorias — deveria fechar em 100%. */
+  const categoryParticipationSum = useMemo(() => {
+    if (categoryGrids.length === 0) return 0;
+    return categoryGrids.reduce((s, g) => {
+      const naturalPct = totalDivisionRevenue > 0 ? (g.categoryRevenue / totalDivisionRevenue) * 100 : 100 / categoryGrids.length;
+      return s + effectivePct(CATEGORY_ROOT_PATH, g.category, naturalPct);
+    }, 0);
+  }, [categoryGrids, totalDivisionRevenue, hierarchyOverrides]);
+
   // ── Fase C — criar subcategoria/linha nova, espelhada num irmão ──────────
   const [createdNodes, setCreatedNodes] = useState<Map<string, CreatedNode[]>>(new Map());
   // Só um painel de "criar nó" aberto por vez — evita estado espalhado por nível.
@@ -647,11 +667,9 @@ export default function SortimentPlan() {
     });
   };
 
-  // ── Fase D — Aba 2: Preço Médio e Remarcação por categoria ───────────────
-  // "O salvamento final da tela é somente na última aba" — a Aba 1 fecha a
-  // participação; aqui o usuário só refina onde dentro da faixa o preço real
-  // fica e a remarcação, sem mexer mais na participação.
-  const [sortimentTab, setSortimentTab] = useState<"participacao" | "precoRemarcacao">("participacao");
+  // ── Fase D — Preço Médio e Remarcação por categoria ──────────────────────
+  // Vive direto no cabeçalho do card da categoria (junto com Participação),
+  // não numa aba separada — o card já é o cenário completo.
   const [categoryIndicatorOverrides, setCategoryIndicatorOverrides] = useState<Map<string, { avgPrice: number; mkdPct: number }>>(new Map());
 
   useEffect(() => {
@@ -687,6 +705,11 @@ export default function SortimentPlan() {
   };
 
   const toggleCascadeCat = (cat: string) => setExpandedCascadeCats(prev => {
+    const next = new Set(prev);
+    if (next.has(cat)) next.delete(cat); else next.add(cat);
+    return next;
+  });
+  const toggleGridCat = (cat: string) => setExpandedGridCats(prev => {
     const next = new Set(prev);
     if (next.has(cat)) next.delete(cat); else next.add(cat);
     return next;
@@ -1725,111 +1748,98 @@ export default function SortimentPlan() {
                     <div>
                       <h3 className="font-semibold text-[#28071C]">Cascata do Sortimento — {activeDivision.name}</h3>
                       <p className="text-xs text-[#28071C]/50 mt-0.5">
-                        {sortimentTab === "participacao"
-                          ? "Participação por Categoria: Faixa de Preço × Nível de Risco. Ajuste em %, revise em peças ou receita."
-                          : "Preço Médio e Remarcação por categoria — refinamento final para bater as metas macro. O cenário só é salvo/aplicado nesta aba."}
+                        Participação, Preço Médio e Remarcação por categoria. "Ver participação por faixa e nível de moda" abre o detalhe.
                       </p>
                     </div>
-                    {sortimentTab === "participacao" && (
-                      <div className="flex items-center gap-1 bg-[#F2F2F2] rounded-lg p-0.5">
-                        <button
-                          onClick={() => setGridUnit("revenue")}
-                          className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "revenue" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
-                        >
-                          R$
-                        </button>
-                        <button
-                          onClick={() => setGridUnit("pieces")}
-                          className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "pieces" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
-                        >
-                          Peças
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="px-5 pt-4 flex items-center gap-2">
-                    <button
-                      onClick={() => setSortimentTab("participacao")}
-                      className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${sortimentTab === "participacao" ? "bg-[#28071C] text-[#F6F3AA] border-[#28071C]" : "border-[#28071C]/15 text-[#28071C]/60 hover:bg-[#F2F2F2]"}`}
-                    >
-                      Aba 1 · Participação
-                    </button>
-                    <button
-                      onClick={() => setSortimentTab("precoRemarcacao")}
-                      className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${sortimentTab === "precoRemarcacao" ? "bg-[#28071C] text-[#F6F3AA] border-[#28071C]" : "border-[#28071C]/15 text-[#28071C]/60 hover:bg-[#F2F2F2]"}`}
-                    >
-                      Aba 2 · Preço Médio e Remarcação
-                    </button>
+                    <div className="flex items-center gap-1 bg-[#F2F2F2] rounded-lg p-0.5">
+                      <button
+                        onClick={() => setGridUnit("revenue")}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "revenue" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                      >
+                        R$
+                      </button>
+                      <button
+                        onClick={() => setGridUnit("pieces")}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "pieces" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                      >
+                        Peças
+                      </button>
+                    </div>
                   </div>
 
                   <div className="p-5 space-y-4">
+                    {totalDivisionRevenue > 0 && Math.abs(categoryParticipationSum - 100) > 0.5 && (
+                      <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        Participação das categorias soma {categoryParticipationSum.toFixed(1)}% (deveria ser 100%)
+                      </div>
+                    )}
                     {gridsLoading ? (
                       <div className="text-center py-10 text-[#28071C]/40 text-sm">Calculando participação por categoria...</div>
-                    ) : sortimentTab === "precoRemarcacao" ? (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="text-[#28071C]/40 text-[10px] uppercase tracking-wide">
-                              <th className="text-left py-2 px-3">Categoria</th>
-                              <th className="text-right py-2 px-3">Receita Prevista</th>
-                              <th className="text-center py-2 px-3">Preço Médio</th>
-                              <th className="text-center py-2 px-3">Remarcação</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {categoryGrids.map(grid => {
-                              const avgPrice = effectiveAvgPrice(grid.category);
-                              const mkdPct = effectiveMkdPct(grid.category);
-                              const pieces = avgPrice > 0 ? grid.categoryRevenue / avgPrice : 0;
-                              return (
-                                <tr key={grid.category} className="border-t border-[#28071C]/5">
-                                  <td className="py-2.5 px-3 font-semibold text-[#28071C]">{grid.category}</td>
-                                  <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(grid.categoryRevenue)}</td>
-                                  <td className="py-2.5 px-3 text-center">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <span className="text-[10px] text-[#28071C]/40">R$</span>
-                                      <input
-                                        type="number" min={0} step={0.01}
-                                        value={Math.round(avgPrice * 100) / 100}
-                                        onChange={e => handleCategoryIndicatorEdit(grid.category, "avgPrice", parseFloat(e.target.value) || 0)}
-                                        className="w-20 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
-                                      />
-                                    </div>
-                                    <div className="text-[9px] text-[#28071C]/40 mt-0.5">{Math.round(pieces).toLocaleString("pt-BR")} pçs</div>
-                                  </td>
-                                  <td className="py-2.5 px-3 text-center">
-                                    <div className="flex items-center justify-center gap-0.5">
-                                      <input
-                                        type="number" min={0} max={100} step={0.1}
-                                        value={Math.round(mkdPct * 10) / 10}
-                                        onChange={e => handleCategoryIndicatorEdit(grid.category, "mkdPct", parseFloat(e.target.value) || 0)}
-                                        className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
-                                      />
-                                      <span className="text-[9px] text-[#28071C]/40">%</span>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
                     ) : (
                       categoryGrids.map(grid => {
                         const catTree = cascadeTree.find(c => c.category === grid.category);
                         const detailOpen = expandedCascadeCats.has(grid.category);
+                        const gridDetailOpen = expandedGridCats.has(grid.category);
                         const sumPct = grid.cells.reduce((s, c) => s + c.pct, 0);
+                        const naturalCatPct = totalDivisionRevenue > 0 ? (grid.categoryRevenue / totalDivisionRevenue) * 100 : 100 / categoryGrids.length;
+                        const catPct = effectivePct(CATEGORY_ROOT_PATH, grid.category, naturalCatPct);
+                        const categoryRevenue = totalDivisionRevenue * (catPct / 100);
+                        const categorySiblings = categoryGrids.map(g => {
+                          const natPct = totalDivisionRevenue > 0 ? (g.categoryRevenue / totalDivisionRevenue) * 100 : 100 / categoryGrids.length;
+                          return { nodeName: g.category, pct: effectivePct(CATEGORY_ROOT_PATH, g.category, natPct) };
+                        });
+                        const avgPrice = effectiveAvgPrice(grid.category);
+                        const mkdPct = effectiveMkdPct(grid.category);
+                        const pieces = avgPrice > 0 ? categoryRevenue / avgPrice : 0;
                         return (
                           <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
-                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center justify-between">
-                              <span className="font-semibold text-[#28071C]">{grid.category}</span>
+                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center justify-between gap-4 flex-wrap">
+                              <div className="flex items-center gap-4 flex-wrap">
+                                <span className="font-semibold text-[#28071C] min-w-[90px]">{grid.category}</span>
+
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] text-[#28071C]/40 uppercase tracking-wide">Participação</span>
+                                  <div className="flex items-center gap-0.5">
+                                    <input
+                                      type="number" min={0} max={100} step={0.1}
+                                      value={Math.round(catPct * 10) / 10}
+                                      onChange={e => handleHierarchyEdit(CATEGORY_ROOT_PATH, categorySiblings, grid.category, parseFloat(e.target.value) || 0)}
+                                      className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium text-xs focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                    />
+                                    <span className="text-[9px] text-[#28071C]/40">%</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] text-[#28071C]/40 uppercase tracking-wide">Preço Médio</span>
+                                  <div className="flex items-center gap-0.5">
+                                    <span className="text-[9px] text-[#28071C]/40">R$</span>
+                                    <input
+                                      type="number" min={0} step={0.01}
+                                      value={Math.round(avgPrice * 100) / 100}
+                                      onChange={e => handleCategoryIndicatorEdit(grid.category, "avgPrice", parseFloat(e.target.value) || 0)}
+                                      className="w-20 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium text-xs focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                    />
+                                  </div>
+                                  <span className="text-[9px] text-[#28071C]/40">{Math.round(pieces).toLocaleString("pt-BR")} pçs</span>
+                                </div>
+
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] text-[#28071C]/40 uppercase tracking-wide">Remarcação</span>
+                                  <div className="flex items-center gap-0.5">
+                                    <input
+                                      type="number" min={0} max={100} step={0.1}
+                                      value={Math.round(mkdPct * 10) / 10}
+                                      onChange={e => handleCategoryIndicatorEdit(grid.category, "mkdPct", parseFloat(e.target.value) || 0)}
+                                      className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium text-xs focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                    />
+                                    <span className="text-[9px] text-[#28071C]/40">%</span>
+                                  </div>
+                                </div>
+                              </div>
+
                               <div className="flex items-center gap-3">
-                                {Math.abs(sumPct - 100) > 0.5 && (
-                                  <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
-                                    {sumPct.toFixed(1)}% alocado
-                                  </span>
-                                )}
                                 <button
                                   onClick={() => { setNotesPanelOpen(notesPanelOpen === grid.category ? null : grid.category); setNewNoteText(""); }}
                                   title="Notas de decisão desta categoria"
@@ -1838,7 +1848,7 @@ export default function SortimentPlan() {
                                   <StickyNote className="w-3 h-3" />
                                   {(categoryNotes.get(grid.category)?.length ?? 0) > 0 ? categoryNotes.get(grid.category)!.length : ""}
                                 </button>
-                                <span className="text-sm text-[#28071C]/60">{fmtCurrency(grid.categoryRevenue)}</span>
+                                <span className="text-sm text-[#28071C]/60 font-medium">{fmtCurrency(categoryRevenue)}</span>
                               </div>
                             </div>
 
@@ -1878,52 +1888,69 @@ export default function SortimentPlan() {
                               </div>
                             )}
 
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="text-[#28071C]/40 uppercase tracking-wide">
-                                    <th className="text-left py-2 px-3">Faixa</th>
-                                    {RISK_LEVELS.map(rl => (
-                                      <th key={rl} className="text-center py-2 px-2 font-medium">{RISK_LEVEL_LABELS[rl]}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {(["p1", "p2", "p3"] as PriceTierId[]).map(tier => (
-                                    <tr key={tier} className="border-t border-[#28071C]/5">
-                                      <td className="py-2 px-3 font-semibold text-[#28071C]">{PRICE_TIER_LABELS[tier]}</td>
-                                      {RISK_LEVELS.map(rl => {
-                                        const cell = grid.cells.find(c => c.priceTier === tier && c.riskLevel === rl);
-                                        const pct = cell?.pct ?? 0;
-                                        const cellRevenue = grid.categoryRevenue * (pct / 100);
-                                        const cellPieces = avgPriceByTier[tier] > 0 ? cellRevenue / avgPriceByTier[tier] : 0;
-                                        return (
-                                          <td key={rl} className="py-2 px-2 text-center">
-                                            <div className="flex items-center justify-center gap-0.5">
-                                              <input
-                                                type="number"
-                                                min={0}
-                                                max={100}
-                                                step={0.1}
-                                                value={Math.round(pct * 10) / 10}
-                                                onChange={e => handleGridCellEdit(grid, tier, rl, parseFloat(e.target.value) || 0)}
-                                                className="w-14 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
-                                              />
-                                              <span className="text-[9px] text-[#28071C]/40">%</span>
-                                            </div>
-                                            <div className="text-[9px] text-[#28071C]/50 mt-0.5">
-                                              {gridUnit === "revenue"
-                                                ? fmtCurrency(cellRevenue)
-                                                : `${Math.round(cellPieces).toLocaleString("pt-BR")} pçs`}
-                                            </div>
-                                          </td>
-                                        );
-                                      })}
+                            <button
+                              onClick={() => toggleGridCat(grid.category)}
+                              className="w-full text-left px-4 py-2 text-xs text-[#7598CF] hover:bg-[#7598CF]/5 border-t border-[#28071C]/5 flex items-center justify-between gap-1"
+                            >
+                              <span className="flex items-center gap-1">
+                                {gridDetailOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                {gridDetailOpen ? "Ocultar" : "Ver"} participação por faixa e nível de moda
+                              </span>
+                              {Math.abs(sumPct - 100) > 0.5 && (
+                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                                  {sumPct.toFixed(1)}% alocado
+                                </span>
+                              )}
+                            </button>
+
+                            {gridDetailOpen && (
+                              <div className="overflow-x-auto border-t border-[#28071C]/5">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-[#28071C]/40 uppercase tracking-wide">
+                                      <th className="text-left py-2 px-3">Faixa</th>
+                                      {RISK_LEVELS.map(rl => (
+                                        <th key={rl} className="text-center py-2 px-2 font-medium">{RISK_LEVEL_LABELS[rl]}</th>
+                                      ))}
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                                  </thead>
+                                  <tbody>
+                                    {(["p1", "p2", "p3"] as PriceTierId[]).map(tier => (
+                                      <tr key={tier} className="border-t border-[#28071C]/5">
+                                        <td className="py-2 px-3 font-semibold text-[#28071C]">{PRICE_TIER_LABELS[tier]}</td>
+                                        {RISK_LEVELS.map(rl => {
+                                          const cell = grid.cells.find(c => c.priceTier === tier && c.riskLevel === rl);
+                                          const pct = cell?.pct ?? 0;
+                                          const cellRevenue = categoryRevenue * (pct / 100);
+                                          const cellPieces = avgPriceByTier[tier] > 0 ? cellRevenue / avgPriceByTier[tier] : 0;
+                                          return (
+                                            <td key={rl} className="py-2 px-2 text-center">
+                                              <div className="flex items-center justify-center gap-0.5">
+                                                <input
+                                                  type="number"
+                                                  min={0}
+                                                  max={100}
+                                                  step={0.1}
+                                                  value={Math.round(pct * 10) / 10}
+                                                  onChange={e => handleGridCellEdit(grid, tier, rl, parseFloat(e.target.value) || 0)}
+                                                  className="w-14 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                                />
+                                                <span className="text-[9px] text-[#28071C]/40">%</span>
+                                              </div>
+                                              <div className="text-[9px] text-[#28071C]/50 mt-0.5">
+                                                {gridUnit === "revenue"
+                                                  ? fmtCurrency(cellRevenue)
+                                                  : `${Math.round(cellPieces).toLocaleString("pt-BR")} pçs`}
+                                              </div>
+                                            </td>
+                                          );
+                                        })}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
 
                             {catTree && (
                               <button
@@ -1946,7 +1973,7 @@ export default function SortimentPlan() {
                                 (avgPriceByTier.p1 > 0 ? catTiers.p1 / avgPriceByTier.p1 : 0) +
                                 (avgPriceByTier.p2 > 0 ? catTiers.p2 / avgPriceByTier.p2 : 0) +
                                 (avgPriceByTier.p3 > 0 ? catTiers.p3 / avgPriceByTier.p3 : 0);
-                              const blendedAvgPrice = catPieces > 0 ? grid.categoryRevenue / catPieces : 0;
+                              const blendedAvgPrice = catPieces > 0 ? categoryRevenue / catPieces : 0;
                               const fmtUnit = (revenue: number) =>
                                 gridUnit === "revenue"
                                   ? fmtCurrency(revenue)
@@ -1984,7 +2011,7 @@ export default function SortimentPlan() {
                                         const subOpen = expandedCascadeSubs.has(subKey);
                                         const naturalSubPct = catTree.total > 0 ? (sub.total / catTree.total) * 100 : 100 / allSubs.length;
                                         const subPct = effectivePct(grid.category, sub.subcategory, naturalSubPct);
-                                        const subRevenue = grid.categoryRevenue * (subPct / 100);
+                                        const subRevenue = categoryRevenue * (subPct / 100);
                                         const createdLinhas = createdNodes.get(subKey) ?? [];
                                         const allLinhas = [
                                           ...sub.linhas,
@@ -2120,15 +2147,7 @@ export default function SortimentPlan() {
       </main>
 
       {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
-      {/* Salvamento/aplicação do cenário só na Aba 2 — é o cenário mais completo. */}
-      {seasonId && sortimentTab === "participacao" && (
-        <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3 print:hidden">
-          <p className="max-w-[1600px] mx-auto text-center text-xs text-[#28071C]/40">
-            Revise a participação e vá para a <strong>Aba 2 · Preço Médio e Remarcação</strong> para salvar ou aplicar o cenário.
-          </p>
-        </div>
-      )}
-      {seasonId && sortimentTab === "precoRemarcacao" && (
+      {seasonId && (
         <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3 print:hidden">
           <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
