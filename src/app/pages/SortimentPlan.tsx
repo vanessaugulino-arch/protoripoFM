@@ -89,6 +89,8 @@ import {
   saveHierarchyNodeAdjustment,
   getCreatedNodes,
   createHierarchyNode,
+  getCategoryIndicators,
+  saveCategoryIndicator,
   RISK_LEVELS,
   RISK_LEVEL_LABELS,
   PRICE_TIER_LABELS,
@@ -174,6 +176,7 @@ interface Division {
   revenueTarget: number;    // Meta de receita (R$) — do Módulo 4
   participationPct: number; // % de participação — do Módulo 4
   targetMarginPct: number;  // Margem alvo (%) — do Módulo 4
+  targetMkdPct: number;     // MKD alvo (%) — do Módulo 4 (semente da Remarcação, Aba 2)
   pricePyramid: { p1: number; p2: number; p3: number }; // % do Módulo 4
   avgPriceP1: number;
   avgPriceP2: number;
@@ -203,6 +206,7 @@ const INITIAL_DIVISIONS: Division[] = [
     revenueTarget: 1110000,
     participationPct: 60,
     targetMarginPct: 62,
+    targetMkdPct: 15,
     pricePyramid: { p1: 40, p2: 40, p3: 20 },
     avgPriceP1: 120,
     avgPriceP2: 180,
@@ -243,6 +247,7 @@ const INITIAL_DIVISIONS: Division[] = [
     revenueTarget: 740000,
     participationPct: 40,
     targetMarginPct: 60,
+    targetMkdPct: 15,
     pricePyramid: { p1: 45, p2: 40, p3: 15 },
     avgPriceP1: 110,
     avgPriceP2: 165,
@@ -415,6 +420,11 @@ function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Div
 
       // Margem alvo
       const targetMarginPct = indicators.margin ?? 60;
+      // MKD alvo da divisão (M4) — semente da Remarcação na Aba 2 da Cascata
+      // do Sortimento. Ainda não existe MKD real por categoria (ver
+      // HISTORICAL_CASCADE_ARCHITECTURE.md) — usa o alvo da divisão inteira
+      // uniformemente até essa leitura existir.
+      const targetMkdPct = indicators.mkd ?? 15;
 
       return {
         id: divId,
@@ -422,6 +432,7 @@ function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Div
         revenueTarget,
         participationPct: participation,
         targetMarginPct,
+        targetMkdPct,
         pricePyramid: { p1, p2, p3 },
         avgPriceP1,
         avgPriceP2,
@@ -631,6 +642,20 @@ export default function SortimentPlan() {
       return next;
     });
   };
+
+  // ── Fase D — Aba 2: Preço Médio e Remarcação por categoria ───────────────
+  // "O salvamento final da tela é somente na última aba" — a Aba 1 fecha a
+  // participação; aqui o usuário só refina onde dentro da faixa o preço real
+  // fica e a remarcação, sem mexer mais na participação.
+  const [sortimentTab, setSortimentTab] = useState<"participacao" | "precoRemarcacao">("participacao");
+  const [categoryIndicatorOverrides, setCategoryIndicatorOverrides] = useState<Map<string, { avgPrice: number; mkdPct: number }>>(new Map());
+
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) { setCategoryIndicatorOverrides(new Map()); return; }
+    getCategoryIndicators(user.tenant_id, seasonId, activeDivId)
+      .then(setCategoryIndicatorOverrides)
+      .catch(() => setCategoryIndicatorOverrides(new Map()));
+  }, [seasonId, user?.tenant_id, activeDivId]);
 
   const toggleCascadeCat = (cat: string) => setExpandedCascadeCats(prev => {
     const next = new Set(prev);
@@ -938,6 +963,49 @@ export default function SortimentPlan() {
     p1: activeDivision?.avgPriceP1 ?? 0,
     p2: activeDivision?.avgPriceP2 ?? 0,
     p3: activeDivision?.avgPriceP3 ?? 0,
+  };
+
+  // ── Fase D — Aba 2: Preço Médio e Remarcação por categoria ───────────────
+  // "O salvamento final da tela é somente na última aba" — a Aba 1 fecha a
+  // participação; aqui o usuário só refina onde dentro da faixa o preço real
+  // fica e a remarcação, sem mexer mais na participação.
+
+  /** Preço médio ponderado real da categoria (mistura P1/P2/P3 já fechada na Aba 1) — semente da Aba 2. */
+  const categoryBlendedAvgPrice = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const grid of categoryGrids) {
+      const catTree = cascadeTree.find(c => c.category === grid.category);
+      if (!catTree) continue;
+      const catTiers = catTree.subs.reduce((acc, s) => {
+        for (const l of s.linhas) { acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3; }
+        return acc;
+      }, { p1: 0, p2: 0, p3: 0 });
+      const catPieces =
+        (avgPriceByTier.p1 > 0 ? catTiers.p1 / avgPriceByTier.p1 : 0) +
+        (avgPriceByTier.p2 > 0 ? catTiers.p2 / avgPriceByTier.p2 : 0) +
+        (avgPriceByTier.p3 > 0 ? catTiers.p3 / avgPriceByTier.p3 : 0);
+      map.set(grid.category, catPieces > 0 ? grid.categoryRevenue / catPieces : 0);
+    }
+    return map;
+  }, [categoryGrids, cascadeTree, avgPriceByTier]);
+
+  /** Preço Médio efetivo de uma categoria — override salvo, ou a mistura real da Aba 1. */
+  const effectiveAvgPrice = (category: string) =>
+    categoryIndicatorOverrides.get(category)?.avgPrice ?? categoryBlendedAvgPrice.get(category) ?? 0;
+  /** Remarcação (%) efetiva — override salvo, ou a meta de MKD da divisão (Módulo 4) como semente uniforme. */
+  const effectiveMkdPct = (category: string) =>
+    categoryIndicatorOverrides.get(category)?.mkdPct ?? activeDivision?.targetMkdPct ?? 15;
+
+  const handleCategoryIndicatorEdit = async (category: string, field: "avgPrice" | "mkdPct", value: number) => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) return;
+    const nextAvgPrice = field === "avgPrice" ? value : effectiveAvgPrice(category);
+    const nextMkdPct = field === "mkdPct" ? value : effectiveMkdPct(category);
+    setCategoryIndicatorOverrides(prev => {
+      const next = new Map(prev);
+      next.set(category, { avgPrice: nextAvgPrice, mkdPct: nextMkdPct });
+      return next;
+    });
+    await saveCategoryIndicator(user.tenant_id, seasonId, activeDivId, category, nextAvgPrice, nextMkdPct, user.email);
   };
 
   // ── KPIs do topbar ───────────────────────────────────────────────────────────
@@ -1628,28 +1696,96 @@ export default function SortimentPlan() {
                     <div>
                       <h3 className="font-semibold text-[#28071C]">Cascata do Sortimento — {activeDivision.name}</h3>
                       <p className="text-xs text-[#28071C]/50 mt-0.5">
-                        Participação por Categoria: Faixa de Preço × Nível de Risco. Ajuste em %, revise em peças ou receita.
+                        {sortimentTab === "participacao"
+                          ? "Participação por Categoria: Faixa de Preço × Nível de Risco. Ajuste em %, revise em peças ou receita."
+                          : "Preço Médio e Remarcação por categoria — refinamento final para bater as metas macro. O cenário só é salvo/aplicado nesta aba."}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1 bg-[#F2F2F2] rounded-lg p-0.5">
-                      <button
-                        onClick={() => setGridUnit("revenue")}
-                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "revenue" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
-                      >
-                        R$
-                      </button>
-                      <button
-                        onClick={() => setGridUnit("pieces")}
-                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "pieces" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
-                      >
-                        Peças
-                      </button>
-                    </div>
+                    {sortimentTab === "participacao" && (
+                      <div className="flex items-center gap-1 bg-[#F2F2F2] rounded-lg p-0.5">
+                        <button
+                          onClick={() => setGridUnit("revenue")}
+                          className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "revenue" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                        >
+                          R$
+                        </button>
+                        <button
+                          onClick={() => setGridUnit("pieces")}
+                          className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${gridUnit === "pieces" ? "bg-white shadow-sm text-[#28071C]" : "text-[#28071C]/40 hover:text-[#28071C]/70"}`}
+                        >
+                          Peças
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-5 pt-4 flex items-center gap-2">
+                    <button
+                      onClick={() => setSortimentTab("participacao")}
+                      className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${sortimentTab === "participacao" ? "bg-[#28071C] text-[#F6F3AA] border-[#28071C]" : "border-[#28071C]/15 text-[#28071C]/60 hover:bg-[#F2F2F2]"}`}
+                    >
+                      Aba 1 · Participação
+                    </button>
+                    <button
+                      onClick={() => setSortimentTab("precoRemarcacao")}
+                      className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${sortimentTab === "precoRemarcacao" ? "bg-[#28071C] text-[#F6F3AA] border-[#28071C]" : "border-[#28071C]/15 text-[#28071C]/60 hover:bg-[#F2F2F2]"}`}
+                    >
+                      Aba 2 · Preço Médio e Remarcação
+                    </button>
                   </div>
 
                   <div className="p-5 space-y-4">
                     {gridsLoading ? (
                       <div className="text-center py-10 text-[#28071C]/40 text-sm">Calculando participação por categoria...</div>
+                    ) : sortimentTab === "precoRemarcacao" ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-[#28071C]/40 text-[10px] uppercase tracking-wide">
+                              <th className="text-left py-2 px-3">Categoria</th>
+                              <th className="text-right py-2 px-3">Receita Prevista</th>
+                              <th className="text-center py-2 px-3">Preço Médio</th>
+                              <th className="text-center py-2 px-3">Remarcação</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {categoryGrids.map(grid => {
+                              const avgPrice = effectiveAvgPrice(grid.category);
+                              const mkdPct = effectiveMkdPct(grid.category);
+                              const pieces = avgPrice > 0 ? grid.categoryRevenue / avgPrice : 0;
+                              return (
+                                <tr key={grid.category} className="border-t border-[#28071C]/5">
+                                  <td className="py-2.5 px-3 font-semibold text-[#28071C]">{grid.category}</td>
+                                  <td className="py-2.5 px-3 text-right text-[#28071C]/70">{fmtCurrency(grid.categoryRevenue)}</td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <span className="text-[10px] text-[#28071C]/40">R$</span>
+                                      <input
+                                        type="number" min={0} step={0.01}
+                                        value={Math.round(avgPrice * 100) / 100}
+                                        onChange={e => handleCategoryIndicatorEdit(grid.category, "avgPrice", parseFloat(e.target.value) || 0)}
+                                        className="w-20 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                      />
+                                    </div>
+                                    <div className="text-[9px] text-[#28071C]/40 mt-0.5">{Math.round(pieces).toLocaleString("pt-BR")} pçs</div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <div className="flex items-center justify-center gap-0.5">
+                                      <input
+                                        type="number" min={0} max={100} step={0.1}
+                                        value={Math.round(mkdPct * 10) / 10}
+                                        onChange={e => handleCategoryIndicatorEdit(grid.category, "mkdPct", parseFloat(e.target.value) || 0)}
+                                        className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                      />
+                                      <span className="text-[9px] text-[#28071C]/40">%</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : (
                       categoryGrids.map(grid => {
                         const catTree = cascadeTree.find(c => c.category === grid.category);
@@ -1910,7 +2046,15 @@ export default function SortimentPlan() {
       </main>
 
       {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
-      {seasonId && (
+      {/* Salvamento/aplicação do cenário só na Aba 2 — é o cenário mais completo. */}
+      {seasonId && sortimentTab === "participacao" && (
+        <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3 print:hidden">
+          <p className="max-w-[1600px] mx-auto text-center text-xs text-[#28071C]/40">
+            Revise a participação e vá para a <strong>Aba 2 · Preço Médio e Remarcação</strong> para salvar ou aplicar o cenário.
+          </p>
+        </div>
+      )}
+      {seasonId && sortimentTab === "precoRemarcacao" && (
         <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3 print:hidden">
           <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">

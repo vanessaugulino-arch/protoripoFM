@@ -330,3 +330,68 @@ export async function createHierarchyNode(
 
   return next
 }
+
+// ─── Fase D — Aba 2: Preço Médio e Remarcação por categoria ────────────────
+// A Receita Prevista já fica fechada na Aba 1 (participação) — aqui o
+// usuário só refina Preço Médio (onde dentro da faixa o preço real fica) e
+// a Remarcação % resultante, objetivo bater as metas macro. Semente real:
+// o Preço Médio ponderado pela mistura de faixas já calculada (Aba 1) e o
+// targetMkdPct do M4 (uniforme por divisão — real por categoria ainda não
+// existe, ver HISTORICAL_CASCADE_ARCHITECTURE.md).
+
+export interface CategoryIndicator {
+  category: string
+  avgPrice: number
+  mkdPct:   number
+  isOverride: boolean
+}
+
+export async function getCategoryIndicators(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+): Promise<Map<string, { avgPrice: number; mkdPct: number }>> {
+  const { data, error } = await db
+    .from('sortiment_category_indicators')
+    .select('category, avg_price, mkd_pct')
+    .eq('tenant_id', tenantId)
+    .eq('season_id', seasonId)
+    .eq('division_id', divisionId)
+  if (error) {
+    console.warn('[sortimentGrid] getCategoryIndicators:', error.message)
+    return new Map()
+  }
+  const map = new Map<string, { avgPrice: number; mkdPct: number }>()
+  for (const r of (data ?? []) as { category: string; avg_price: number | null; mkd_pct: number | null }[]) {
+    if (r.avg_price == null && r.mkd_pct == null) continue
+    map.set(r.category, { avgPrice: Number(r.avg_price ?? 0), mkdPct: Number(r.mkd_pct ?? 0) })
+  }
+  return map
+}
+
+export async function saveCategoryIndicator(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+  category: string,
+  avgPrice: number,
+  mkdPct: number,
+  userEmail?: string,
+): Promise<void> {
+  const { error } = await db
+    .from('sortiment_category_indicators')
+    .upsert(
+      {
+        tenant_id: tenantId,
+        season_id: seasonId,
+        division_id: divisionId,
+        category,
+        avg_price: avgPrice,
+        mkd_pct: Math.max(0, Math.min(100, mkdPct)),
+        updated_at: new Date().toISOString(),
+        updated_by: userEmail ?? null,
+      },
+      { onConflict: 'tenant_id,season_id,division_id,category' },
+    )
+  if (error) console.warn('[sortimentGrid] saveCategoryIndicator:', error.message)
+}
