@@ -180,3 +180,77 @@ export async function saveGridCellAdjustment(
 
   return { ...grid, cells: nextCells }
 }
+
+// ─── Fase B — participação de Subcategoria/Linha dentro do pai imediato ────
+// Uma tabela genérica por caminho serve os dois níveis: `parentPath` é a
+// categoria (para ajustar subcategorias) ou "categoria::subcategoria" (para
+// ajustar linhas). Sem override salvo, o nó usa o peso histórico real já
+// calculado pela cascata (consolidatedHierarchyService, corrigido na Fase A).
+
+export async function getHierarchyAdjustments(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+): Promise<Map<string, number>> {
+  const { data, error } = await db
+    .from('sortiment_hierarchy_adjustments')
+    .select('parent_path, node_name, pct')
+    .eq('tenant_id', tenantId)
+    .eq('season_id', seasonId)
+    .eq('division_id', divisionId)
+  if (error) {
+    console.warn('[sortimentGrid] getHierarchyAdjustments:', error.message)
+    return new Map()
+  }
+  const map = new Map<string, number>()
+  for (const r of (data ?? []) as { parent_path: string; node_name: string; pct: number }[]) {
+    map.set(`${r.parent_path}::${r.node_name}`, Number(r.pct))
+  }
+  return map
+}
+
+/**
+ * Salva a participação (%) de UM nó dentro do pai e redistribui a diferença
+ * entre os nós-irmãos, ponderado pelo peso atual de cada um — mesmo
+ * princípio das células do grid (Fase A) e da "Propagação delta" já usada
+ * em useModule3.ts.
+ */
+export async function saveHierarchyNodeAdjustment(
+  tenantId: string,
+  seasonId: string,
+  divisionId: string,
+  parentPath: string,
+  siblings: { nodeName: string; pct: number }[],
+  editedNode: string,
+  newPct: number,
+  userEmail?: string,
+): Promise<{ nodeName: string; pct: number }[]> {
+  const clamped = Math.max(0, Math.min(100, newPct))
+  const others = siblings.filter(s => s.nodeName !== editedNode)
+  const oldSumOthers = others.reduce((s, o) => s + o.pct, 0)
+  const newSumOthers = Math.max(0, 100 - clamped)
+
+  const next = siblings.map(s => {
+    if (s.nodeName === editedNode) return { nodeName: s.nodeName, pct: clamped }
+    const scaled = oldSumOthers > 0 ? (s.pct / oldSumOthers) * newSumOthers : newSumOthers / others.length
+    return { nodeName: s.nodeName, pct: scaled }
+  })
+
+  const rows = next.map(s => ({
+    tenant_id:   tenantId,
+    season_id:   seasonId,
+    division_id: divisionId,
+    parent_path: parentPath,
+    node_name:   s.nodeName,
+    pct:         s.pct,
+    updated_at:  new Date().toISOString(),
+    updated_by:  userEmail ?? null,
+  }))
+
+  const { error } = await db
+    .from('sortiment_hierarchy_adjustments')
+    .upsert(rows, { onConflict: 'tenant_id,season_id,division_id,parent_path,node_name' })
+  if (error) console.warn('[sortimentGrid] saveHierarchyNodeAdjustment:', error.message)
+
+  return next
+}

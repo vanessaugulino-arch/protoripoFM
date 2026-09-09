@@ -85,6 +85,8 @@ import {
 import {
   computeCategoryGrids,
   saveGridCellAdjustment,
+  getHierarchyAdjustments,
+  saveHierarchyNodeAdjustment,
   RISK_LEVELS,
   RISK_LEVEL_LABELS,
   PRICE_TIER_LABELS,
@@ -558,6 +560,37 @@ export default function SortimentPlan() {
       user.tenant_id, seasonId, activeDivId, grid.category, grid, tier, risk, newPct, user.email,
     );
     setCategoryGrids(prev => prev.map(g => g.category === grid.category ? updated : g));
+  };
+
+  // ── Fase B — participação de Subcategoria/Linha dentro do pai imediato ───
+  const [hierarchyOverrides, setHierarchyOverrides] = useState<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) { setHierarchyOverrides(new Map()); return; }
+    getHierarchyAdjustments(user.tenant_id, seasonId, activeDivId)
+      .then(setHierarchyOverrides)
+      .catch(() => setHierarchyOverrides(new Map()));
+  }, [seasonId, user?.tenant_id, activeDivId]);
+
+  /** % efetiva de um nó dentro do pai — override salvo, ou o peso real da cascata. */
+  const effectivePct = (parentPath: string, nodeName: string, naturalPct: number) =>
+    hierarchyOverrides.get(`${parentPath}::${nodeName}`) ?? naturalPct;
+
+  const handleHierarchyEdit = async (
+    parentPath: string,
+    siblings: { nodeName: string; pct: number }[],
+    editedNode: string,
+    newPct: number,
+  ) => {
+    if (!seasonId || !user?.tenant_id || !activeDivId) return;
+    const saved = await saveHierarchyNodeAdjustment(
+      user.tenant_id, seasonId, activeDivId, parentPath, siblings, editedNode, newPct, user.email,
+    );
+    setHierarchyOverrides(prev => {
+      const next = new Map(prev);
+      for (const s of saved) next.set(`${parentPath}::${s.nodeName}`, s.pct);
+      return next;
+    });
   };
 
   const toggleCascadeCat = (cat: string) => setExpandedCascadeCats(prev => {
@@ -1653,59 +1686,98 @@ export default function SortimentPlan() {
                               </button>
                             )}
 
-                            {detailOpen && catTree && (
-                              <div className="overflow-x-auto border-t border-[#28071C]/5">
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-[#28071C]/40 text-[10px] uppercase tracking-wide">
-                                      <th className="text-left py-2 pl-8 pr-3">Estrutura</th>
-                                      <th className="text-right py-2 px-2">P1</th>
-                                      <th className="text-right py-2 px-2">P2</th>
-                                      <th className="text-right py-2 px-2">P3</th>
-                                      <th className="text-right py-2 px-4">Total</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {catTree.subs.map(sub => {
-                                      const subKey = `${grid.category}::${sub.subcategory}`;
-                                      const subOpen = expandedCascadeSubs.has(subKey);
-                                      const subTiers = sub.linhas.reduce((acc, l) => {
-                                        acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3;
-                                        return acc;
-                                      }, { p1: 0, p2: 0, p3: 0 });
-                                      return (
-                                        <Fragment key={subKey}>
-                                          <tr
-                                            className="border-t border-[#28071C]/5 hover:bg-[#F2F2F2]/30 cursor-pointer"
-                                            onClick={() => toggleCascadeSub(subKey)}
-                                          >
-                                            <td className="py-1.5 pl-8 pr-3 text-[#28071C]/80">
-                                              <span className="flex items-center gap-1.5">
-                                                {subOpen ? <ChevronUp className="w-3 h-3 text-[#28071C]/30" /> : <ChevronDown className="w-3 h-3 text-[#28071C]/30" />}
-                                                {sub.subcategory}
-                                              </span>
-                                            </td>
-                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p1)}</td>
-                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p2)}</td>
-                                            <td className="py-1.5 px-2 text-right text-[#28071C]/60">{fmtCurrency(subTiers.p3)}</td>
-                                            <td className="py-1.5 px-4 text-right text-[#28071C]/80 font-medium">{fmtCurrency(sub.total)}</td>
-                                          </tr>
-                                          {subOpen && sub.linhas.map(l => (
-                                            <tr key={`${subKey}::${l.linha}`} className="border-t border-[#28071C]/5">
-                                              <td className="py-1 pl-14 pr-3 text-[#28071C]/60">{l.linha}</td>
-                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p1 > 0 ? fmtCurrency(l.tiers.p1) : "—"}</td>
-                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p2 > 0 ? fmtCurrency(l.tiers.p2) : "—"}</td>
-                                              <td className="py-1 px-2 text-right text-[#28071C]/50">{l.tiers.p3 > 0 ? fmtCurrency(l.tiers.p3) : "—"}</td>
-                                              <td className="py-1 px-4 text-right text-[#28071C]/60">{fmtCurrency(l.total)}</td>
+                            {detailOpen && catTree && (() => {
+                              // Preço médio ponderado da categoria (mistura P1/P2/P3),
+                              // pra converter participação em peças nas linhas abaixo.
+                              const catTiers = catTree.subs.reduce((acc, s) => {
+                                for (const l of s.linhas) { acc.p1 += l.tiers.p1; acc.p2 += l.tiers.p2; acc.p3 += l.tiers.p3; }
+                                return acc;
+                              }, { p1: 0, p2: 0, p3: 0 });
+                              const catPieces =
+                                (avgPriceByTier.p1 > 0 ? catTiers.p1 / avgPriceByTier.p1 : 0) +
+                                (avgPriceByTier.p2 > 0 ? catTiers.p2 / avgPriceByTier.p2 : 0) +
+                                (avgPriceByTier.p3 > 0 ? catTiers.p3 / avgPriceByTier.p3 : 0);
+                              const blendedAvgPrice = catPieces > 0 ? grid.categoryRevenue / catPieces : 0;
+                              const fmtUnit = (revenue: number) =>
+                                gridUnit === "revenue"
+                                  ? fmtCurrency(revenue)
+                                  : `${Math.round(blendedAvgPrice > 0 ? revenue / blendedAvgPrice : 0).toLocaleString("pt-BR")} pçs`;
+
+                              const subSiblings = catTree.subs.map(s => ({
+                                nodeName: s.subcategory,
+                                pct: catTree.total > 0 ? (s.total / catTree.total) * 100 : 100 / catTree.subs.length,
+                              }));
+
+                              return (
+                                <div className="overflow-x-auto border-t border-[#28071C]/5">
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="text-[#28071C]/40 text-[10px] uppercase tracking-wide">
+                                        <th className="text-left py-2 pl-8 pr-3">Estrutura</th>
+                                        <th className="text-center py-2 px-2">Participação</th>
+                                        <th className="text-right py-2 px-4">{gridUnit === "revenue" ? "Receita" : "Peças"}</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {catTree.subs.map(sub => {
+                                        const subKey = `${grid.category}::${sub.subcategory}`;
+                                        const subOpen = expandedCascadeSubs.has(subKey);
+                                        const naturalSubPct = catTree.total > 0 ? (sub.total / catTree.total) * 100 : 100 / catTree.subs.length;
+                                        const subPct = effectivePct(grid.category, sub.subcategory, naturalSubPct);
+                                        const subRevenue = grid.categoryRevenue * (subPct / 100);
+                                        const linhaSiblings = sub.linhas.map(l => ({
+                                          nodeName: l.linha,
+                                          pct: sub.total > 0 ? (l.total / sub.total) * 100 : 100 / sub.linhas.length,
+                                        }));
+                                        return (
+                                          <Fragment key={subKey}>
+                                            <tr className="border-t border-[#28071C]/5 hover:bg-[#F2F2F2]/30">
+                                              <td className="py-1.5 pl-8 pr-3 text-[#28071C]/80 cursor-pointer" onClick={() => toggleCascadeSub(subKey)}>
+                                                <span className="flex items-center gap-1.5">
+                                                  {subOpen ? <ChevronUp className="w-3 h-3 text-[#28071C]/30" /> : <ChevronDown className="w-3 h-3 text-[#28071C]/30" />}
+                                                  {sub.subcategory}
+                                                </span>
+                                              </td>
+                                              <td className="py-1.5 px-2 text-center">
+                                                <input
+                                                  type="number" min={0} max={100} step={0.1}
+                                                  value={Math.round(subPct * 10) / 10}
+                                                  onClick={e => e.stopPropagation()}
+                                                  onChange={e => handleHierarchyEdit(grid.category, subSiblings, sub.subcategory, parseFloat(e.target.value) || 0)}
+                                                  className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                                />
+                                                <span className="text-[9px] text-[#28071C]/40 ml-0.5">%</span>
+                                              </td>
+                                              <td className="py-1.5 px-4 text-right text-[#28071C]/80 font-medium">{fmtUnit(subRevenue)}</td>
                                             </tr>
-                                          ))}
-                                        </Fragment>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
+                                            {subOpen && sub.linhas.map(l => {
+                                              const naturalLinhaPct = sub.total > 0 ? (l.total / sub.total) * 100 : 100 / sub.linhas.length;
+                                              const linhaPct = effectivePct(subKey, l.linha, naturalLinhaPct);
+                                              const linhaRevenue = subRevenue * (linhaPct / 100);
+                                              return (
+                                                <tr key={`${subKey}::${l.linha}`} className="border-t border-[#28071C]/5">
+                                                  <td className="py-1 pl-14 pr-3 text-[#28071C]/60">{l.linha}</td>
+                                                  <td className="py-1 px-2 text-center">
+                                                    <input
+                                                      type="number" min={0} max={100} step={0.1}
+                                                      value={Math.round(linhaPct * 10) / 10}
+                                                      onChange={e => handleHierarchyEdit(subKey, linhaSiblings, l.linha, parseFloat(e.target.value) || 0)}
+                                                      className="w-16 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C]/80 text-[11px] focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                                    />
+                                                    <span className="text-[9px] text-[#28071C]/40 ml-0.5">%</span>
+                                                  </td>
+                                                  <td className="py-1 px-4 text-right text-[#28071C]/60">{fmtUnit(linhaRevenue)}</td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </Fragment>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })
