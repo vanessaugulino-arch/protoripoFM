@@ -22,6 +22,10 @@ import {
 } from "../services/module3ScenarioService";
 import { applyDivisionEdit, mapToEngineField, type DivisionIndicators } from "../engine/divisionEngineAdapter";
 import type { FieldKey } from "../engine/planningEngine";
+import { detectDeltas, propagateDeltaToChildren } from "../engine/cascadePropagation";
+
+const MACRO_CASCADE_FIELDS = ["margin", "gmroi", "sellThrough"] as const;
+type MacroCascadeField = (typeof MACRO_CASCADE_FIELDS)[number];
 
 export interface UseModule3Options {
   seasonId: string;
@@ -201,11 +205,10 @@ export function useModule3(options: UseModule3Options) {
       return;
     }
 
-    // Mesma temporada — detecta quais taxas mudaram no M1
-    const deltas: Partial<Record<"margin" | "gmroi" | "sellThrough", number>> = {};
-    if (prev.margin      > 0 && curr.margin      > 0 && Math.abs(curr.margin      / prev.margin      - 1) > 0.001) deltas.margin      = curr.margin      / prev.margin;
-    if (prev.gmroi       > 0 && curr.gmroi       > 0 && Math.abs(curr.gmroi       / prev.gmroi       - 1) > 0.001) deltas.gmroi       = curr.gmroi       / prev.gmroi;
-    if (prev.sellThrough > 0 && curr.sellThrough > 0 && Math.abs(curr.sellThrough / prev.sellThrough - 1) > 0.001) deltas.sellThrough = curr.sellThrough / prev.sellThrough;
+    // Mesma temporada — detecta quais taxas mudaram no M1. Motor puro
+    // extraído para cascadePropagation.ts (reaproveitável em qualquer
+    // fronteira M4→M5/M4→M6/dentro do M6, não só aqui).
+    const deltas = detectDeltas(prev, curr, MACRO_CASCADE_FIELDS);
 
     setState(prevState => {
       if (Object.keys(deltas).length === 0) {
@@ -217,21 +220,19 @@ export function useModule3(options: UseModule3Options) {
       }
 
       // Aplica delta proporcional a cada divisão — o consolidado emergirá = alvo M1 exato
-      const newDivisions: Record<BusinessDivisionId, DivisionPlanBlock> =
-        {} as Record<BusinessDivisionId, DivisionPlanBlock>;
-
-      for (const divId of Object.keys(prevState.divisions) as BusinessDivisionId[]) {
-        const block = prevState.divisions[divId];
-        newDivisions[divId] = {
+      const newDivisions = propagateDeltaToChildren<DivisionPlanBlock, MacroCascadeField>(
+        prevState.divisions,
+        deltas,
+        block => ({
+          margin:      block.indicators.margin,
+          gmroi:       block.indicators.gmroi ?? 0,
+          sellThrough: block.indicators.sellThrough,
+        }),
+        (block, next) => ({
           ...block,
-          indicators: {
-            ...block.indicators,
-            margin:      deltas.margin      ? block.indicators.margin                 * deltas.margin      : block.indicators.margin,
-            gmroi:       deltas.gmroi       ? (block.indicators.gmroi       ?? 0)     * deltas.gmroi       : block.indicators.gmroi,
-            sellThrough: deltas.sellThrough ? block.indicators.sellThrough            * deltas.sellThrough : block.indicators.sellThrough,
-          },
-        };
-      }
+          indicators: { ...block.indicators, margin: next.margin, gmroi: next.gmroi, sellThrough: next.sellThrough },
+        }),
+      ) as Record<BusinessDivisionId, DivisionPlanBlock>;
 
       return {
         ...prevState,

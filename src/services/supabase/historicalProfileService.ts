@@ -64,6 +64,8 @@ export interface HistoricalDivisionProfile {
   avgPmv:     number
   avgCost:    number
   avgMargin:  number    // margem estimada %
+  avgMkdPct:  number | null  // remarcação real (%) — null = sem dado (nenhuma linha com produto casado)
+  ticketMedio: number | null // R$ — null = sem dado (sem receipt_number importado ainda)
   totalReceita: number
 }
 
@@ -97,6 +99,9 @@ export interface SalesMonthlyAggregate {
   pmvWeightedSum: number
   costWeightedSum: number
   marginWeightedSum: number
+  discountSum: number
+  priceSaleQtySum: number
+  receiptCount: number
 }
 
 export async function getSalesMonthlyAggregates(tenantId: string): Promise<SalesMonthlyAggregate[]> {
@@ -116,6 +121,9 @@ export async function getSalesMonthlyAggregates(tenantId: string): Promise<Sales
     pmvWeightedSum:     Number(r.pmv_weighted_sum) || 0,
     costWeightedSum:    Number(r.cost_weighted_sum) || 0,
     marginWeightedSum:  Number(r.margin_weighted_sum) || 0,
+    discountSum:        Number(r.discount_sum) || 0,
+    priceSaleQtySum:    Number(r.price_sale_qty_sum) || 0,
+    receiptCount:       Number(r.receipt_count) || 0,
   }))
 }
 
@@ -141,6 +149,7 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
   type DivAcc = {
     label: string; receita: number; pecas: number;
     sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number
+    sumDiscount: number; sumPriceSaleQty: number; receiptCount: number
   }
   const divAcc = new Map<string, DivAcc>()
 
@@ -173,13 +182,17 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
       const acc   = divAcc.get(divId) ?? {
         label: row.division, receita: 0, pecas: 0,
         sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0,
+        sumDiscount: 0, sumPriceSaleQty: 0, receiptCount: 0,
       }
-      acc.receita    += receita
-      acc.pecas      += pecas
-      acc.sumPmvW    += row.pmvWeightedSum
-      acc.sumCostW   += row.costWeightedSum
-      acc.sumMarginW += row.marginWeightedSum
-      acc.wTotal     += receita
+      acc.receita         += receita
+      acc.pecas           += pecas
+      acc.sumPmvW         += row.pmvWeightedSum
+      acc.sumCostW        += row.costWeightedSum
+      acc.sumMarginW      += row.marginWeightedSum
+      acc.wTotal          += receita
+      acc.sumDiscount     += row.discountSum
+      acc.sumPriceSaleQty += row.priceSaleQtySum
+      acc.receiptCount    += row.receiptCount
       divAcc.set(divId, acc)
     }
   }
@@ -205,6 +218,8 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
     avgPmv:        acc.wTotal > 0 ? Math.round(acc.sumPmvW    / acc.wTotal) : 0,
     avgCost:       acc.wTotal > 0 ? Math.round(acc.sumCostW   / acc.wTotal) : 0,
     avgMargin:     acc.wTotal > 0 ? Math.round((acc.sumMarginW / acc.wTotal) * 10) / 10 : 0,
+    avgMkdPct:     acc.sumPriceSaleQty > 0 ? Math.round((acc.sumDiscount / acc.sumPriceSaleQty) * 1000) / 10 : null,
+    ticketMedio:   acc.receiptCount > 0 ? Math.round((acc.receita / acc.receiptCount) * 100) / 100 : null,
     totalReceita:  acc.receita,
   })).sort((a, b) => b.pctReceita - a.pctReceita)
 

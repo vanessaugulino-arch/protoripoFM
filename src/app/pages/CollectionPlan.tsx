@@ -322,27 +322,38 @@ export default function CollectionPlan() {
   //      abaixo) — o que era "Peças entrando".
   //   3. Diferença: Coleções − Necessidade (negativo = falta planejar mais).
   //   4. Cobertura: projeção própria desta tela (não usa o cluster T2 do M4,
-  //      que só tem Giro↔Estoque Médio desde 2026-09-08) — não é o Forward
-  //      Coverage real (que usa estoque INICIAL e janela fixa de 90 dias);
-  //      alinhar isso é trabalho pendente, ver
-  //      src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
+  //      que só tem Giro↔Estoque Médio desde 2026-09-08). Janela fixa de 90
+  //      dias (soma da venda esperada dos 3 meses seguintes, incluindo o
+  //      atual), alinhada à definição real de Forward Coverage — ainda
+  //      difere dela num ponto: usa estoque de FIM de mês (stockEnd), não o
+  //      estoque INICIAL do dia 1; alinhar isso depende da leitura real de
+  //      estoque existir, ver src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md.
   // Importante: o estoque projetado (stockEnd) usa SEMPRE o que foi de fato
   // planejado em coleções (entered), nunca a necessidade — a necessidade é
   // só uma referência para a estilista decidir se ajusta o plano.
+  const COBERTURA_JANELA_DIAS = 90;
   const buildTimeline = useCallback((divisionId: string) => {
     const div = divisionsPlan[divisionId];
     const target = targets[divisionId];
     if (!div) return [];
     const expected = monthlyExpectedSold(divisionId);
+    const covMonths = Math.round(COBERTURA_JANELA_DIAS / 30); // 3 meses ≈ 90 dias
     let stockStart = target?.initialStock ?? 0;
-    return seasonMonths.map(month => {
+    return seasonMonths.map((month, i) => {
       const entries = div.entries.filter(e => e.month === month);
       const entered = entries.reduce((s, e) => s + e.plannedPieces, 0);
       const soldExpected = expected[month] ?? 0;
       const necessidadeEntrada = Math.max(0, soldExpected - stockStart);
       const diferenca = entered - necessidadeEntrada;
       const stockEnd = stockStart + entered - soldExpected;
-      const coverageDays = soldExpected > 0 ? (stockEnd / soldExpected) * 30 : (stockEnd > 0 ? Infinity : 0);
+      // Demanda dos próximos ~90 dias (mês atual + os 2 seguintes dentro da
+      // temporada) — janela fixa, não extrapolação de um único mês.
+      const demanda90d = seasonMonths
+        .slice(i, i + covMonths)
+        .reduce((s, m) => s + (expected[m] ?? 0), 0);
+      const coverageDays = demanda90d > 0
+        ? (stockEnd / demanda90d) * COBERTURA_JANELA_DIAS
+        : (stockEnd > 0 ? Infinity : 0);
       stockStart = stockEnd;
       return { month, entries, necessidadeEntrada, entered, diferenca, soldExpected, stockEnd, coverageDays };
     });

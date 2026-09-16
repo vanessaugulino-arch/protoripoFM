@@ -550,6 +550,43 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         sampleValue: "venda",
         match: ["tipo de venda", "tipo"],
       },
+      {
+        key: "receipt_number",
+        label: "Nº do Cupom Fiscal / NF / Pedido",
+        description:
+          "Identifica a venda (não o SKU) — agrupa as linhas de uma mesma compra. Nº do cupom/NF no varejo e e-commerce, nº do pedido no atacado. Necessário para calcular o Ticket Médio.",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "NF-000123",
+        match: ["cupom fiscal", "numero da nf", "nº da nf", "numero do pedido", "nº do pedido", "receipt"],
+      },
+      {
+        key: "client_code",
+        label: "Código do Cliente",
+        description: "Código do cliente no ERP — relevante principalmente no atacado.",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "CLI-4821",
+        match: ["codigo do cliente", "cod cliente"],
+      },
+      {
+        key: "client_name",
+        label: "Nome do Cliente",
+        description: "Nome do cliente/loja — relevante principalmente no atacado.",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "Loja Modas Bella",
+        match: ["nome do cliente", "cliente"],
+      },
+      {
+        key: "client_document",
+        label: "CNPJ/CPF do Cliente",
+        description: "Documento do cliente — relevante principalmente no atacado.",
+        required: false,
+        valueType: "optional_text",
+        sampleValue: "12.345.678/0001-90",
+        match: ["cnpj", "cpf", "documento do cliente"],
+      },
     ],
   },
 
@@ -1532,6 +1569,10 @@ export async function persistImport(
           revenue_net_post_tax: parseNum(get(row, "revenue_net_post_tax")),
           colecao:              get(row, "colecao") || null,
           category:             get(row, "category") || null,
+          receipt_number:       get(row, "receipt_number") || null,
+          client_code:          get(row, "client_code") || null,
+          client_name:          get(row, "client_name") || null,
+          client_document:      get(row, "client_document") || null,
         };
       })
       .filter(r => r.sku && r.sale_date);
