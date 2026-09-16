@@ -9,6 +9,7 @@ import {
 import type { SegmentId, RawMaterialGroupId, OrigemPecas, OnboardingProfile } from "../types/onboarding"
 import { MONTHS, DEFAULT_REGRA, computeMesFim } from "../../services/temporadaService"
 import { getRegraDefaultDb, saveRegraDefaultDb } from "../../services/supabase/seasonService"
+import { saveOnboardingProfileDb, loadOnboardingProfileFromDb } from "../../services/supabase/onboardingService"
 
 const ALL_SEGMENTS = Object.keys(SEGMENT_LABELS) as SegmentId[]
 const ALL_ORIGENS  = Object.keys(ORIGEM_LABELS)  as OrigemPecas[]
@@ -25,6 +26,8 @@ export default function ProfileAdjust() {
   const [hasImport,    setHasImport]    = useState(false)
   const [hasExport,    setHasExport]    = useState(false)
   const [saved,        setSaved]        = useState(false)
+  const [saving,       setSaving]       = useState(false)
+  const [loadedProfile, setLoadedProfile] = useState<OnboardingProfile | null>(null)
   const [veraoInicio,   setVeraoInicio]   = useState(DEFAULT_REGRA.verao.mesInicio)
   const [invernoInicio, setInvernoInicio] = useState(DEFAULT_REGRA.inverno.mesInicio)
 
@@ -35,21 +38,37 @@ export default function ProfileAdjust() {
     const stored = sessionStorage.getItem("currentUser")
     if (!stored) { navigate("/"); return }
     setUser(JSON.parse(stored))
-    const profile = getStoredProfile()
-    if (profile) {
-      setSegments(profile.segments)
-      setMaterials(profile.rawMaterials)
-      setOrigem(profile.origem)
-      setHasImport(profile.hasImportedMaterial)
-      setHasExport(profile.exports)
+
+    // Semente imediata do cache local (sem esperar a rede) — sobrescrita
+    // abaixo assim que o Supabase (fonte canônica) responder.
+    const cached = getStoredProfile()
+    if (cached) {
+      setLoadedProfile(cached)
+      setSegments(cached.segments)
+      setMaterials(cached.rawMaterials)
+      setOrigem(cached.origem)
+      setHasImport(cached.hasImportedMaterial)
+      setHasExport(cached.exports)
     }
-    // Carrega a regra de temporadas do Supabase
+
     const cu = JSON.parse(stored)
     const tenantId = sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? ""
     if (tenantId) {
       getRegraDefaultDb(tenantId).then(regra => {
         setVeraoInicio(regra.verao.mesInicio)
         setInvernoInicio(regra.inverno.mesInicio)
+      }).catch(() => {})
+
+      // Fonte canônica: onboarding_profiles no Supabase. Se existir, prevalece
+      // sobre o cache local (que pode estar desatualizado ou vir de outro dispositivo).
+      loadOnboardingProfileFromDb(tenantId).then(dbProfile => {
+        if (!dbProfile) return
+        setLoadedProfile(dbProfile)
+        setSegments(dbProfile.segments)
+        setMaterials(dbProfile.rawMaterials)
+        setOrigem(dbProfile.origem)
+        setHasImport(dbProfile.hasImportedMaterial)
+        setHasExport(dbProfile.exports)
       }).catch(() => {})
     }
   }, [navigate])
@@ -70,33 +89,44 @@ export default function ProfileAdjust() {
 
   const handleSave = async () => {
     if (segments.length === 0) return
+    const cu = JSON.parse(sessionStorage.getItem("currentUser") ?? "{}")
+    const tenantId = sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? ""
+
+    // Mescla sobre o perfil já carregado (Supabase, com fallback local) —
+    // preserva campos que esta tela não edita (canais de venda, hierarquia
+    // de produtos, convites de equipe etc.) em vez de zerá-los.
     const profile: OnboardingProfile = {
+      ...(loadedProfile ?? { productHierarchy: [], salesChannels: [] }),
       segments,
       rawMaterials: materials,
       origem,
       hasImportedMaterial: hasImport,
       exports: hasExport,
-      productHierarchy: [],
-      salesChannels: [],
       completedAt: new Date().toISOString(),
     }
-    localStorage.setItem(ONBOARDING_PROFILE_KEY, JSON.stringify(profile))
-    localStorage.setItem(ONBOARDING_DONE_KEY, "true")
-    // Salva regra de temporadas no Supabase
-    const cu = JSON.parse(sessionStorage.getItem("currentUser") ?? "{}")
-    const tenantId = sessionStorage.getItem("activeTenantId") ?? cu.tenant_id ?? ""
-    if (tenantId) {
-      try {
-        await saveRegraDefaultDb(tenantId, {
-          verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
-          inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
-        })
-      } catch (err) {
-        console.warn("Erro ao salvar regra de temporadas:", err)
-      }
+
+    setSaving(true)
+    try {
+      // Supabase é a fonte canônica — mesma tabela que o Onboarding grava.
+      // Sem tenantId não há onde persistir; nesse caso não fingimos sucesso.
+      if (!tenantId) throw new Error("Tenant não identificado.")
+      await saveOnboardingProfileDb(tenantId, profile)
+      await saveRegraDefaultDb(tenantId, {
+        verao:   { mesInicio: veraoInicio,   mesFim: veraoFim   },
+        inverno: { mesInicio: invernoInicio, mesFim: invernoFim },
+      })
+      // localStorage fica só como cache de leitura rápida (getStoredProfile),
+      // nunca como a única cópia dos dados.
+      localStorage.setItem(ONBOARDING_PROFILE_KEY, JSON.stringify(profile))
+      localStorage.setItem(ONBOARDING_DONE_KEY, "true")
+      setSaved(true)
+      setTimeout(() => navigate(-1), 1200)
+    } catch (err) {
+      console.error("Erro ao salvar perfil:", err)
+      alert("Não foi possível salvar o perfil. Tente novamente.")
+    } finally {
+      setSaving(false)
     }
-    setSaved(true)
-    setTimeout(() => navigate(-1), 1200)
   }
 
   const showTrade = origem === "propria" || origem === "hibrido"
@@ -350,7 +380,7 @@ export default function ProfileAdjust() {
         <div className="flex justify-end pb-8">
           <button
             onClick={handleSave}
-            disabled={segments.length === 0 || veraoInicio === invernoInicio}
+            disabled={segments.length === 0 || veraoInicio === invernoInicio || saving}
             className={`flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold transition-all shadow-md ${
               saved
                 ? "bg-emerald-500 text-white"
@@ -365,7 +395,7 @@ export default function ProfileAdjust() {
             ) : (
               <>
                 <Save className="w-4 h-4" />
-                Salvar perfil
+                {saving ? "Salvando…" : "Salvar perfil"}
               </>
             )}
           </button>
