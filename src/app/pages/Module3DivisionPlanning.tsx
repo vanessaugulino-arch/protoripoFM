@@ -56,6 +56,7 @@ import {
   SendHorizonal,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import {
   createApprovalRequest,
@@ -1417,6 +1418,16 @@ export default function Module3DivisionPlanning() {
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="mt-5">
+              <PlanObservationCard
+                tenantId={tenantId || undefined}
+                module="m4_divisao"
+                seasonKey={selectedSeasonId || undefined}
+                title="Observações do Plano — Divisão"
+                userEmail={user?.email}
+              />
             </div>
           </>
         )}

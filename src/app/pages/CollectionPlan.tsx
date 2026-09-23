@@ -36,6 +36,7 @@ import {
   CheckCheck,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import { getTemporadas, MONTHS, type Temporada } from "../../services/temporadaService";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
@@ -864,6 +865,16 @@ export default function CollectionPlan() {
                   {alreadyPending ? "Aprovação pendente" : "Enviar para aprovação (M4)"}
                 </button>
               )}
+            </div>
+
+            <div className="mt-5">
+              <PlanObservationCard
+                tenantId={tenantId || undefined}
+                module="m5_colecao"
+                seasonKey={selectedSeasonId || undefined}
+                title="Observações do Plano — Coleção"
+                userEmail={user?.email}
+              />
             </div>
           </>
         )}

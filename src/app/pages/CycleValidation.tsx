@@ -26,6 +26,7 @@ import {
 import { getReviewedYears, getAppliedChannelScenario } from "../../services/supabase/channelScenarioService";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import { exportToPDF } from "../../utils/exportPDF";
 import {
@@ -1573,6 +1574,16 @@ export default function CycleValidation() {
             </p>
           </div>
         )}
+
+        <div className="mt-5">
+          <PlanObservationCard
+            tenantId={tenantId || undefined}
+            module="m3_sazonalidade"
+            seasonKey={selectedFiscalYear ? String(selectedFiscalYear) : undefined}
+            title="Observações do Plano — Sazonalidade"
+            userEmail={user?.email}
+          />
+        </div>
       </main>
 
       {/* ── Action bar ── */}

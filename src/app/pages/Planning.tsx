@@ -20,6 +20,7 @@ import { applyChannelScenario as dbApplyChannelScenario } from '../../services/s
 import { applyDivisionScenarioById } from '../../services/supabase/divisionScenarioService';
 import { recomputeOfficialMacro, recomputeMacroFromDivisions } from '../../services/supabase/officialPlanService';
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import { exportToPDF } from '../../utils/exportPDF';
 import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
@@ -1198,6 +1199,16 @@ export default function Planning() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="max-w-[1800px] mx-auto px-6 pb-4">
+        <PlanObservationCard
+          tenantId={tenantId || undefined}
+          module="m1_estrategico"
+          seasonKey={year ? String(year) : undefined}
+          title="Observações do Plano Macro"
+          userEmail={user?.email}
+        />
       </div>
 
       {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}

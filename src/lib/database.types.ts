@@ -1485,6 +1485,36 @@ export type Database = {
         }
         Relationships: []
       }
+      plan_observations: {
+        Row: {
+          id: string
+          module: string
+          note: string | null
+          season_key: string
+          tenant_id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          module: string
+          note?: string | null
+          season_key: string
+          tenant_id: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          module?: string
+          note?: string | null
+          season_key?: string
+          tenant_id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
       planning_scenarios: {
         Row: {
           created_at: string

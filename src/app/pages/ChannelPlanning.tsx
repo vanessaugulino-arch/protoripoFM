@@ -6,6 +6,7 @@ import {
   SendHorizonal, ArrowRight,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import {
   createApprovalRequest,
@@ -1421,6 +1422,16 @@ export default function ChannelPlanning() {
             </div>
           </div>
         )}
+
+        <div className="mb-5">
+          <PlanObservationCard
+            tenantId={tenantId || undefined}
+            module="m2_canal"
+            seasonKey={selectedYear ? String(selectedYear) : undefined}
+            title="Observações do Plano — Metas por Canal"
+            userEmail={user?.email}
+          />
+        </div>
 
         {/* ── Barra de ações ────────────────────────────────────────────────── */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm px-5 py-4">
