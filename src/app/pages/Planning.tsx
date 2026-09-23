@@ -823,7 +823,7 @@ export default function Planning() {
       </div>
 
       {/* ── 3-COLUMN LAYOUT ────────────────────────────────────────────────── */}
-      <div id="planning-export-content" className="max-w-[1800px] mx-auto px-6 py-6 flex gap-5 items-start">
+      <div id="planning-export-content" className="max-w-[1600px] mx-auto px-6 py-6 flex gap-5 items-start">
 
         {/* ═══════════════════════════════════════════════════════════════════
             COLUNA 1 — Indicadores Selecionados para Planejamento
@@ -1201,7 +1201,7 @@ export default function Planning() {
         </div>
       </div>
 
-      <div className="max-w-[1800px] mx-auto px-6 pb-4">
+      <div className="max-w-[1600px] mx-auto px-6 pb-4">
         <PlanObservationCard
           tenantId={tenantId || undefined}
           module="m1_estrategico"
@@ -1212,7 +1212,7 @@ export default function Planning() {
       </div>
 
       {/* ── BARRA DE AÇÕES ─────────────────────────────────────────────────── */}
-      <div className="max-w-[1800px] mx-auto px-6 pb-8">
+      <div className="max-w-[1600px] mx-auto px-6 pb-8">
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-sm px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">

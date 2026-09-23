@@ -2245,7 +2245,12 @@ function DivisionBlockCard({
                   <span className="text-[10px] text-[#28071C]/40">{item.range || "—"}</span>
                   <span className="text-[11px] font-bold text-[#28071C]">{item.pct.toFixed(0)}%</span>
                   {mid != null && (
-                    <span className={`text-[10px] ${histAvg != null ? "text-[#7598CF] font-semibold" : "text-[#28071C]/50"}`}>
+                    <span
+                      className={`text-[10px] ${histAvg != null ? "text-[#7598CF] font-semibold" : "text-[#28071C]/50"}`}
+                      title={histAvg != null
+                        ? "Preço médio do catálogo atual nesta faixa — não é escopado pela Temporada de Referência selecionada acima."
+                        : "Sem produtos do catálogo atual nesta faixa — mostrando o ponto médio do range."}
+                    >
                       R${Math.round(mid)}
                     </span>
                   )}

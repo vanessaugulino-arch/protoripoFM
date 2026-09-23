@@ -909,6 +909,18 @@ export default function ChannelPlanning() {
     };
   }, [channelData, visibleChannels]);
 
+  // ── Ano Anterior (referência real, visível) ───────────────────────────────────
+  // histChannelProfiles já era buscado, mas só alimentava o seed inicial das %
+  // por canal — nunca aparecia na tela. Agora também vira uma âncora visível
+  // pro usuário comparar o cenário atual com o que aconteceu de fato.
+  const histReference = useMemo(() => {
+    const totalReceita = histChannelProfiles.reduce((s, p) => s + p.totalReceita, 0);
+    if (totalReceita <= 0) return null;
+    const avgPmv  = histChannelProfiles.reduce((s, p) => s + p.avgPmv  * p.totalReceita, 0) / totalReceita;
+    const avgCost = histChannelProfiles.reduce((s, p) => s + p.avgCost * p.totalReceita, 0) / totalReceita;
+    return { totalReceita, avgPmv, avgCost };
+  }, [histChannelProfiles]);
+
   // ── Macro impact (AJUSTE 1/2/6) ───────────────────────────────────────────────
   const visibleTotalPct = visibleChannels.reduce((s, ch) => s + percents[ch], 0);
 
@@ -1159,6 +1171,21 @@ export default function ChannelPlanning() {
           </div>
         </div>
 
+        {/* ── Ano Anterior — referência real e visível ──────────────────────── */}
+        {histReference && (
+          <div className="flex items-center gap-4 bg-white/70 border border-[#28071C]/8 rounded-xl px-4 py-2.5 mb-4 flex-wrap">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-[#28071C]/40">Ano Anterior (real)</span>
+            <span className="text-xs text-[#28071C]/70">Receita: <strong className="text-[#28071C]">R$ {Math.round(histReference.totalReceita).toLocaleString("pt-BR")}</strong></span>
+            <span className="text-xs text-[#28071C]/70">PMV médio: <strong className="text-[#28071C]">R$ {Math.round(histReference.avgPmv).toLocaleString("pt-BR")}</strong></span>
+            <span className="text-xs text-[#28071C]/70">Custo médio: <strong className="text-[#28071C]">R$ {Math.round(histReference.avgCost).toLocaleString("pt-BR")}</strong></span>
+            {consolidated.receita > 0 && (
+              <span className={`text-xs font-semibold ml-auto ${consolidated.receita >= histReference.totalReceita ? "text-emerald-600" : "text-red-600"}`}>
+                Plano {consolidated.receita >= histReference.totalReceita ? "+" : ""}{(((consolidated.receita - histReference.totalReceita) / histReference.totalReceita) * 100).toFixed(1)}% vs. ano anterior
+              </span>
+            )}
+          </div>
+        )}
+
         {/* ── STICKY: Participation + Banner (AJUSTE 3) ─────────────────────── */}
         <div id="tour-cp-channels" className="sticky top-[72px] z-30 space-y-3 mb-5">
 
@@ -1283,7 +1310,7 @@ export default function ChannelPlanning() {
           </div>
 
           <div className="p-4 overflow-x-auto">
-            <div className="grid gap-1.5 min-w-[520px]" style={gridStyle}>
+            <div className="grid gap-1.5 min-w-[520px] max-w-[860px]" style={gridStyle}>
 
               {/* Header */}
               <div className="flex items-center px-2.5 bg-[#28071C]/5 rounded-lg h-9">

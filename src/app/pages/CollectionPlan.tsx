@@ -641,6 +641,26 @@ export default function CollectionPlan() {
 
                     {isExpanded && (
                       <div className="border-t border-[#28071C]/8 px-5 py-4 space-y-4">
+                        {/* Ano Anterior — referência real e visível. histProfiles já
+                            era buscado, mas só alimentava o peso mensal da Necessidade
+                            por baixo dos panos; agora também vira uma âncora visível. */}
+                        {(() => {
+                          const hist = histProfiles.find(p => p.division === divId);
+                          if (!hist || hist.pmv <= 0) return null;
+                          const histPecas = hist.totalRevenue / hist.pmv;
+                          const deltaPct = histPecas > 0 ? ((target - histPecas) / histPecas) * 100 : 0;
+                          return (
+                            <div className="flex items-center gap-4 bg-[#F2F2F2]/60 rounded-xl px-4 py-2 flex-wrap">
+                              <span className="text-[10px] font-semibold uppercase tracking-widest text-[#28071C]/40">Ano Anterior (real)</span>
+                              <span className="text-xs text-[#28071C]/70">Vendido: <strong className="text-[#28071C]">{fmtPieces(Math.round(histPecas))}</strong> pçs</span>
+                              <span className="text-xs text-[#28071C]/70">PMV: <strong className="text-[#28071C]">R$ {Math.round(hist.pmv).toLocaleString("pt-BR")}</strong></span>
+                              <span className={`text-xs font-semibold ml-auto ${deltaPct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                Plano {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}% vs. ano anterior
+                              </span>
+                            </div>
+                          );
+                        })()}
+
                         {/* Timeline mensal — 4 linhas:
                             1. Necessidade: peças que precisam entrar pra cobrir a venda
                                esperada (real, da Sazonalidade), descontado o estoque já

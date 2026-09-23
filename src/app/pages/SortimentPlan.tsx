@@ -1794,7 +1794,7 @@ export default function SortimentPlan() {
                         const pieces = avgPrice > 0 ? categoryRevenue / avgPrice : 0;
                         return (
                           <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
-                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center gap-10 flex-wrap">
+                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center gap-6 flex-wrap">
                               <div className="flex items-center gap-[30px] flex-wrap">
                                 <span className="font-semibold text-[#28071C] min-w-[90px]">{grid.category}</span>
 
@@ -1809,6 +1809,11 @@ export default function SortimentPlan() {
                                     />
                                     <span className="text-[9px] text-[#28071C]/40">%</span>
                                   </div>
+                                  {Math.abs(catPct - naturalCatPct) > 0.1 && (
+                                    <span className="text-[9px] text-[#7598CF]/70 mt-0.5" title="Peso real desta categoria no histórico de vendas">
+                                      hist.: {(Math.round(naturalCatPct * 10) / 10).toLocaleString("pt-BR")}%
+                                    </span>
+                                  )}
                                 </div>
 
                                 <div className="flex flex-col">

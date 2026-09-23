@@ -1588,7 +1588,7 @@ export default function CycleValidation() {
 
       {/* ── Action bar ── */}
       <div className="sticky bottom-0 z-30 bg-[#F2F2F2]/80 backdrop-blur-sm border-t border-[#28071C]/8 px-6 py-3">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <button onClick={() => setShowSaveForm(v => !v)}
               className="flex items-center gap-2 px-5 py-2.5 bg-[#7598CF] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm">
