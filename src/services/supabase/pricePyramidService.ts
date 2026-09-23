@@ -163,6 +163,46 @@ export async function fetchHistoricalTierAvgs(
   return result
 }
 
+/**
+ * Preço médio REAL vendido por faixa, escopado por um intervalo de datas real
+ * (a Temporada de Referência) — via sales_history (migration 038, função
+ * get_division_historical_tier_price), ponderado por quantidade. Ao contrário
+ * de fetchHistoricalTierAvgs (que só ecoa products.price_sale do catálogo
+ * vigente, sem nenhuma dimensão de tempo), este é o valor efetivamente
+ * praticado naquela temporada.
+ * @param dateFrom/dateTo  intervalo real de calendário da Temporada de Referência (expandSeasonMonths)
+ */
+export async function fetchHistoricalTierAvgsForSeason(
+  tenantId: string,
+  division: string,
+  dateFrom: string, // YYYY-MM-DD
+  dateTo:   string, // YYYY-MM-DD
+  tiers: Record<PriceTierId, TierRange>,
+): Promise<TierHistoricalAvg> {
+  const result: TierHistoricalAvg = { p1: null, p2: null, p3: null }
+
+  await Promise.all(
+    (Object.entries(tiers) as [PriceTierId, TierRange][]).map(async ([tid, range]) => {
+      const { data, error } = await supabase.rpc('get_division_historical_tier_price', {
+        p_tenant_id: tenantId,
+        p_division:  division,
+        p_date_from: dateFrom,
+        p_date_to:   dateTo,
+        p_price_min: range.min,
+        p_price_max: range.max,
+      })
+      if (error) {
+        console.warn(`[pricePyramid] fetchHistoricalTierAvgsForSeason ${tid}:`, error.message)
+        return
+      }
+      if (data == null) return
+      result[tid] = Math.round(Number(data))
+    }),
+  )
+
+  return result
+}
+
 // ─── Plano de pirâmide ────────────────────────────────────────────────────────
 
 /**

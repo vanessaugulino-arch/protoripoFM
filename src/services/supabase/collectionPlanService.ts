@@ -37,6 +37,8 @@ export interface CollectionPlanRow {
   divisions: Record<string, CollectionPlanDivision>;
   is_applied: boolean;
   saved_at: string;
+  /** Linhagem M4→M5: division_scenarios.id (M4) usado para semear targetPieces. */
+  source_division_scenario_id?: string | null;
 }
 
 export interface CollectionPlanScenario {
@@ -68,10 +70,16 @@ export async function getWorkingCollectionPlan(
   return (data?.divisions as Record<string, CollectionPlanDivision>) ?? null;
 }
 
+/**
+ * @param sourceDivisionScenarioId Linhagem M4→M5. Omitido (undefined) nos
+ * autosaves normais de edição — preserva o vínculo já gravado em vez de
+ * apagá-lo a cada tecla.
+ */
 export async function saveWorkingCollectionPlan(
   tenantId: string,
   seasonId: string,
   divisions: Record<string, CollectionPlanDivision>,
+  sourceDivisionScenarioId?: string | null,
 ): Promise<void> {
   const { data: existing } = await supabase
     .from("collection_plans")
@@ -82,22 +90,23 @@ export async function saveWorkingCollectionPlan(
     .limit(1)
     .maybeSingle();
 
+  const patch: Record<string, unknown> = {
+    divisions: divisions as unknown as import("../../lib/database.types").Json,
+    saved_at: new Date().toISOString(),
+  };
+  if (sourceDivisionScenarioId !== undefined) {
+    patch.source_division_scenario_id = sourceDivisionScenarioId;
+  }
+
   if (existing?.id) {
-    await supabase
-      .from("collection_plans")
-      .update({
-        divisions: divisions as unknown as import("../../lib/database.types").Json,
-        saved_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id);
+    await supabase.from("collection_plans").update(patch).eq("id", existing.id);
   } else {
     await supabase.from("collection_plans").insert({
       tenant_id: tenantId,
       season_id: seasonId,
       name: "__working__",
-      divisions: divisions as unknown as import("../../lib/database.types").Json,
       is_applied: true,
-      saved_at: new Date().toISOString(),
+      ...patch,
     });
   }
 }
@@ -134,6 +143,7 @@ export async function saveCollectionPlanScenario(
   seasonId: string,
   name: string,
   divisions: Record<string, CollectionPlanDivision>,
+  sourceDivisionScenarioId?: string | null,
 ): Promise<CollectionPlanScenario> {
   const savedAt = new Date().toISOString();
   const { data, error } = await supabase
@@ -145,6 +155,7 @@ export async function saveCollectionPlanScenario(
       divisions: divisions as unknown as import("../../lib/database.types").Json,
       is_applied: false,
       saved_at: savedAt,
+      source_division_scenario_id: sourceDivisionScenarioId ?? null,
     })
     .select("id, name, saved_at, divisions")
     .single();
@@ -170,6 +181,47 @@ export async function deleteCollectionPlanScenario(
     .eq("tenant_id", tenantId);
 
   if (error) throw error;
+}
+
+// ─── Listagem para o M6 (Engenharia de Sortimento) escolher a base ───────────
+
+export interface CollectionPlanSummary {
+  id: string;
+  name: string;
+  savedAt: string;
+  isApplied: boolean;
+  divisions: Record<string, CollectionPlanDivision>;
+}
+
+/**
+ * Lista TODOS os planos de coleção da temporada (o plano de trabalho aplicado
+ * + qualquer simulação salva), para o M6 poder escolher qual usar como base —
+ * antes o M6 nem lia esta tabela, sempre montava as collections do zero.
+ */
+export async function listAllCollectionPlans(
+  tenantId: string,
+  seasonId: string,
+): Promise<CollectionPlanSummary[]> {
+  const { data, error } = await supabase
+    .from("collection_plans")
+    .select("id, name, saved_at, is_applied, divisions")
+    .eq("tenant_id", tenantId)
+    .eq("season_id", seasonId)
+    .order("is_applied", { ascending: false })
+    .order("saved_at", { ascending: true });
+
+  if (error) {
+    console.warn("[collectionPlan] listAllCollectionPlans:", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: any) => ({
+    id: row.id as string,
+    name: row.is_applied ? "Plano de trabalho atual (M5)" : (row.name as string),
+    savedAt: row.saved_at as string,
+    isApplied: !!row.is_applied,
+    divisions: (row.divisions as Record<string, CollectionPlanDivision>) ?? {},
+  }));
 }
 
 /**

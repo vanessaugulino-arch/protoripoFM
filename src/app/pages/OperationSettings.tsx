@@ -634,12 +634,18 @@ export default function OperationSettings() {
       .catch(() => { /* cache local já preservou a entrada */ });
   }, [user?.tenant_id]);
 
-  // Carrega o histórico do banco quando o tenant fica disponível
+  // Carrega o histórico do banco quando o tenant fica disponível.
+  // O banco é a fonte de verdade — mesmo um resultado vazio (source: "db")
+  // substitui o cache local, para não continuar mostrando o histórico de
+  // outro tenant/dispositivo. Só quando a consulta falhar (source: "cache")
+  // o cache atual é mantido como fallback.
   useEffect(() => {
     const tid = user?.tenant_id;
     if (!tid) return;
     listImportHistory(tid)
-      .then(rows => { if (rows.length > 0) setImportHistory(rows as ImportHistoryEntry[]); })
+      .then(({ entries, source }) => {
+        if (source === "db") setImportHistory(entries as ImportHistoryEntry[]);
+      })
       .catch(() => { /* mantém o cache */ });
   }, [user?.tenant_id]);
 

@@ -23,7 +23,8 @@ import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
 import { exportToPDF } from '../../utils/exportPDF';
-import { getStoredProfile, isOnboardingComplete } from '../types/onboarding'
+import { isOnboardingComplete } from '../types/onboarding'
+import { useOnboardingProfile } from '../../hooks/useOnboardingProfile'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_ICONS, STRATEGIC_FOCUS_COLORS,
@@ -315,7 +316,10 @@ export default function Planning() {
   const {
     current, isDirty, activeScenario, scenarios,
     setField, setFieldAsBase, unlock, saveScenario, loadScenario, reset,
+    syncError, saveError,
   } = usePlanningEngine(year, baseline, activeKeysList, tenantId || undefined, user?.id)
+
+  const { profile: onboardingProfile } = useOnboardingProfile(tenantId || undefined)
 
   const v = current.values
   const s = current.states
@@ -544,7 +548,11 @@ export default function Planning() {
   }
 
   const handleConfirmSave = async () => {
-    const name = saveScenario(scenarioNameInput || undefined)
+    const { name, dbSaved } = await saveScenario(scenarioNameInput || undefined)
+    if (!dbSaved) {
+      alert(`O cenário "${name}" apareceu na tela, mas não foi possível confirmar a gravação no banco de dados.\n\nTente salvar novamente — se persistir, avise o suporte.`)
+      return
+    }
     const vals: Record<string, number | null> = {}
     FIELD_DEFS.forEach(f => { vals[f.key] = f.getValue(v) })
     const result = await addVersionToCycle(year, name, vals)
@@ -673,7 +681,7 @@ export default function Planning() {
   if (!user) return null
 
   // ── Macro indicators ─────────────────────────────────────────────────────
-  const profile  = getStoredProfile()
+  const profile  = onboardingProfile
   const activeIds = profile ? getActiveIndicators(profile) : []
 
   const focusColors = focus ? STRATEGIC_FOCUS_COLORS[focus] : null
@@ -744,6 +752,14 @@ export default function Planning() {
             {isDirty && (
               <span className="flex items-center gap-1 text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 ml-2">
                 <Lock className="w-2.5 h-2.5" /> Alterações não salvas
+              </span>
+            )}
+            {(syncError || saveError) && (
+              <span
+                className="flex items-center gap-1 text-[10px] text-red-600 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 ml-2"
+                title={syncError || saveError || undefined}
+              >
+                <Lock className="w-2.5 h-2.5" /> {syncError ? "Não confirmado com o banco" : "Gravação não confirmada"}
               </span>
             )}
           </div>

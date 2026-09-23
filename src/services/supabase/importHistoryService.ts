@@ -44,12 +44,20 @@ function writeCache(entries: ImportHistoryEntry[]): void {
 
 // ─── Leitura ──────────────────────────────────────────────────────────────────
 
+export interface ImportHistoryResult {
+  entries: ImportHistoryEntry[];
+  /** 'db' = confirmado no banco agora (mesmo que vazio); 'cache' = o banco falhou/não pôde ser consultado e isto é só o cache local, possivelmente desatualizado. */
+  source: "db" | "cache";
+}
+
 /**
- * Busca o histórico no Supabase. Em caso de falha devolve o cache local,
- * para que a tela nunca fique vazia por um problema momentâneo de rede.
+ * Busca o histórico no Supabase. Em caso de falha devolve o cache local — mas
+ * sinaliza `source: "cache"` para o chamador não confundir isso com dado
+ * confirmado no banco (e não sobrescrever um cache de outro tenant com um
+ * resultado vazio só porque a consulta falhou).
  */
-export async function listImportHistory(tenantId: string): Promise<ImportHistoryEntry[]> {
-  if (!tenantId) return readCachedHistory();
+export async function listImportHistory(tenantId: string): Promise<ImportHistoryResult> {
+  if (!tenantId) return { entries: readCachedHistory(), source: "cache" };
 
   try {
     const { data, error } = await supabase
@@ -59,7 +67,7 @@ export async function listImportHistory(tenantId: string): Promise<ImportHistory
       .order("created_at", { ascending: false })
       .limit(MAX_ENTRIES);
 
-    if (error || !data) return readCachedHistory();
+    if (error || !data) return { entries: readCachedHistory(), source: "cache" };
 
     const entries: ImportHistoryEntry[] = (data as Record<string, unknown>[]).map(r => ({
       id:           String(r.id),
@@ -71,10 +79,12 @@ export async function listImportHistory(tenantId: string): Promise<ImportHistory
       timestamp:    String(r.created_at ?? new Date().toISOString()),
     }));
 
+    // Banco é a fonte de verdade: mesmo um resultado vazio substitui o cache
+    // (evita mostrar histórico de um tenant anterior após trocar de tenant).
     writeCache(entries);
-    return entries;
+    return { entries, source: "db" };
   } catch {
-    return readCachedHistory();
+    return { entries: readCachedHistory(), source: "cache" };
   }
 }
 

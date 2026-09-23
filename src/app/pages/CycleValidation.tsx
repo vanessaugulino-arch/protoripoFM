@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
-import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { linkAppliedMonthScenario } from "../../services/supabase/officialPlanService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   listSupplyFornecedores, calcBudgetProjection, getAvgPurchaseCost,
@@ -293,6 +293,8 @@ export default function CycleValidation() {
   // curva mensal inicial do ano fiscal em vez de abrir tudo zerado.
   const [channelSeasonality, setChannelSeasonality] = useState<Record<string, Record<string, number>>>({});
   const [channelYearTarget,  setChannelYearTarget]  = useState<Record<string, number>>({});
+  /** Linhagem M2→M3: id do channel_scenarios aplicado que gerou channelYearTarget. */
+  const [appliedChannelScenarioId, setAppliedChannelScenarioId] = useState<string | null>(null);
   // Guarda quais (anoFiscal::canalId) já tiveram a curva sugerida aplicada,
   // pra nunca sobrescrever um valor que o usuário (ou um cenário salvo/
   // aplicado) já colocou ali, e nunca reaplicar ao trocar de aba/re-render.
@@ -556,13 +558,14 @@ export default function CycleValidation() {
   useEffect(() => {
     if (!tenantId) return;
     getAppliedChannelScenario(tenantId, selectedFiscalYear).then(scenario => {
-      if (!scenario) { setChannelYearTarget({}); return; }
+      if (!scenario) { setChannelYearTarget({}); setAppliedChannelScenarioId(null); return; }
       const targets: Record<string, number> = {};
       for (const [cid, data] of Object.entries(scenario.channel_data ?? {})) {
         targets[cid] = (data as Record<string, number>)?.receita ?? 0;
       }
       setChannelYearTarget(targets);
-    }).catch(() => setChannelYearTarget({}));
+      setAppliedChannelScenarioId(scenario.id);
+    }).catch(() => { setChannelYearTarget({}); setAppliedChannelScenarioId(null); });
   }, [tenantId, selectedFiscalYear]);
 
   // ── Pedido de ajuste já pendente para o ano fiscal selecionado ─────────────
@@ -754,6 +757,9 @@ export default function CycleValidation() {
               avgCoverage: s.avgCoverage,
             },
             is_applied: false,
+            // Linhagem M2→M3: qual channel_scenarios (M2) estava aplicado
+            // quando este cenário de Sazonalidade foi construído.
+            source_channel_scenario_id: appliedChannelScenarioId,
           })
           .select().single()
           .then(({ data }: any) => {
@@ -824,12 +830,14 @@ export default function CycleValidation() {
     }
     const latest = scenarios.length > 0 ? scenarios[scenarios.length - 1] : null;
     if (latest) handleApplyScenario(latest.id);
-    // Plano Oficial: o M4 validou a distribuição temporal → avança o nível para 4.
-    // O macro anual não muda (o IPF preserva os totais); só reafirma o rollup e o nível.
-    if (tenantId) {
+    // Plano Oficial: a Sazonalidade só redistribui a receita anual do Canal (M2)
+    // entre os meses — o macro não muda (o IPF preserva os totais). Só registra
+    // qual cenário foi aplicado, para a linhagem entre módulos. Só grava se o id
+    // já é o real (UUID do Supabase) — ids locais (s-<timestamp>) ainda não têm
+    // linha correspondente em planning_scenarios.
+    if (tenantId && latest && !latest.id.startsWith("s-")) {
       try {
-        await recomputeMacroFromDivisions(tenantId, year);
-        await advanceDetailLevel(tenantId, year, 4);
+        await linkAppliedMonthScenario(tenantId, year, latest.id);
       } catch { /* não bloqueia a aplicação */ }
     }
     setShowPostApplyModal(true);

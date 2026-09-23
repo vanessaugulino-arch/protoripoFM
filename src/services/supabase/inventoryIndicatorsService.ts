@@ -152,6 +152,71 @@ export async function getReplenishments(
 }
 
 /**
+ * Posição real de estoque de UMA DIVISÃO — mesma semântica de
+ * getInventoryPosition, mas agregada em Postgres (get_division_inventory_position,
+ * migration 038) filtrando por products.division. Evita buscar a lista de
+ * SKUs da divisão no cliente para montar um .in() potencialmente enorme.
+ */
+export async function getDivisionInventoryPosition(
+  tenantId: string,
+  division: string,
+  dateFrom: string, // YYYY-MM-DD
+  dateTo:   string, // YYYY-MM-DD
+): Promise<InventoryPosition> {
+  if (!tenantId || !division || !dateFrom || !dateTo) return emptyPosition()
+  const { data, error } = await db.rpc('get_division_inventory_position', {
+    p_tenant_id: tenantId, p_division: division, p_date_from: dateFrom, p_date_to: dateTo,
+  })
+  if (error || !data) return emptyPosition()
+  return data as InventoryPosition
+}
+
+/** Reposições reais de UMA DIVISÃO — ver getReplenishments; agregada em Postgres (migration 038). */
+export async function getDivisionReplenishments(
+  tenantId: string,
+  division: string,
+  dateFrom: string,
+  dateTo:   string,
+): Promise<ReplenishmentsResult> {
+  if (!tenantId || !division || !dateFrom || !dateTo) return { pecas: 0, hasOrders: false }
+  const { data, error } = await db.rpc('get_division_replenishments', {
+    p_tenant_id: tenantId, p_division: division, p_date_from: dateFrom, p_date_to: dateTo,
+  })
+  if (error || !data) return { pecas: 0, hasOrders: false }
+  return data as ReplenishmentsResult
+}
+
+export interface RiskLevelTurnover {
+  estoqueInicialPecas: number
+  estoqueMedioPecas:   number
+  vendasPecas:         number
+  /** null quando não há estoque médio nem inicial pra dividir (sem base de cálculo). */
+  giro: number | null
+}
+
+/**
+ * Giro por nível de risco (products.risk_level) dentro de uma divisão e
+ * período — via get_division_giro_by_risk_level (migration 039). Fecha o gap
+ * do M5 (Plano de Coleção), que não tinha nenhuma quebra por perfil de risco.
+ * Chaves do retorno: 'basico' | 'motor_giro' | 'sustentador' | 'icone' |
+ * 'sem_classificacao' (produtos sem risk_level definido) — só aparecem as
+ * chaves que realmente têm dado (estoque ou venda) no período.
+ */
+export async function getDivisionGiroByRiskLevel(
+  tenantId: string,
+  division: string,
+  dateFrom: string,
+  dateTo:   string,
+): Promise<Record<string, RiskLevelTurnover>> {
+  if (!tenantId || !division || !dateFrom || !dateTo) return {}
+  const { data, error } = await db.rpc('get_division_giro_by_risk_level', {
+    p_tenant_id: tenantId, p_division: division, p_date_from: dateFrom, p_date_to: dateTo,
+  })
+  if (error || !data) return {}
+  return data as Record<string, RiskLevelTurnover>
+}
+
+/**
  * Forward Coverage real: estoque inicial (foto do dia 1) ÷ vendas dos 90
  * dias seguintes × 90. `vendas90dPecas` vem de quem chama — cada tela já
  * tem sua própria fonte de venda esperada/realizada (sales_history real ou

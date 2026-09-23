@@ -67,6 +67,7 @@ const SORTIMENT_TOUR: TourStep[] = [
 ];
 import { supabase } from "../../lib/supabase";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
+import { getDivisionSeasonality, type DivisionMonthProfile } from "../../services/supabase/divisionSeasonalityService";
 import {
   getWorkingPlan,
   saveWorkingPlan,
@@ -79,8 +80,15 @@ import {
   type DivisionScenarioRow,
 } from "../../services/supabase/divisionScenarioService";
 import {
+  listAllCollectionPlans,
+  type CollectionPlanSummary,
+  type CollectionPlanDivision,
+} from "../../services/supabase/collectionPlanService";
+import { expandSeasonMonths } from "../../engine/seasonMonths";
+import {
   getConsolidated,
   computeAndSaveConsolidated,
+  exportConsolidatedCsv,
   type ConsolidatedDbRow,
 } from "../../services/supabase/consolidatedHierarchyService";
 import {
@@ -448,6 +456,39 @@ function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Div
     .sort((a, b) => b.revenueTarget - a.revenueTarget);
 }
 
+/**
+ * Converte as entries de uma divisão do Plano de Coleção (M5 — volume em peças
+ * por mês) nas Collection[] do Sortimento (M6 — % de receita da divisão).
+ * Cada entry do M5 já é uma coleção/drop com nome+tipo+mês+peças — vira 1
+ * Collection com 1 entrada de data. O revenuePct é aproximado a partir da
+ * participação de peças dentro da divisão (o M5 não modela preço/receita).
+ */
+function buildCollectionsFromM5Division(
+  m5div: CollectionPlanDivision | undefined,
+  monthToYear: Map<string, number>,
+): Collection[] {
+  if (!m5div || !m5div.entries || m5div.entries.length === 0) return [];
+  const totalPieces = m5div.entries.reduce((s, e) => s + (e.plannedPieces || 0), 0);
+  if (totalPieces <= 0) return [];
+
+  return m5div.entries.map((e, i) => {
+    const year = monthToYear.get(e.month);
+    const monthIdx = MONTHS.indexOf(e.month); // 0-based
+    const date = year && monthIdx >= 0 ? `${year}-${String(monthIdx + 1).padStart(2, "0")}-01` : "";
+    return {
+      id: e.id || `m5-${i}-${Date.now()}`,
+      name: e.name || `Coleção ${i + 1}`,
+      type: e.type,
+      numEntradas: 1,
+      revenuePct: Math.round((e.plannedPieces / totalPieces) * 1000) / 10,
+      entries: date ? [{ date, label: "Entrada 1" }] : [],
+      categories: [],
+      tierLayers: {},
+      mixStatus: "nao_configurado" as MixStatus,
+    };
+  });
+}
+
 // Sentinel parent_path para tratar CATEGORIAS como irmãs entre si (mesma
 // tabela/mecânica genérica de sortiment_hierarchy_adjustments usada para
 // subcategoria dentro de categoria e linha dentro de subcategoria).
@@ -470,6 +511,15 @@ export default function SortimentPlan() {
   const [divisions, setDivisions] = useState<Division[]>(INITIAL_DIVISIONS);
   /** Dados do cenário ativo do M3 aguardando temporadas para calcular revenueTarget */
   const [m3InitPending, setM3InitPending] = useState<DivisionScenarioRow | null>(null);
+  /** Histórico real de receita/PMV por divisão — base do painel "Ano Anterior" no topo. */
+  const [histProfiles, setHistProfiles] = useState<DivisionMonthProfile[]>([]);
+
+  // ── Linhagem M6 ← M5 (Plano de Coleção) ─────────────────────────────────────
+  // Planos de coleção disponíveis nesta temporada (trabalho + simulações) e
+  // qual deles está vinculado ao plano de trabalho atual do Sortimento.
+  const [collectionPlansForSeason, setCollectionPlansForSeason] = useState<CollectionPlanSummary[]>([]);
+  const [sourceCollectionPlanId, setSourceCollectionPlanId] = useState<string | null>(null);
+  const [showM5PlanPicker, setShowM5PlanPicker] = useState(false);
 
   // Troca de temporada: persiste a atual no Supabase e carrega a nova
   const selectSeason = (id: string) => {
@@ -486,6 +536,8 @@ export default function SortimentPlan() {
     setScenarios([]);
     setActiveDivId(INITIAL_DIVISIONS[0]?.id ?? "");
     setM3InitPending(null);
+    setCollectionPlansForSeason([]);
+    setSourceCollectionPlanId(null);
   };
 
   const [activeDivId, setActiveDivId] = useState<string>(divisions[0]?.id ?? "");
@@ -781,6 +833,49 @@ export default function SortimentPlan() {
 
   const exportPDF = () => window.print();
 
+  // Exportação mensal estruturada — antes o único "export" do M6 era
+  // window.print() (uma imagem da tela, não dado estruturado). Usa a única
+  // granularidade mensal que o M6 realmente tem: as datas de entrada das
+  // collections/drops de cada divisão — o modelo de grade categoria×faixa não
+  // tem (e nunca teve) dimensão de mês.
+  const exportCollectionsCsv = () => {
+    const header = ["Divisão", "Coleção/Drop", "Tipo", "Data de Entrada", "Mês", "% Receita da Divisão", "Receita Estimada (R$)"];
+    const lines: string[] = [];
+    for (const div of divisions) {
+      for (const col of div.collections) {
+        const revenue = colRevenue(div, col);
+        const entryRows = col.entries.length > 0 ? col.entries : [{ date: "", label: "" }];
+        for (const entry of entryRows) {
+          const monthName = entry.date ? MONTHS[new Date(`${entry.date}T00:00:00`).getMonth()] : "";
+          lines.push([
+            div.name,
+            col.name,
+            col.type === "colecao" ? "Coleção" : "Drop",
+            entry.date || "",
+            monthName,
+            col.revenuePct.toFixed(1),
+            revenue.toFixed(2),
+          ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
+        }
+      }
+    }
+    const csv = [header.map(h => `"${h}"`).join(";"), ...lines].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sortimento_colecoes_por_mes_${seasonId ?? ""}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCascadeCsv = () => {
+    if (!user?.tenant_id || !seasonId) return;
+    exportConsolidatedCsv(user.tenant_id, seasonId).catch(() => {});
+  };
+
   // ── Solicitar ajuste ao Módulo 4 (Sortimento → Divisão) ─────────────────────
   // O sortimento pode implicar uma receita de mix (Σ receita das coleções) que
   // difere da meta de receita da divisão vinda do M3. Este fluxo empacota essa
@@ -913,6 +1008,7 @@ export default function SortimentPlan() {
           })
           .catch(err => console.error("Erro ao carregar temporadas:", err));
         loadLockedCollections(parsed.tenant_id);
+        getDivisionSeasonality(parsed.tenant_id).then(r => setHistProfiles(r.consolidated)).catch(() => {});
       }
       // macroPlan é carregado reativamente via useEffect abaixo (por seasonId + temporadas)
     } else {
@@ -926,16 +1022,20 @@ export default function SortimentPlan() {
     if (!seasonId || !user?.tenant_id) return;
     const tid = user.tenant_id;
 
-    // Carrega working plan e cenários M3 em paralelo
+    // Carrega working plan, cenários M3 e planos de coleção do M5 em paralelo
     Promise.all([
       getWorkingPlan(tid, seasonId),
       listDivisionScenarios(tid, seasonId),
-    ]).then(([saved, m3Rows]) => {
-      if (saved && saved.length > 0) {
+      listAllCollectionPlans(tid, seasonId),
+    ]).then(([saved, m3Rows, m5Plans]) => {
+      setCollectionPlansForSeason(m5Plans);
+      if (saved && saved.divisions.length > 0) {
         // Plano de trabalho existente — usa ele diretamente
-        setDivisions(saved as unknown as Division[]);
+        setDivisions(saved.divisions as unknown as Division[]);
+        setSourceCollectionPlanId(saved.sourceCollectionPlanId);
         setM3InitPending(null);
       } else {
+        setSourceCollectionPlanId(null);
         // Sem working plan: tenta inicializar a partir do cenário M3 ativo
         const activeM3 = m3Rows.find(r => r.is_applied) ?? m3Rows[0] ?? null;
         if (activeM3 && Object.keys(activeM3.divisions ?? {}).length > 0) {
@@ -1008,6 +1108,39 @@ export default function SortimentPlan() {
     setM3InitPending(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m3InitPending, temporadas, seasonId]);
+
+  // ── Semeia as collections de cada divisão a partir de um Plano de Coleção (M5) ──
+  // Antes o M6 nunca lia collection_plans — as collections sempre começavam do
+  // zero (ou vinham só do M4, sem nenhum tema/drop/volume do M5). O usuário
+  // pode trocar de plano-base a qualquer momento; a escolha fica salva
+  // (source_collection_plan_id) e as collections seguem editáveis depois.
+  const applyM5Plan = (planId: string) => {
+    const plan = collectionPlansForSeason.find(p => p.id === planId);
+    const season = temporadas.find(t => t.id === seasonId);
+    if (!plan || !season?.anoFiscal || !seasonId) return;
+
+    const monthToYear = new Map<string, number>(
+      expandSeasonMonths(season.mesInicio, season.mesFim, season.anoFiscal)
+        .map(({ month, year }) => [MONTHS[month - 1], year]),
+    );
+
+    const nextDivisions = divisions.map(d => {
+      const seeded = buildCollectionsFromM5Division(plan.divisions[d.id], monthToYear);
+      return seeded.length > 0 ? { ...d, collections: seeded } : d;
+    });
+
+    setDivisions(nextDivisions);
+    setSourceCollectionPlanId(planId);
+    setShowM5PlanPicker(false);
+    if (user?.tenant_id) {
+      saveWorkingPlan(
+        user.tenant_id,
+        seasonId,
+        nextDivisions as unknown as Record<string, unknown>[],
+        planId,
+      ).catch(() => { /* silent */ });
+    }
+  };
 
   const activeDivision = divisions.find(d => d.id === activeDivId) ?? divisions[0];
 
@@ -1305,6 +1438,24 @@ export default function SortimentPlan() {
                   Selecionar temporada
                 </button>
               )}
+              {/* Vínculo com o Plano de Coleção (M5) — base usada para semear as collections */}
+              {seasonId && collectionPlansForSeason.length > 0 && (
+                <button
+                  onClick={() => setShowM5PlanPicker(true)}
+                  title="Escolher qual Plano de Coleção (M5) usar como base das collections"
+                  className={`ml-2 inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full transition-all ${
+                    sourceCollectionPlanId
+                      ? "bg-emerald-400/20 hover:bg-emerald-400/30 text-emerald-200"
+                      : "bg-white/10 hover:bg-white/20 text-[#F6F3AA]/70"
+                  }`}
+                >
+                  <GitCompare className="w-3 h-3" />
+                  {sourceCollectionPlanId
+                    ? `M5: ${collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId)?.name ?? "vinculado"}`
+                    : "Vincular Plano de Coleção (M5)"}
+                  <ChevronDown className="w-3 h-3 opacity-60" />
+                </button>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -1333,6 +1484,22 @@ export default function SortimentPlan() {
             >
               <Download className="w-3.5 h-3.5" />
               Exportar PDF
+            </button>
+            <button
+              onClick={exportCollectionsCsv}
+              title="Exportar CSV com cada coleção/drop, sua data de entrada e % de receita por divisão"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Coleções por Mês (CSV)
+            </button>
+            <button
+              onClick={exportCascadeCsv}
+              title="Exportar CSV com a cascata categoria/subcategoria/linha × faixa de preço e risco, por divisão"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Cascata (CSV)
             </button>
             <div className="w-px h-6 bg-white/20" />
             <div className="flex items-center gap-2 text-[#F6F3AA]">
@@ -1691,6 +1858,33 @@ export default function SortimentPlan() {
                           </div>
                         </Tooltip>
                       </div>
+
+                      {/* Linha 4: Ano Anterior (real) — o painel de topo do M6 não tinha
+                          NENHUMA comparação ano a ano (diferente do M1/M3, que já têm).
+                          Mesmo padrão "Ano Anterior (real)" usado no M4/M5. */}
+                      {(() => {
+                        const hist = histProfiles.find(p => p.division === activeDivId);
+                        if (!hist || hist.pmv <= 0 || hist.totalRevenue <= 0) return null;
+                        const deltaReceita = ((divReceita - hist.totalRevenue) / hist.totalRevenue) * 100;
+                        const deltaPmv     = ((divPmv - hist.pmv) / hist.pmv) * 100;
+                        return (
+                          <div className="flex items-center gap-4 px-4 py-2 border-t border-[#28071C]/6 bg-emerald-50/40 flex-wrap">
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-700/70">Ano Anterior (real)</span>
+                            <span className="text-xs text-[#28071C]/70">
+                              Receita: <strong className="text-[#28071C]">{fmtCurrency(hist.totalRevenue)}</strong>
+                            </span>
+                            <span className="text-xs text-[#28071C]/70">
+                              PMV: <strong className="text-[#28071C]">{fmtCurrency(hist.pmv)}</strong>
+                            </span>
+                            <span className={`text-xs font-semibold ${deltaReceita >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                              Receita {deltaReceita >= 0 ? "+" : ""}{deltaReceita.toFixed(1)}%
+                            </span>
+                            <span className={`text-xs font-semibold ${deltaPmv >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                              PMV {deltaPmv >= 0 ? "+" : ""}{deltaPmv.toFixed(1)}%
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </>
                   );
                 })()}
@@ -2392,6 +2586,70 @@ export default function SortimentPlan() {
                         {!active && <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />}
                         {active && <CheckCircle className="w-4 h-4 text-[#7598CF]" />}
                       </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: Vincular Plano de Coleção (M5) ────────────────────────────── */}
+      {showM5PlanPicker && (
+        <div className="fixed inset-0 z-[9200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowM5PlanPicker(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <GitCompare className="w-5 h-5 text-[#F6F3AA]" />
+                <span className="text-white font-semibold">Vincular Plano de Coleção (M5)</span>
+              </div>
+              <button
+                onClick={() => setShowM5PlanPicker(false)}
+                className="text-white/60 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-6 pt-5 pb-2">
+              <p className="text-sm text-[#28071C]/60 leading-relaxed">
+                Escolha um plano de coleção do Módulo 5 (temas, drops e volume em peças por mês) para semear as collections de cada divisão aqui no Sortimento. As collections continuam editáveis depois — isto só preenche o ponto de partida.
+              </p>
+            </div>
+
+            <div className="px-6 pb-6 space-y-2 max-h-[50vh] overflow-y-auto">
+              {collectionPlansForSeason.length === 0 ? (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 mt-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>Nenhum Plano de Coleção (M5) encontrado para esta temporada.</span>
+                </div>
+              ) : (
+                collectionPlansForSeason.map(p => {
+                  const active = p.id === sourceCollectionPlanId;
+                  const divCount = Object.keys(p.divisions ?? {}).length;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => applyM5Plan(p.id)}
+                      className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left group ${
+                        active
+                          ? "border-[#7598CF] bg-[#7598CF]/8"
+                          : "border-[#28071C]/10 hover:border-[#7598CF]/50 hover:bg-[#7598CF]/5"
+                      }`}
+                    >
+                      <div>
+                        <p className="font-semibold text-[#28071C] text-sm">{p.name}</p>
+                        <p className="text-xs text-[#28071C]/40">
+                          {divCount} {divCount === 1 ? "divisão" : "divisões"} · {p.isApplied ? "plano de trabalho" : "simulação salva"}
+                        </p>
+                      </div>
+                      {active ? (
+                        <CheckCircle className="w-4 h-4 text-[#7598CF]" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-[#28071C]/20 group-hover:text-[#7598CF] transition-colors" />
+                      )}
                     </button>
                   );
                 })

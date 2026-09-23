@@ -71,7 +71,9 @@ export function usePlanningEngine(
 
   const [scenarios, setScenarios] = useState<SavedScenario[]>(loadLocal)
   const [synced, setSynced] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const cycleIdRef = useRef<string | null>(null)
+  const isDirtyRef = useRef(false)
 
   const buildInitial = (): PlanningState => {
     const saved = loadLocal()
@@ -83,21 +85,29 @@ export function usePlanningEngine(
   const [activeScenario, setActive] = useState<SavedScenario | null>(
     scenarios.length > 0 ? scenarios[scenarios.length - 1] : null
   )
-  const [isDirty, setIsDirty] = useState(false)
+  const [isDirty, setIsDirtyState] = useState(false)
+  const setIsDirty = useCallback((v: boolean) => {
+    isDirtyRef.current = v
+    setIsDirtyState(v)
+  }, [])
 
-  // Sincronização inicial com Supabase
+  // Sincronização inicial com Supabase — o banco é a fonte de verdade.
+  // O cache em sessionStorage serve só para o primeiro paint (antes da resposta do banco);
+  // assim que o banco responde, ele SEMPRE prevalece, mesmo que o cache local já tivesse algo.
   useEffect(() => {
     if (!tenantId || synced) return
     setSynced(true)
     ;(async () => {
       try {
         const cycle = await getCycle(tenantId, targetYear)
-        if (!cycle) return
+        if (!cycle) {
+          // Sem ciclo ainda no banco: não há nada oficial para refletir — mantém o cache
+          // local (pode ser um rascunho ainda não vinculado a um ciclo).
+          return
+        }
         cycleIdRef.current = cycle.id
 
         const rows = await listScenarios(tenantId, targetYear)
-        if (rows.length === 0) return
-
         const hydrated: SavedScenario[] = rows.map(r => ({
           id: r.id,
           name: r.name,
@@ -107,25 +117,41 @@ export function usePlanningEngine(
           state: r.values as SavedScenario['state'],
         }))
 
-        const local = loadLocal()
-        if (local.length === 0) {
-          setScenarios(hydrated)
-          persistLocal(hydrated)
-          const last = hydrated[hydrated.length - 1]
-          setActive(last)
-          // Só restaura o estado salvo se a receita do cenário é compatível com a baseline atual.
-          // Se divergir >50%, o cenário foi salvo com dados de fallback (HIST_FALLBACK) —
-          // deixamos o reset() do Planning.tsx (acionado por histIsReal) reconstruir current.
-          const savedReceita = ((last.state.values ?? {}) as Record<string, number>).receitaBruta ?? 0
-          const baseReceita  = baseline.receitaBruta ?? 0
-          const isCompatible = baseReceita === 0 ||
-            Math.abs(savedReceita - baseReceita) / Math.max(baseReceita, 1) < 0.5
-          if (isCompatible) {
-            setCurrent(deserializeState(last.state, baseline))
+        setSyncError(null)
+        setScenarios(hydrated)
+        persistLocal(hydrated)
+
+        if (hydrated.length === 0) {
+          // Banco confirma que não há cenário salvo — o cache local não representa
+          // nada real, então não deixamos a tela continuar mostrando um cenário "salvo".
+          if (!isDirtyRef.current) {
+            setActive(null)
+            setCurrent(buildStateFromBaseline(baseline))
           }
+          return
+        }
+
+        const last = hydrated[hydrated.length - 1]
+        if (isDirtyRef.current) {
+          // Usuário já está editando algo não salvo: não descarta a edição em andamento,
+          // só atualiza a lista de cenários salvos.
+          setActive(prev => prev ?? last)
+          return
+        }
+        setActive(last)
+        // Só restaura o estado salvo se a receita do cenário é compatível com a baseline atual.
+        // Se divergir >50%, o cenário foi salvo com dados de fallback (HIST_FALLBACK) —
+        // deixamos o reset() do Planning.tsx (acionado por histIsReal) reconstruir current.
+        const savedReceita = ((last.state.values ?? {}) as Record<string, number>).receitaBruta ?? 0
+        const baseReceita  = baseline.receitaBruta ?? 0
+        const isCompatible = baseReceita === 0 ||
+          Math.abs(savedReceita - baseReceita) / Math.max(baseReceita, 1) < 0.5
+        if (isCompatible) {
+          setCurrent(deserializeState(last.state, baseline))
         }
       } catch (err) {
         console.warn('[usePlanningEngine] Supabase sync:', err)
+        setSyncError('Não foi possível confirmar os cenários salvos com o banco de dados. Mostrando a última versão em cache neste navegador — ela pode estar desatualizada.')
       }
     })()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,7 +202,12 @@ export function usePlanningEngine(
     setIsDirty(false)
   }, [baseline])
 
-  const saveScenario = useCallback((customName?: string): string => {
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Retorna { name, dbSaved }: dbSaved=false significa que o cenário está visível na tela
+  // (e no cache local) mas NÃO foi confirmado no banco — o chamador deve avisar o usuário
+  // em vez de deixar a tela dizer "salvo" silenciosamente sobre uma gravação que falhou.
+  const saveScenario = useCallback(async (customName?: string): Promise<{ name: string; dbSaved: boolean }> => {
     const yearScenarios = scenarios.filter(s => s.year === targetYear)
     const name = customName?.trim() || generateScenarioName(targetYear, yearScenarios.length)
     const committed = commitScenarioState(current)
@@ -196,21 +227,29 @@ export function usePlanningEngine(
     setIsDirty(false)
     persistLocal(updated)
 
-    if (tenantId && cycleIdRef.current) {
-      dbSaveScenario(
+    if (!tenantId || !cycleIdRef.current) {
+      setSaveError('Cenário salvo apenas neste navegador — ainda não há um ciclo de planejamento criado no banco para vincular a ele.')
+      return { name, dbSaved: false }
+    }
+
+    try {
+      const row = await dbSaveScenario(
         tenantId,
         cycleIdRef.current,
         name,
         scenario.version,
         scenario.state as Record<string, unknown>,
         userId
-      ).then(row => {
-        scenario.id = row.id
-        persistLocal(updated)
-      }).catch(err => console.warn('[usePlanningEngine] Supabase save:', err))
+      )
+      scenario.id = row.id
+      persistLocal(updated)
+      setSaveError(null)
+      return { name, dbSaved: true }
+    } catch (err) {
+      console.warn('[usePlanningEngine] Supabase save:', err)
+      setSaveError('O cenário ficou visível na tela, mas não foi possível confirmar a gravação no banco de dados. Tente salvar novamente.')
+      return { name, dbSaved: false }
     }
-
-    return name
   }, [current, scenarios, targetYear, tenantId, userId])
 
   const loadScenario = useCallback((scenario: SavedScenario) => {
@@ -219,7 +258,9 @@ export function usePlanningEngine(
     setIsDirty(false)
   }, [baseline])
 
-  const deleteScenario = useCallback((scenarioName: string) => {
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const deleteScenario = useCallback(async (scenarioName: string): Promise<boolean> => {
     const target = scenarios.find(s => s.name === scenarioName)
     const updated = scenarios.filter(s => s.name !== scenarioName)
     setScenarios(updated)
@@ -228,14 +269,22 @@ export function usePlanningEngine(
     }
     persistLocal(updated)
 
-    if (tenantId && target?.id) {
-      dbDeleteScenario(tenantId, target.id)
-        .catch(err => console.warn('[usePlanningEngine] Supabase delete:', err))
+    if (!tenantId || !target?.id) return true
+
+    try {
+      await dbDeleteScenario(tenantId, target.id)
+      setDeleteError(null)
+      return true
+    } catch (err) {
+      console.warn('[usePlanningEngine] Supabase delete:', err)
+      setDeleteError('O cenário foi removido da tela, mas não foi possível confirmar a exclusão no banco de dados — ele pode reaparecer em um novo acesso.')
+      return false
     }
   }, [scenarios, activeScenario, tenantId])
 
   return {
     current, scenarios, activeScenario, isDirty, baseline,
     setField, setFieldAsBase, unlock, reset, saveScenario, loadScenario, deleteScenario,
+    syncError, saveError, deleteError,
   }
 }

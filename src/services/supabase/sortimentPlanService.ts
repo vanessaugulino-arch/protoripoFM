@@ -29,15 +29,21 @@ export interface SortimentScenario {
   data: Record<string, unknown>[];
 }
 
+export interface SortimentWorkingPlan {
+  divisions: Record<string, unknown>[];
+  /** Plano de Coleção (M5, collection_plans.id) usado como base — null se montado do zero/M4. */
+  sourceCollectionPlanId: string | null;
+}
+
 // ─── Plano de trabalho (is_applied = true) ───────────────────────────────────
 
 export async function getWorkingPlan(
   tenantId: string,
   seasonId: string,
-): Promise<Record<string, unknown>[] | null> {
+): Promise<SortimentWorkingPlan | null> {
   const { data, error } = await supabase
     .from("sortiment_plans")
-    .select("divisions")
+    .select("divisions, source_collection_plan_id")
     .eq("tenant_id", tenantId)
     .eq("season_id", seasonId)
     .eq("is_applied", true)
@@ -48,13 +54,24 @@ export async function getWorkingPlan(
     console.warn("[sortimentPlan] getWorkingPlan:", error.message);
     return null;
   }
-  return (data?.divisions as Record<string, unknown>[]) ?? null;
+  if (!data) return null;
+  return {
+    divisions: (data.divisions as Record<string, unknown>[]) ?? [],
+    sourceCollectionPlanId: (data.source_collection_plan_id as string | null) ?? null,
+  };
 }
 
+/**
+ * @param sourceCollectionPlanId Passe apenas quando o vínculo com o M5 muda de
+ * fato (ex.: o usuário escolheu outro Plano de Coleção como base). Omitido
+ * (undefined) nos autosaves normais de edição — preserva o vínculo já gravado
+ * em vez de apagá-lo a cada tecla.
+ */
 export async function saveWorkingPlan(
   tenantId: string,
   seasonId: string,
   divisions: Record<string, unknown>[],
+  sourceCollectionPlanId?: string | null,
 ): Promise<void> {
   // Verifica se já existe um plano de trabalho
   const { data: existing } = await supabase
@@ -66,22 +83,23 @@ export async function saveWorkingPlan(
     .limit(1)
     .maybeSingle();
 
+  const patch: Record<string, unknown> = {
+    divisions: divisions as unknown as import('../../lib/database.types').Json,
+    saved_at: new Date().toISOString(),
+  };
+  if (sourceCollectionPlanId !== undefined) {
+    patch.source_collection_plan_id = sourceCollectionPlanId;
+  }
+
   if (existing?.id) {
-    await supabase
-      .from("sortiment_plans")
-      .update({
-        divisions: divisions as unknown as import('../../lib/database.types').Json,
-        saved_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id);
+    await supabase.from("sortiment_plans").update(patch).eq("id", existing.id);
   } else {
     await supabase.from("sortiment_plans").insert({
       tenant_id: tenantId,
       season_id: seasonId,
       name: "__working__",
-      divisions: divisions as unknown as import('../../lib/database.types').Json,
       is_applied: true,
-      saved_at: new Date().toISOString(),
+      ...patch,
     });
   }
 }

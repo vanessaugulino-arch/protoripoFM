@@ -112,6 +112,13 @@ import { applyVolumeEdit, recalcVolumeClusterFromAnchor } from "../../engine/div
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getSazonalidadeCompletedYears, seasonFiscalYearsTouched } from "../../services/supabase/planningScenarioService";
 import { getDivisionSeasonality, type DivisionMonthProfile } from "../../services/supabase/divisionSeasonalityService";
+import {
+  getDivisionInventoryPosition,
+  getDivisionReplenishments,
+  computeForwardCoverageDays,
+  type InventoryPosition,
+  type ReplenishmentsResult,
+} from "../../services/supabase/inventoryIndicatorsService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   applyModule3Scenario,
@@ -131,6 +138,7 @@ import { computeAndSaveConsolidated, exportConsolidatedCsv } from "../../service
 import { useModule3 } from "../../hooks/useModule3";
 import {
   fetchHistoricalTierAvgs,
+  fetchHistoricalTierAvgsForSeason,
   loadAllDivisionGlobalRanges,
   type TierHistoricalAvg,
   type TierRange,
@@ -418,10 +426,12 @@ export default function Module3DivisionPlanning() {
   // mês (ex.: Masculino), sem exigir que o usuário calcule isso na mão.
   const [sazonalidadeMonthlyTotal, setSazonalidadeMonthlyTotal] = useState<Record<string, number> | null>(null);
   const [divisionHistProfiles, setDivisionHistProfiles] = useState<DivisionMonthProfile[]>([]);
+  /** Linhagem M3→M4: id do planning_scenarios (Sazonalidade) aplicado do ano fiscal da própria temporada. */
+  const [sourceMonthScenarioId, setSourceMonthScenarioId] = useState<string | null>(null);
   useEffect(() => {
-    if (!tenantId || !selectedSeasonId) { setSazonalidadeMonthlyTotal(null); return; }
+    if (!tenantId || !selectedSeasonId) { setSazonalidadeMonthlyTotal(null); setSourceMonthScenarioId(null); return; }
     const season = temporadas.find((t) => String(t.id) === selectedSeasonId);
-    if (!season?.anoFiscal) { setSazonalidadeMonthlyTotal(null); return; }
+    if (!season?.anoFiscal) { setSazonalidadeMonthlyTotal(null); setSourceMonthScenarioId(null); return; }
     const db = supabase as any;
 
     // Fase 6 (CycleValidation.tsx passou a ser por ano fiscal completo, não
@@ -439,26 +449,32 @@ export default function Module3DivisionPlanning() {
         db.from("annual_plan_cycles").select("id").eq("tenant_id", tenantId).eq("year", year).maybeSingle()
           .then(({ data: cycle }: any) => {
             if (!cycle) return null;
-            return db.from("planning_scenarios").select("values")
+            return db.from("planning_scenarios").select("id, values")
               .eq("tenant_id", tenantId).eq("cycle_id", cycle.id).eq("is_applied", true)
               .maybeSingle()
-              .then(({ data }: any) => (data?.values?.plannedRevenue as Record<string, Record<string, number>> | undefined) ?? null);
+              .then(({ data }: any) => data
+                ? { year, id: data.id as string, plannedRevenue: (data.values?.plannedRevenue as Record<string, Record<string, number>> | undefined) ?? null }
+                : null);
           }),
       ),
     ).then((results) => {
       const monthlyTotal: Record<string, number> = {};
       let hasAny = false;
-      for (const plannedRevenue of results) {
-        if (!plannedRevenue) continue;
+      for (const r of results) {
+        if (!r?.plannedRevenue) continue;
         hasAny = true;
-        for (const canalMonths of Object.values(plannedRevenue)) {
+        for (const canalMonths of Object.values(r.plannedRevenue)) {
           for (const [month, rev] of Object.entries(canalMonths ?? {})) {
             if (seasonMonthNames.has(month)) monthlyTotal[month] = (monthlyTotal[month] ?? 0) + (rev ?? 0);
           }
         }
       }
       setSazonalidadeMonthlyTotal(hasAny ? monthlyTotal : null);
-    }).catch(() => setSazonalidadeMonthlyTotal(null));
+      // Prefere o cenário do próprio ano fiscal da temporada; cai pro outro ano
+      // tocado (temporada de Verão cruzando o ano) só se aquele não existir.
+      const primary = results.find((r) => r && r.year === season.anoFiscal) ?? results.find((r) => r);
+      setSourceMonthScenarioId(primary?.id ?? null);
+    }).catch(() => { setSazonalidadeMonthlyTotal(null); setSourceMonthScenarioId(null); });
   }, [tenantId, selectedSeasonId, temporadas]);
 
   useEffect(() => {
@@ -494,6 +510,48 @@ export default function Module3DivisionPlanning() {
   // ─── Metas macro derivadas do Módulo 1 ───────────────────────────────────
   const selectedTemporada = temporadas.find((t) => String(t.id) === selectedSeasonId);
   const referenceTemporada = temporadas.find((t) => String(t.id) === referenceSeasonId);
+
+  // ─── Posição real de estoque/reposições por divisão (Bloco 4) ────────────
+  // Substitui a estimativa por fórmula (Giro↔Estoque Médio digitados) por
+  // leitura real de inventory_snapshots/purchase_orders sempre que o tenant
+  // já tiver estoque importado para a divisão/período — via as funções
+  // Postgres get_division_inventory_position / get_division_replenishments
+  // (migration 038), escopadas ao intervalo real de calendário da temporada.
+  const [realInventoryByDiv, setRealInventoryByDiv] = useState<Record<string, InventoryPosition>>({});
+  const [realReplenishmentsByDiv, setRealReplenishmentsByDiv] = useState<Record<string, ReplenishmentsResult>>({});
+  useEffect(() => {
+    if (!tenantId || !selectedTemporada?.anoFiscal || divisionIds.length === 0) {
+      setRealInventoryByDiv({});
+      setRealReplenishmentsByDiv({});
+      return;
+    }
+    const months = expandSeasonMonths(selectedTemporada.mesInicio, selectedTemporada.mesFim, selectedTemporada.anoFiscal);
+    if (months.length === 0) return;
+    const last = months[months.length - 1];
+    const lastDay = new Date(last.year, last.month, 0).getDate(); // dia 0 do mês seguinte = último dia do mês
+    const dateFrom = `${months[0].year}-${String(months[0].month).padStart(2, "0")}-01`;
+    const dateTo   = `${last.year}-${String(last.month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+    let cancelled = false;
+    Promise.all(
+      divisionIds.map(async (divId) => {
+        const label = divisionLabels[divId] ?? divId;
+        const [pos, repl] = await Promise.all([
+          getDivisionInventoryPosition(tenantId, label, dateFrom, dateTo),
+          getDivisionReplenishments(tenantId, label, dateFrom, dateTo),
+        ]);
+        return [divId, pos, repl] as const;
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      const invMap: Record<string, InventoryPosition> = {};
+      const replMap: Record<string, ReplenishmentsResult> = {};
+      for (const [divId, pos, repl] of results) { invMap[divId] = pos; replMap[divId] = repl; }
+      setRealInventoryByDiv(invMap);
+      setRealReplenishmentsByDiv(replMap);
+    }).catch(() => { setRealInventoryByDiv({}); setRealReplenishmentsByDiv({}); });
+    return () => { cancelled = true; };
+  }, [tenantId, selectedSeasonId, selectedTemporada, divisionIds, divisionLabels]);
 
   // Fase 3: status de cada temporada pro popup — quais anos fiscais ela toca
   // (1 se não cruza o ano, 2 se cruza, ex.: Verão ago-fev) e se a Sazonalidade
@@ -644,11 +702,46 @@ export default function Module3DivisionPlanning() {
     }).catch(() => {});
   }, [tenantId, selectedSeasonId, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refina a participação % com a curva REAL da Sazonalidade (M3) aplicada,
+  // assim que ela carregar — mais precisa que o histórico plano de divisão
+  // usado acima (que ainda não sabe a distribuição mensal real do ano). Só
+  // roda uma vez por temporada e só antes de haver qualquer cenário salvo —
+  // nunca sobrescreve uma edição manual do usuário feita depois disso.
+  const seededSazonalidadePctRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!selectedSeasonId || !sazonalidadeSuggestedPct || divisionIds.length === 0) return;
+    if (seededSazonalidadePctRef.current.has(selectedSeasonId)) return;
+    seededSazonalidadePctRef.current.add(selectedSeasonId);
+    if (listModule3Scenarios(selectedSeasonId).length > 0) return; // já tem plano salvo
+    divisionIds.forEach(divId => {
+      if ((sazonalidadeSuggestedPct[divId] ?? 0) > 0) {
+        updateDivisionParticipation(divId, sazonalidadeSuggestedPct[divId]);
+      }
+    });
+  }, [selectedSeasonId, sazonalidadeSuggestedPct, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Busca médias históricas por faixa para todas as divisões — usadas na compact card view.
   // Carrega os ranges dinâmicos do OperationSettings antes de filtrar os produtos;
   // cai no fallback hardcoded se o tenant ainda não configurou as faixas.
+  // Quando há Temporada de Referência selecionada, usa o preço REAL vendido
+  // (sales_history) escopado pelo calendário real dela — só cai de volta no
+  // preço do catálogo vigente (sem dimensão de tempo) quando não há
+  // referência escolhida ainda.
+  const [historicalAvgsIsReal, setHistoricalAvgsIsReal] = useState(false);
   useEffect(() => {
     if (!tenantId || divisionIds.length === 0) return;
+    const refMonths = referenceTemporada?.anoFiscal
+      ? expandSeasonMonths(referenceTemporada.mesInicio, referenceTemporada.mesFim, referenceTemporada.anoFiscal)
+      : [];
+    const isReal = refMonths.length > 0;
+    setHistoricalAvgsIsReal(isReal);
+    let dateFrom = "", dateTo = "";
+    if (isReal) {
+      const last = refMonths[refMonths.length - 1];
+      const lastDay = new Date(last.year, last.month, 0).getDate();
+      dateFrom = `${refMonths[0].year}-${String(refMonths[0].month).padStart(2, "0")}-01`;
+      dateTo   = `${last.year}-${String(last.month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    }
 
     loadAllDivisionGlobalRanges(tenantId).then(divRanges => {
       Promise.all(
@@ -656,7 +749,10 @@ export default function Module3DivisionPlanning() {
           const ranges = divRanges?.[divId] ?? M3_TIER_RANGES_FALLBACK;
           // products.division guarda o rótulo real ("Feminino"), não o id normalizado.
           const realLabel = divisionLabels[divId] ?? divId;
-          return fetchHistoricalTierAvgs(tenantId, realLabel, ranges)
+          const fetchAvgs = isReal
+            ? fetchHistoricalTierAvgsForSeason(tenantId, realLabel, dateFrom, dateTo, ranges)
+            : fetchHistoricalTierAvgs(tenantId, realLabel, ranges);
+          return fetchAvgs
             .then(avgs => [divId, avgs] as [BusinessDivisionId, TierHistoricalAvg])
             .catch(() => [divId, { p1: null, p2: null, p3: null }] as [BusinessDivisionId, TierHistoricalAvg]);
         }),
@@ -664,7 +760,7 @@ export default function Module3DivisionPlanning() {
         setHistoricalAvgs(Object.fromEntries(results) as Record<BusinessDivisionId, TierHistoricalAvg>);
       });
     });
-  }, [tenantId, divisionIds, divisionLabels]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenantId, divisionIds, divisionLabels, referenceTemporada]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalParticipation = Object.values(state.divisions).reduce(
     (sum, d) => sum + d.participation,
@@ -756,7 +852,7 @@ export default function Module3DivisionPlanning() {
     // bumpar scenarioListVersion: é ela quem reconcilia o id local com o id
     // real do banco (ver module3ScenarioService.ts), sem o que "Aplicar
     // Cenário" logo em seguida tentaria aplicar um id que não existe no banco.
-    await saveScenario(scenarioName, scenarioDescription);
+    await saveScenario(scenarioName, scenarioDescription, sourceMonthScenarioId);
     setScenarioName("");
     setScenarioDescription("");
     setShowScenarioModal(false);
@@ -1334,7 +1430,10 @@ export default function Module3DivisionPlanning() {
                   referenceSeasonId={referenceSeasonId}
                   tenantId={tenantId}
                   historicalAvgs={historicalAvgs}
+                  historicalAvgsIsReal={historicalAvgsIsReal}
                   diasDaTemporada={diasDaTemporada}
+                  realInventory={realInventoryByDiv[divId]}
+                  realReplenishments={realReplenishmentsByDiv[divId]}
                 />
                 );
               })}
@@ -2009,7 +2108,13 @@ interface DivisionBlockCardProps {
   referenceSeasonId: string;
   tenantId: string;
   historicalAvgs: Partial<Record<BusinessDivisionId, TierHistoricalAvg>>;
+  /** true = historicalAvgs veio de sales_history escopado pela Temporada de Referência; false = fallback no catálogo vigente (sem dimensão de tempo). */
+  historicalAvgsIsReal: boolean;
   diasDaTemporada: number;
+  /** Posição real de estoque (inventory_snapshots) desta divisão na temporada — undefined enquanto carrega. */
+  realInventory?: InventoryPosition;
+  /** Reposições reais (purchase_orders) desta divisão na temporada. */
+  realReplenishments?: ReplenishmentsResult;
 }
 
 function DivisionBlockCard({
@@ -2023,7 +2128,10 @@ function DivisionBlockCard({
   referenceSeasonId,
   tenantId,
   historicalAvgs,
+  historicalAvgsIsReal,
   diasDaTemporada,
+  realInventory,
+  realReplenishments,
 }: DivisionBlockCardProps) {
   const navigate = useNavigate();
   const [isProducer, setIsProducer] = useState(true);
@@ -2035,6 +2143,7 @@ function DivisionBlockCard({
   const divisionName = divisionLabel;
 
   // ── Cluster Giro × Cobertura × Estoque Médio — só uma ponta por vez ────────
+  const hasRealInventory = Boolean(realInventory?.hasData);
   const volumeClusterInputs = {
     vendasEsperadas: block.volumeCoverage.unitsExpectedSold,
     estoqueInicial:  block.volumeCoverage.initialStock,
@@ -2047,10 +2156,46 @@ function DivisionBlockCard({
   // Vendas Esp. e Est. Inicial não fazem parte do round-robin, mas ainda
   // precisam refletir nele — mantém o Estoque Médio atual como referência.
   const handleAnchorEdit = (patch: Partial<VolumeAndCoverage>) => {
+    if (hasRealInventory && realInventory) {
+      // Est. Inicial e Estoque Médio vêm de inventory_snapshots (fato real,
+      // protegido) — só Vendas Esp. é editável aqui, e ela só recalcula o
+      // Giro e a Cobertura (Forward Coverage), nunca o estoque em si.
+      const nextVendas       = patch.unitsExpectedSold ?? block.volumeCoverage.unitsExpectedSold;
+      const estoqueMedioReal = block.volumeCoverage.estoqueMedio ?? 0;
+      const vendas90d        = diasDaTemporada > 0 ? nextVendas * (90 / diasDaTemporada) : 0;
+      const coverage         = computeForwardCoverageDays(realInventory.estoqueInicial.pecas, vendas90d, 90);
+      onUpdateVolume({
+        ...patch,
+        giro: estoqueMedioReal > 0 ? nextVendas / estoqueMedioReal : 0,
+        coverage: coverage ?? 0,
+      });
+      return;
+    }
     const nextInputs = { ...volumeClusterInputs, ...patch };
     const r = recalcVolumeClusterFromAnchor(block.volumeCoverage.estoqueMedio ?? 0, nextInputs);
     onUpdateVolume({ ...patch, giro: r.giro, estoqueMedio: r.estoqueMedio, replenishments: r.replenishments });
   };
+
+  // Assim que a posição real de estoque (M4 ← inventory_snapshots) carrega,
+  // ela substitui Est. Inicial/Estoque Médio/Reposições — não é mais um
+  // valor digitado/estimado. Recalcula toda vez que a leitura real muda
+  // (nunca "uma vez só"): diferente da participação % do M3, aqui não há
+  // edição manual concorrente pra proteger — os campos ficam somente leitura
+  // quando há dado real (ver JSX abaixo).
+  useEffect(() => {
+    if (!realInventory?.hasData) return;
+    const estoqueMedioReal = realInventory.estoqueMedio.pecas;
+    const vendas90d = diasDaTemporada > 0 ? block.volumeCoverage.unitsExpectedSold * (90 / diasDaTemporada) : 0;
+    const coverage  = computeForwardCoverageDays(realInventory.estoqueInicial.pecas, vendas90d, 90);
+    onUpdateVolume({
+      initialStock:   Math.round(realInventory.estoqueInicial.pecas),
+      estoqueMedio:   Math.round(estoqueMedioReal),
+      giro:           estoqueMedioReal > 0 ? block.volumeCoverage.unitsExpectedSold / estoqueMedioReal : 0,
+      coverage:       coverage ?? 0,
+      replenishments: realReplenishments?.pecas ?? 0,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realInventory, realReplenishments]);
 
   return (
     <div className="space-y-2">
@@ -2246,10 +2391,18 @@ function DivisionBlockCard({
                   <span className="text-[11px] font-bold text-[#28071C]">{item.pct.toFixed(0)}%</span>
                   {mid != null && (
                     <span
-                      className={`text-[10px] ${histAvg != null ? "text-[#7598CF] font-semibold" : "text-[#28071C]/50"}`}
-                      title={histAvg != null
-                        ? "Preço médio do catálogo atual nesta faixa — não é escopado pela Temporada de Referência selecionada acima."
-                        : "Sem produtos do catálogo atual nesta faixa — mostrando o ponto médio do range."}
+                      className={`text-[10px] ${
+                        histAvg == null
+                          ? "text-[#28071C]/50"
+                          : historicalAvgsIsReal
+                            ? "text-emerald-600 font-semibold"
+                            : "text-[#7598CF] font-semibold"
+                      }`}
+                      title={histAvg == null
+                        ? "Sem produtos do catálogo atual nesta faixa — mostrando o ponto médio do range."
+                        : historicalAvgsIsReal
+                          ? "Preço médio REAL vendido nesta faixa durante a Temporada de Referência selecionada acima (sales_history, ponderado por quantidade)."
+                          : "Preço médio do catálogo atual nesta faixa — selecione uma Temporada de Referência acima para ver o preço real vendido naquele período."}
                     >
                       R${Math.round(mid)}
                     </span>
@@ -2320,47 +2473,92 @@ function DivisionBlockCard({
             onChange={(v) => handleAnchorEdit({ unitsExpectedSold: v })}
             tooltip="Peças esperadas a vender na temporada. É a âncora do cluster Giro/Cobertura/Estoque Médio abaixo — mudar aqui recalcula os três mantendo a Cobertura atual como referência."
           />
-          <CompactField
-            label="Est. Inicial"
-            value={block.volumeCoverage.initialStock}
-            onChange={(v) => handleAnchorEdit({ initialStock: v })}
-            tooltip="Quantidade de peças em estoque no início da temporada — fato real, não é recalculado pelo cluster abaixo. Mudar aqui ajusta as Reposições pra manter o Estoque Médio consistente."
-          />
+          {hasRealInventory ? (
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
+                Est. Inicial (real)
+              </label>
+              <div
+                className="px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md text-[11px] font-bold text-emerald-700"
+                title="Lido direto de inventory_snapshots — foto do estoque no início da temporada."
+              >
+                {Math.round(block.volumeCoverage.initialStock).toLocaleString("pt-BR")}
+              </div>
+            </div>
+          ) : (
+            <CompactField
+              label="Est. Inicial"
+              value={block.volumeCoverage.initialStock}
+              onChange={(v) => handleAnchorEdit({ initialStock: v })}
+              tooltip="Quantidade de peças em estoque no início da temporada — fato real, não é recalculado pelo cluster abaixo. Mudar aqui ajusta as Reposições pra manter o Estoque Médio consistente. Sem estoque importado (inventory_snapshots) ainda para esta divisão/período — valor estimado."
+            />
+          )}
 
           {/* Cluster Giro × Estoque Médio — edite UMA ponta por vez, a outra
-              se recalcula automaticamente (2026-09-08: Cobertura saiu deste
-              cluster, virou Forward Coverage — indicador real e independente,
-              lido de estoque/vendas reais, não mais uma 3ª ponta editável
-              aqui. Ver src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md). */}
+              se recalcula automaticamente. Quando há estoque real importado
+              (inventory_snapshots), Estoque Médio/Giro/Cobertura deixam de
+              ser editáveis: viram leitura direta (ou derivada) do estoque
+              real, não mais uma estimativa (ver useEffect acima). Ver
+              src/engine/HISTORICAL_CASCADE_ARCHITECTURE.md. */}
           <div className="pt-1 border-t border-[#28071C]/10 space-y-1.5">
-            <CompactField
-              label="Giro"
-              value={block.volumeCoverage.giro ?? 0}
-              onChange={(v) => handleVolumeClusterEdit("giro", v)}
-              suffix="x"
-              tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula o Estoque Médio."
-            />
-            <CompactField
-              label="Estoque Médio"
-              value={block.volumeCoverage.estoqueMedio ?? 0}
-              onChange={(v) => handleVolumeClusterEdit("estoqueMedio", v)}
-              tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula o Giro."
-            />
+            {hasRealInventory ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">Giro (real)</label>
+                  <div className="px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md text-[11px] font-bold text-emerald-700">
+                    {(block.volumeCoverage.giro ?? 0).toFixed(2)}x
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">Estoque Médio (real)</label>
+                  <div className="px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md text-[11px] font-bold text-emerald-700">
+                    {Math.round(block.volumeCoverage.estoqueMedio ?? 0).toLocaleString("pt-BR")}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <CompactField
+                  label="Giro"
+                  value={block.volumeCoverage.giro ?? 0}
+                  onChange={(v) => handleVolumeClusterEdit("giro", v)}
+                  suffix="x"
+                  tooltip="Quantas vezes o estoque médio 'vira' na temporada. Editar aqui recalcula o Estoque Médio."
+                />
+                <CompactField
+                  label="Estoque Médio"
+                  value={block.volumeCoverage.estoqueMedio ?? 0}
+                  onChange={(v) => handleVolumeClusterEdit("estoqueMedio", v)}
+                  tooltip="Ponto médio de estoque na temporada (peças). Editar aqui recalcula o Giro."
+                />
+              </>
+            )}
             <div className="flex items-center justify-between gap-2 pt-1">
               <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
                 Cobertura (d)
               </label>
-              <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]/50">
-                sem dado real ainda
-              </div>
+              {hasRealInventory ? (
+                <div
+                  className="px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md text-[11px] font-bold text-emerald-700"
+                  title="Forward Coverage: Estoque Inicial ÷ vendas esperadas em janela de 90 dias × 90."
+                >
+                  {block.volumeCoverage.coverage === Infinity
+                    ? "∞ (sem venda)"
+                    : `${Math.round(block.volumeCoverage.coverage)} dias`}
+                </div>
+              ) : (
+                <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]/50">
+                  sem dado real ainda
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#28071C]/10">
             <label className="text-[10px] text-[#28071C]/60 font-semibold uppercase tracking-wide shrink-0">
-              Reposições (calc.)
+              {hasRealInventory ? "Reposições (real)" : "Reposições (calc.)"}
             </label>
-            <div className="px-2 py-1 bg-[#28071C]/5 border border-[#28071C]/10 rounded-md text-[11px] font-bold text-[#28071C]">
+            <div className={`px-2 py-1 border rounded-md text-[11px] font-bold ${hasRealInventory ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-[#28071C]/5 border-[#28071C]/10 text-[#28071C]"}`}>
               {Math.round(block.volumeCoverage.replenishments).toLocaleString("pt-BR")}
             </div>
           </div>

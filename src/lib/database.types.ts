@@ -379,6 +379,7 @@ export type Database = {
           name: string
           percents: Json
           saved_at: string
+          source_plan_version_id: string | null
           tenant_id: string
           year: number
         }
@@ -390,6 +391,7 @@ export type Database = {
           name: string
           percents?: Json
           saved_at?: string
+          source_plan_version_id?: string | null
           tenant_id: string
           year: number
         }
@@ -401,6 +403,7 @@ export type Database = {
           name?: string
           percents?: Json
           saved_at?: string
+          source_plan_version_id?: string | null
           tenant_id?: string
           year?: number
         }
@@ -423,6 +426,7 @@ export type Database = {
           name: string
           saved_at: string
           season_id: string
+          source_division_scenario_id: string | null
           tenant_id: string
         }
         Insert: {
@@ -433,6 +437,7 @@ export type Database = {
           name?: string
           saved_at?: string
           season_id: string
+          source_division_scenario_id?: string | null
           tenant_id: string
         }
         Update: {
@@ -443,9 +448,18 @@ export type Database = {
           name?: string
           saved_at?: string
           season_id?: string
+          source_division_scenario_id?: string | null
           tenant_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "collection_plans_source_division_fk"
+            columns: ["source_division_scenario_id"]
+            isOneToOne: false
+            referencedRelation: "division_scenarios"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       collections: {
         Row: {
@@ -698,6 +712,7 @@ export type Database = {
           name: string
           saved_at: string
           season_id: string
+          source_month_scenario_id: string | null
           tenant_id: string
           year: number
         }
@@ -711,6 +726,7 @@ export type Database = {
           name: string
           saved_at?: string
           season_id: string
+          source_month_scenario_id?: string | null
           tenant_id: string
           year: number
         }
@@ -724,10 +740,18 @@ export type Database = {
           name?: string
           saved_at?: string
           season_id?: string
+          source_month_scenario_id?: string | null
           tenant_id?: string
           year?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "division_scenarios_source_month_fk"
+            columns: ["source_month_scenario_id"]
+            isOneToOne: false
+            referencedRelation: "planning_scenarios"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "division_scenarios_tenant_id_fkey"
             columns: ["tenant_id"]
@@ -1523,6 +1547,7 @@ export type Database = {
           id: string
           is_applied: boolean
           name: string
+          source_channel_scenario_id: string | null
           tenant_id: string
           values: Json
           version: number
@@ -1534,6 +1559,7 @@ export type Database = {
           id?: string
           is_applied?: boolean
           name: string
+          source_channel_scenario_id?: string | null
           tenant_id: string
           values?: Json
           version?: number
@@ -1545,6 +1571,7 @@ export type Database = {
           id?: string
           is_applied?: boolean
           name?: string
+          source_channel_scenario_id?: string | null
           tenant_id?: string
           values?: Json
           version?: number
@@ -1555,6 +1582,13 @@ export type Database = {
             columns: ["cycle_id"]
             isOneToOne: false
             referencedRelation: "annual_plan_cycles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "planning_scenarios_source_channel_fk"
+            columns: ["source_channel_scenario_id"]
+            isOneToOne: false
+            referencedRelation: "channel_scenarios"
             referencedColumns: ["id"]
           },
           {
@@ -2341,6 +2375,7 @@ export type Database = {
           name: string
           saved_at: string
           season_id: string
+          source_collection_plan_id: string | null
           tenant_id: string
         }
         Insert: {
@@ -2351,6 +2386,7 @@ export type Database = {
           name?: string
           saved_at?: string
           season_id: string
+          source_collection_plan_id?: string | null
           tenant_id: string
         }
         Update: {
@@ -2361,9 +2397,18 @@ export type Database = {
           name?: string
           saved_at?: string
           season_id?: string
+          source_collection_plan_id?: string | null
           tenant_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "sortiment_plans_source_collection_fk"
+            columns: ["source_collection_plan_id"]
+            isOneToOne: false
+            referencedRelation: "collection_plans"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       spreadsheet_imports: {
         Row: {

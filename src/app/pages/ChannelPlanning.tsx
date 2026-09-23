@@ -45,8 +45,8 @@ const CHANNEL_PLANNING_TOUR: TourStep[] = [
   },
 ];
 import { exportToPDF } from "../../utils/exportPDF";
-import { getStoredProfile } from "../types/onboarding";
 import type { SalesChannelId } from "../types/onboarding";
+import { useOnboardingProfile } from "../../hooks/useOnboardingProfile";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   saveChannelScenario as dbSaveChannelScenario,
@@ -384,7 +384,7 @@ export default function ChannelPlanning() {
     } else navigate("/");
   }, [navigate]);
 
-  const profile      = getStoredProfile();
+  const { profile } = useOnboardingProfile(tenantId || undefined);
   const plannedYears = getPlannedYears();
   const defaultYear  = routeYear ?? (plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1);
   const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
@@ -677,7 +677,8 @@ export default function ChannelPlanning() {
     const name = saveNameInput.trim() || `Cenário ${new Date().toLocaleDateString("pt-BR")}`;
     dbSaveChannelScenario(tenantId, selectedYear, name,
       { percents, channelData: channelData as unknown as Record<string, Record<string, number>> },
-      user?.email
+      user?.email,
+      planCycle?.versions?.[0]?.versionId ?? null,
     ).then(sc => {
       setSavedScenarios(prev => [...prev, sc]);
       setLoadedScenarioId(sc.id);

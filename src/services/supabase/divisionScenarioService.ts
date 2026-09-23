@@ -15,6 +15,8 @@ export interface DivisionScenarioRow {
   is_applied: boolean;
   saved_at: string;
   created_by: string | null;
+  /** Linhagem M3→M4: planning_scenarios.id (Sazonalidade) usado para semear este cenário. */
+  source_month_scenario_id: string | null;
 }
 
 // ─── Anos com cenário de divisão aplicado (para desbloqueio do M5) ────────────
@@ -86,6 +88,11 @@ export async function listDivisionScenarios(
 
 // ─── Salvar cenário ───────────────────────────────────────────────────────────
 
+/**
+ * @param sourceMonthScenarioId Linhagem M3→M4: planning_scenarios.id (Sazonalidade
+ * aplicada) usado para derivar a meta de receita/participação sugerida quando
+ * este cenário de Divisão foi criado.
+ */
 export async function saveDivisionScenario(
   tenantId: string,
   seasonId: string,
@@ -94,7 +101,8 @@ export async function saveDivisionScenario(
   description: string | null,
   divisions: Record<string, unknown>,
   consolidated: Record<string, unknown>,
-  createdBy?: string
+  createdBy?: string,
+  sourceMonthScenarioId?: string | null,
 ): Promise<DivisionScenarioRow> {
   const { data, error } = await supabase
     .from("division_scenarios")
@@ -109,6 +117,7 @@ export async function saveDivisionScenario(
       is_applied: false,
       saved_at: new Date().toISOString(),
       created_by: createdBy ?? null,
+      source_month_scenario_id: sourceMonthScenarioId ?? null,
     })
     .select()
     .single();

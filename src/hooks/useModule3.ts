@@ -438,7 +438,7 @@ export function useModule3(options: UseModule3Options) {
 
   // ─── Salvar Cenário ───────────────────────────────────────────────────────
   const saveScenario = useCallback(
-    async (name: string, description?: string) => {
+    async (name: string, description?: string, sourceMonthScenarioId?: string | null) => {
       const localId = `scenario_${Date.now()}`;
       const scenario = {
         id: localId,
@@ -464,7 +464,7 @@ export function useModule3(options: UseModule3Options) {
         scenarios: [...prev.scenarios, scenario],
       }));
 
-      await saveModule3Scenario(state.selectedSeasonId, options.seasonYear, scenario);
+      await saveModule3Scenario(state.selectedSeasonId, options.seasonYear, scenario, sourceMonthScenarioId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.selectedSeasonId, state.referenceSeasonId, state.divisions, state.consolidated, options.seasonYear]

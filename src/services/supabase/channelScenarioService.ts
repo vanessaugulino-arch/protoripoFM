@@ -18,6 +18,8 @@ export interface ChannelScenario {
   is_applied: boolean;
   saved_at: string;
   created_by: string | null;
+  /** Linhagem M1→M2: versionId do M1 vigente no momento deste save (null se não registrado). */
+  source_plan_version_id: string | null;
 }
 
 // ─── Listar cenários ──────────────────────────────────────────────────────────
@@ -39,12 +41,19 @@ export async function listChannelScenarios(
 
 // ─── Salvar cenário ───────────────────────────────────────────────────────────
 
+/**
+ * @param sourcePlanVersionId Linhagem M1→M2: versionId (annual_plan_cycles.
+ * versions[].versionId) que estava vigente no M1 no momento deste save —
+ * registra em cima de qual versão do Planejamento Estratégico este cenário
+ * de Canal foi construído.
+ */
 export async function saveChannelScenario(
   tenantId: string,
   year: number,
   name: string,
   data: ChannelScenarioData,
-  createdBy?: string
+  createdBy?: string,
+  sourcePlanVersionId?: string | null,
 ): Promise<ChannelScenario> {
   const { data: row, error } = await supabase
     .from("channel_scenarios")
@@ -57,6 +66,7 @@ export async function saveChannelScenario(
       is_applied: false,
       saved_at: new Date().toISOString(),
       created_by: createdBy ?? null,
+      source_plan_version_id: sourcePlanVersionId ?? null,
     })
     .select()
     .single();

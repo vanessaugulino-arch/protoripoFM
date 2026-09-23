@@ -4,8 +4,9 @@ import {
   ArrowLeft, ArrowRight, Check, Star, Lock, Unlock, ChevronUp, ChevronDown, Info,
   AlertTriangle, RotateCcw, User, LogOut, Pencil, X as XIcon,
 } from "lucide-react"
-import { isOnboardingComplete, getStoredProfile, ORIGEM_LABELS } from "../types/onboarding"
+import { isOnboardingComplete, ORIGEM_LABELS } from "../types/onboarding"
 import type { OrigemPecas } from "../types/onboarding"
+import { useOnboardingProfile } from "../../hooks/useOnboardingProfile"
 import {
   STRATEGIC_FOCUS_LABELS, STRATEGIC_FOCUS_DESC, STRATEGIC_FOCUS_ICONS,
   STRATEGIC_FOCUS_COLORS, PLAN_INDICATORS, DEFAULT_PRIORITIES,
@@ -134,13 +135,16 @@ export default function PlanningSetup() {
   /** Guard: garante que o pré-preenchimento do step 2 ocorre apenas uma vez */
   const hasPrefilledRef = useRef(false)
 
-  // ── Perfil do onboarding (lido uma vez — não muda durante a sessão) ────────
-  const profile      = getStoredProfile()
-  const origemPerfil = profile?.origem
-  const tipoPerfil   = classifyOrigem(origemPerfil)
-
   // ── Wizard step ────────────────────────────────────────────────────────────
   const [user, setUser] = useState<{ name: string; email: string; profile: string; tenant_id?: string } | null>(null)
+
+  // ── Perfil do onboarding — banco é a fonte canônica; local só semeia o primeiro paint ──
+  const tenantIdForProfile = user?.tenant_id ?? (() => {
+    try { return sessionStorage.getItem("activeTenantId") ?? "" } catch { return "" }
+  })()
+  const { profile }  = useOnboardingProfile(tenantIdForProfile || undefined)
+  const origemPerfil = profile?.origem
+  const tipoPerfil   = classifyOrigem(origemPerfil)
   const [step, setStep] = useState<1 | 2>(1)
   const [focus, setFocus] = useState<StrategicFocus | null>(null)
 

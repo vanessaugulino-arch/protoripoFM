@@ -50,6 +50,8 @@ import {
 } from "../../services/supabase/divisionScenarioService";
 import type { DivisionPlanBlock } from "../types/module3";
 import { getDivisionSeasonality, type DivisionMonthProfile } from "../../services/supabase/divisionSeasonalityService";
+import { getDivisionGiroByRiskLevel, type RiskLevelTurnover } from "../../services/supabase/inventoryIndicatorsService";
+import { RISK_LEVELS, RISK_LEVEL_LABELS } from "../../services/supabase/sortimentGridService";
 import {
   getWorkingCollectionPlan,
   saveWorkingCollectionPlan,
@@ -122,12 +124,16 @@ export default function CollectionPlan() {
     participation: number; avgPrice: number;
   }>>({});
   const [divisionsPlan, setDivisionsPlan] = useState<Record<string, CollectionPlanDivision>>({});
+  /** Linhagem M4→M5: id do division_scenarios (M4) aplicado que gerou os targets desta temporada. */
+  const [sourceDivisionScenarioId, setSourceDivisionScenarioId] = useState<string | null>(null);
   const [histProfiles, setHistProfiles] = useState<DivisionMonthProfile[]>([]);
   // Curva real de receita por mês, já aplicada na Sazonalidade (M3) — mesma
   // leitura usada no M4 (Module3DivisionPlanning.tsx). É a base real da
   // "necessidade de peças": sem isso, a necessidade seria estimada por peso
   // histórico em vez do que foi de fato planejado mês a mês.
   const [sazonalidadeMonthlyTotal, setSazonalidadeMonthlyTotal] = useState<Record<string, number> | null>(null);
+  /** Giro por nível de risco (real) de cada divisão, na temporada selecionada — fecha o gap "Marina não via giro por risco no M5". */
+  const [giroByRiskByDiv, setGiroByRiskByDiv] = useState<Record<string, Record<string, RiskLevelTurnover>>>({});
 
   const [scenarios, setScenarios] = useState<CollectionPlanScenario[]>([]);
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
@@ -183,6 +189,7 @@ export default function CollectionPlan() {
       getWorkingCollectionPlan(tenantId, selectedSeasonId),
       listCollectionPlanScenarios(tenantId, selectedSeasonId),
     ]).then(([divScenario, working, scenarioList]) => {
+      setSourceDivisionScenarioId(divScenario?.id ?? null);
       const divs = (divScenario?.divisions ?? {}) as Record<string, DivisionPlanBlock>;
       const nextTargets: Record<string, {
         targetPieces: number; unitsExpectedSold: number; initialStock: number;
@@ -264,15 +271,44 @@ export default function CollectionPlan() {
     }).catch(() => setSazonalidadeMonthlyTotal(null));
   }, [tenantId, selectedTemporada, seasonMonths]);
 
+  // ─── Giro por nível de risco (real) por divisão ──────────────────────────
+  useEffect(() => {
+    if (!tenantId || !selectedTemporada?.anoFiscal || realDivisions.length === 0) {
+      setGiroByRiskByDiv({});
+      return;
+    }
+    const months = expandSeasonMonths(selectedTemporada.mesInicio, selectedTemporada.mesFim, selectedTemporada.anoFiscal);
+    if (months.length === 0) { setGiroByRiskByDiv({}); return; }
+    const last = months[months.length - 1];
+    const lastDay = new Date(last.year, last.month, 0).getDate();
+    const dateFrom = `${months[0].year}-${String(months[0].month).padStart(2, "0")}-01`;
+    const dateTo   = `${last.year}-${String(last.month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+    let cancelled = false;
+    Promise.all(
+      realDivisions.map(async (rd) => {
+        const byRisk = await getDivisionGiroByRiskLevel(tenantId, rd.label, dateFrom, dateTo);
+        return [rd.id, byRisk] as const;
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      setGiroByRiskByDiv(Object.fromEntries(results));
+    }).catch(() => { if (!cancelled) setGiroByRiskByDiv({}); });
+    return () => { cancelled = true; };
+  }, [tenantId, selectedTemporada, realDivisions]);
+
   // ─── Persistência: debounce write-through → Supabase (mesmo padrão da Pirâmide de Preço) ──
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persist = useCallback((next: Record<string, CollectionPlanDivision>) => {
     if (!tenantId || !selectedSeasonId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      saveWorkingCollectionPlan(tenantId, selectedSeasonId, next).catch(() => {});
+      // Ao contrário do M6 (que escolhe entre vários planos possíveis do M5),
+      // aqui só existe UM M4 aplicado por temporada — sempre reafirma essa
+      // linhagem, não há "escolha do usuário" pra preservar.
+      saveWorkingCollectionPlan(tenantId, selectedSeasonId, next, sourceDivisionScenarioId).catch(() => {});
     }, 800);
-  }, [tenantId, selectedSeasonId]);
+  }, [tenantId, selectedSeasonId, sourceDivisionScenarioId]);
 
   const updateDivisionsPlan = (updater: (prev: Record<string, CollectionPlanDivision>) => Record<string, CollectionPlanDivision>) => {
     setDivisionsPlan(prev => {
@@ -417,7 +453,7 @@ export default function CollectionPlan() {
   // ─── Cenários (simulações salvas) ─────────────────────────────────────────
   const handleSaveScenario = async () => {
     if (!tenantId || !selectedSeasonId || !scenarioName.trim()) return;
-    await saveCollectionPlanScenario(tenantId, selectedSeasonId, scenarioName.trim(), divisionsPlan).catch(() => {});
+    await saveCollectionPlanScenario(tenantId, selectedSeasonId, scenarioName.trim(), divisionsPlan, sourceDivisionScenarioId).catch(() => {});
     setScenarioName("");
     setShowScenarioModal(false);
     setScenarioListVersion(v => v + 1);
@@ -460,7 +496,7 @@ export default function CollectionPlan() {
       // volta se aprovar (garante que a decisão reflete exatamente o que foi
       // revisado, mesmo que o rascunho continue mudando depois do envio).
       const snapshotName = `Aprovação ${new Date().toLocaleString("pt-BR")}`;
-      const snapshot = await saveCollectionPlanScenario(tenantId, selectedSeasonId, snapshotName, divisionsPlan);
+      const snapshot = await saveCollectionPlanScenario(tenantId, selectedSeasonId, snapshotName, divisionsPlan, sourceDivisionScenarioId);
       await createApprovalRequest({
         tenantId,
         year: selectedTemporada.anoFiscal ?? new Date().getFullYear(),
@@ -657,6 +693,36 @@ export default function CollectionPlan() {
                               <span className={`text-xs font-semibold ml-auto ${deltaPct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                                 Plano {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}% vs. ano anterior
                               </span>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Giro por Perfil de Risco (real) — inventory_snapshots × sales_history
+                            agrupado por products.risk_level. Antes o M5 não tinha nenhuma
+                            quebra por risco; Marina não conseguia decidir coleção vs.
+                            reposição olhando giro de Sustentador de Margem/Básico/etc. */}
+                        {(() => {
+                          const byRisk = giroByRiskByDiv[divId];
+                          if (!byRisk || Object.keys(byRisk).length === 0) return null;
+                          const ordered = [...RISK_LEVELS, "sem_classificacao"] as string[];
+                          const entries = ordered
+                            .filter(r => byRisk[r])
+                            .map(r => [r, byRisk[r]] as const);
+                          if (entries.length === 0) return null;
+                          return (
+                            <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-2.5">
+                              <span className="text-[10px] font-semibold uppercase tracking-widest text-[#28071C]/40 block mb-1.5">
+                                Giro por Perfil de Risco (real)
+                              </span>
+                              <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                                {entries.map(([risk, t]) => (
+                                  <span key={risk} className="text-xs text-[#28071C]/70">
+                                    {risk === "sem_classificacao" ? "Sem classificação" : RISK_LEVEL_LABELS[risk as keyof typeof RISK_LEVEL_LABELS]}:{" "}
+                                    <strong className="text-[#28071C]">{t.giro != null ? `${t.giro.toFixed(2)}x` : "—"}</strong>
+                                    <span className="text-[#28071C]/40"> ({fmtPieces(Math.round(t.estoqueMedioPecas))} pçs médio)</span>
+                                  </span>
+                                ))}
+                              </div>
                             </div>
                           );
                         })()}

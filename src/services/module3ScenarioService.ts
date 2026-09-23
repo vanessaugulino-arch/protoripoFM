@@ -85,6 +85,7 @@ export async function saveModule3Scenario(
   seasonId: string,
   year: number,
   scenario: Module3Scenario,
+  sourceMonthScenarioId?: string | null,
 ): Promise<void> {
   const existing = _cache.get(seasonId) ?? [];
   const idx = existing.findIndex(s => s.id === scenario.id);
@@ -103,6 +104,7 @@ export async function saveModule3Scenario(
       scenario.divisions as Record<string, unknown>,
       { ...scenario.consolidated, referenceSeasonId: scenario.referenceSeasonId } as Record<string, unknown>,
       scenario.createdBy || undefined,
+      sourceMonthScenarioId,
     );
     // Reconcilia o id local (scenario_<timestamp>, gerado só pro cache
     // otimista) com o id real gravado no banco — sem isso, "Aplicar Cenário"

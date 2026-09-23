@@ -242,6 +242,35 @@ export async function recomputeMacroFromDivisions(
   return full
 }
 
+// ── Linhagem da Sazonalidade (M3) ────────────────────────────────────────────────
+
+/**
+ * Vincula o cenário de Sazonalidade (M3) aplicado ao Plano Oficial.
+ *
+ * A Sazonalidade só redistribui a receita anual já definida no Canal (M2) entre
+ * os meses do ano fiscal (IPF por canal — preserva os totais); ela não produz um
+ * macro independente. Por isso, ao contrário de recomputeOfficialMacro/
+ * recomputeMacroFromDivisions, esta função NÃO recalcula official_macro — só
+ * grava qual cenário foi aplicado (applied_month_scenario_id), para que outras
+ * telas (hoje nenhuma, futuramente o M6) possam recuperar a linhagem.
+ *
+ * Antes desta função existir, o apply do M3 chamava recomputeMacroFromDivisions
+ * (dados de divisão/M4, que nesta altura do fluxo ainda não existem) — um no-op
+ * silencioso — e nunca escrevia applied_month_scenario_id.
+ */
+export async function linkAppliedMonthScenario(
+  tenantId:   string,
+  year:       number,
+  scenarioId: string,
+): Promise<void> {
+  if (!tenantId || !scenarioId) return
+  await db
+    .from('annual_plan_cycles')
+    .update({ applied_month_scenario_id: scenarioId, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .eq('year', year)
+}
+
 // ── Avanço de nível de detalhe ──────────────────────────────────────────────────
 
 /**
