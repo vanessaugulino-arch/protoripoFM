@@ -16,8 +16,9 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArrowLeft, Download, Printer, ChevronDown, ChevronRight, StickyNote } from "lucide-react";
 import { PlanObservationCard } from "../components/PlanObservationCard";
-import { getPlannedYears, initPlanCycles } from "../types/planCycle";
+import { getPlannedYears, initPlanCycles, getPlanCycle, type PlanFieldPriority } from "../types/planCycle";
 import { getOfficialPlan, type OfficialPlan } from "../../services/supabase/officialPlanService";
+import { getAppliedChannelScenario, type ChannelScenario } from "../../services/supabase/channelScenarioService";
 import { getTemporadas, MONTHS, type Temporada } from "../../services/temporadaService";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
@@ -64,6 +65,23 @@ const RISK_COLORS: Record<"sustentador" | "motorGiro" | "icone", string> = {
   icone: "#F6F3AA",       // amarelo da marca
 };
 
+const CHANNEL_LABELS: Record<string, string> = { atacado: "Atacado", varejo: "Varejo", ecommerce: "E-commerce" };
+
+// Indicadores detalhados por categoria: 6 fixos (Participação/Peças/
+// Faturamento/Margem/Preço Médio/Risco, sempre presentes) + 2 escolhidos
+// dinamicamente entre estes 4, pela ordem de prioridade estratégica definida
+// no M1 (planCycle.fieldPriorities) — os "4 a 6" indicadores foco da
+// organização. Giro/GMROI não têm base real por categoria hoje (sem estoque
+// médio nessa granularidade) — aparecem como "—", nunca inventados.
+const EXTRA_INDICATOR_CANDIDATES = ["giro", "gmroi", "mkdPct", "producaoPecas"] as const;
+type ExtraIndicatorKey = typeof EXTRA_INDICATOR_CANDIDATES[number];
+const EXTRA_INDICATOR_LABELS: Record<ExtraIndicatorKey, string> = {
+  giro: "Giro",
+  gmroi: "GMROI",
+  mkdPct: "Remarcação",
+  producaoPecas: "Produção",
+};
+
 function weightedAvg(pairs: Array<[number | null, number]>): number | null {
   let sumW = 0, sumWV = 0, any = false;
   for (const [v, w] of pairs) {
@@ -86,6 +104,7 @@ export default function FinalPlan() {
 
   const [officialPlan, setOfficialPlan] = useState<OfficialPlan | null>(null);
   const [priorYearPlan, setPriorYearPlan] = useState<OfficialPlan | null>(null);
+  const [channelScenario, setChannelScenario] = useState<ChannelScenario | null>(null);
 
   const [allTemporadas, setAllTemporadas] = useState<Temporada[]>([]);
   const [seasonsInYear, setSeasonsInYear] = useState<Temporada[]>([]);
@@ -130,6 +149,25 @@ export default function FinalPlan() {
     getOfficialPlan(tenantId, selectedYear).then(setOfficialPlan).catch(() => setOfficialPlan(null));
     getOfficialPlan(tenantId, selectedYear - 1).then(setPriorYearPlan).catch(() => setPriorYearPlan(null));
   }, [tenantId, selectedYear]);
+
+  // ─── Cenário de Canal aplicado (M2 real) — alimenta o card "Indicadores por Canal" ──
+  useEffect(() => {
+    if (!tenantId) return;
+    getAppliedChannelScenario(tenantId, selectedYear).then(sc => setChannelScenario(sc ?? null)).catch(() => setChannelScenario(null));
+  }, [tenantId, selectedYear]);
+
+  // ─── Indicadores extras por categoria — os 2 escolhidos entre Giro/GMROI/
+  // Remarcação/Produção, pela ordem de prioridade estratégica do M1. ────────
+  const extraIndicatorKeys = useMemo((): ExtraIndicatorKey[] => {
+    const cycle = getPlanCycle(selectedYear);
+    const priorities = cycle?.fieldPriorities ?? [];
+    const isActive = (fp: PlanFieldPriority) => fp.status !== "inactive" && fp.status !== "dismissed";
+    const ordered = priorities.filter(isActive).sort((a, b) => a.rank - b.rank).map(fp => fp.key);
+    const matched = ordered.filter((k): k is ExtraIndicatorKey => (EXTRA_INDICATOR_CANDIDATES as readonly string[]).includes(k));
+    // Sem prioridades definidas (plano legado): prioriza os 2 que têm base
+    // real por categoria hoje, em vez de Giro/GMROI (que sempre dão "—").
+    return matched.length > 0 ? matched.slice(0, 2) : ["mkdPct", "producaoPecas"];
+  }, [selectedYear]);
 
   // ─── Estrutura Divisão→Categoria→Subcategoria (M6, agregada entre temporadas do ano) ──
   useEffect(() => {
@@ -298,6 +336,9 @@ export default function FinalPlan() {
     value: ledger.reduce((s, m) => s + m.value, 0),
   }), [ledger]);
 
+  const totalRevenueStructure = structureRows.reduce((s, r) => s + r.revenueEstimate, 0);
+  const totalPecasVendidas = officialPlan?.macro?.pecasVendidas ?? 0;
+
   const groupedStructure = useMemo(() => {
     const byDivision = new Map<string, StructureRow[]>();
     for (const r of structureRows) {
@@ -322,6 +363,11 @@ export default function FinalPlan() {
             pieces: avgPrice != null && avgPrice > 0 ? catTotal / avgPrice : null,
             mkdPct: catRows.find(r => r.mkdPct != null)?.mkdPct ?? null,
             marginPct: weightedAvg(catRows.map(r => [r.marginPct, r.revenueEstimate])),
+            // Produção (peças) — fatia proporcional da meta oficial de peças
+            // vendidas (M1), pela participação real de receita da categoria.
+            producaoPecas: totalRevenueStructure > 0 && totalPecasVendidas > 0
+              ? (catTotal / totalRevenueStructure) * totalPecasVendidas
+              : null,
             risk: {
               // Básico funde no Sustentador de Margem (decisão da usuária).
               sustentador: weightedAvg(catRows.map(r => [
@@ -335,9 +381,7 @@ export default function FinalPlan() {
         }).sort((a, b) => b.total - a.total),
       };
     }).sort((a, b) => b.total - a.total);
-  }, [structureRows]);
-
-  const totalRevenueStructure = structureRows.reduce((s, r) => s + r.revenueEstimate, 0);
+  }, [structureRows, totalRevenueStructure, totalPecasVendidas]);
 
   const riskBar = (risk: { sustentador: number | null; motorGiro: number | null; icone: number | null }) => {
     const parts: Array<[number, string, string]> = [
@@ -353,6 +397,19 @@ export default function FinalPlan() {
         {parts.map(([v, color], i) => v > 0 ? <span key={i} style={{ width: `${v}%`, background: color }} /> : null)}
       </div>
     );
+  };
+
+  // Valor do indicador extra (Giro/GMROI/Remarcação/Produção) — só Remarcação
+  // e Produção têm base real por categoria hoje; Giro/GMROI ficam "—".
+  const extraIndicatorValue = (key: ExtraIndicatorKey, data: { mkdPct: number | null; producaoPecas: number | null }): number | null => {
+    if (key === "mkdPct") return data.mkdPct;
+    if (key === "producaoPecas") return data.producaoPecas;
+    return null;
+  };
+  const fmtExtraIndicatorValue = (key: ExtraIndicatorKey, value: number | null): string => {
+    if (value == null) return "—";
+    if (key === "mkdPct") return fmtPct1(value);
+    return fmtInt(value);
   };
 
   const toggleCategory = (key: string) => {
@@ -393,20 +450,44 @@ export default function FinalPlan() {
     row([]);
 
     row([
-      "Divisão", "Categoria", "Subcategoria", "Peças", "Faturamento Estimado", "Margem %", "Preço Médio", "Remarcação %",
+      "Divisão", "Categoria", "Subcategoria", "Peças", "Faturamento Estimado", "Margem %", "Preço Médio",
+      "Remarcação %", "Produção (peças)",
       "% Sustentador (+ Básico)", "% Motor de Giro", "% Ícone",
     ]);
-    structureRows.forEach(r => row([
-      r.divisionLabel, r.category, r.subcategory,
-      r.pieces != null ? Math.round(r.pieces) : "",
-      r.revenueEstimate.toFixed(2),
-      r.marginPct?.toFixed(1) ?? "",
-      r.avgPrice?.toFixed(2) ?? "",
-      r.mkdPct?.toFixed(1) ?? "",
-      ((r.pctSustentadorMargem ?? 0) + (r.pctBasico ?? 0)).toFixed(1),
-      r.pctMotorGiro?.toFixed(1) ?? "",
-      r.pctIconeMarca?.toFixed(1) ?? "",
-    ]));
+    structureRows.forEach(r => {
+      const producaoPecas = totalRevenueStructure > 0 && totalPecasVendidas > 0
+        ? (r.revenueEstimate / totalRevenueStructure) * totalPecasVendidas
+        : null;
+      row([
+        r.divisionLabel, r.category, r.subcategory,
+        r.pieces != null ? Math.round(r.pieces) : "",
+        r.revenueEstimate.toFixed(2),
+        r.marginPct?.toFixed(1) ?? "",
+        r.avgPrice?.toFixed(2) ?? "",
+        r.mkdPct?.toFixed(1) ?? "",
+        producaoPecas != null ? Math.round(producaoPecas) : "",
+        ((r.pctSustentadorMargem ?? 0) + (r.pctBasico ?? 0)).toFixed(1),
+        r.pctMotorGiro?.toFixed(1) ?? "",
+        r.pctIconeMarca?.toFixed(1) ?? "",
+      ]);
+    });
+    row([]);
+
+    if (channelScenario) {
+      row(["Canal", "Receita Bruta", "MKD %", "Giro", "Produção (peças)"]);
+      for (const [ch, data] of Object.entries(channelScenario.channel_data ?? {})) {
+        row([
+          CHANNEL_LABELS[ch] ?? ch,
+          (data.receita ?? 0).toFixed(2),
+          (data.mkdPct ?? 0).toFixed(1),
+          (data.giro ?? 0).toFixed(2),
+          Math.round(data.producao ?? 0),
+        ]);
+      }
+      if (macro) {
+        row(["Consolidado", macro.receitaBruta.toFixed(2), macro.mkdPct.toFixed(1), macro.giro.toFixed(2), Math.round(macro.pecasVendidas)]);
+      }
+    }
 
     return lines.join("\n");
   };
@@ -513,6 +594,45 @@ export default function FinalPlan() {
               userEmail={user.email}
             />
 
+            {/* ─── Indicadores por Canal (M2 real, aplicado) ────────────── */}
+            {channelScenario && (
+              <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-[#28071C]/8">
+                  <h2 className="font-serif font-semibold text-[#28071C] text-base">Indicadores por Canal</h2>
+                  <p className="text-[11px] text-[#28071C]/40 mt-0.5">Plano aplicado no Módulo 2 — {selectedYear}</p>
+                </div>
+                <div className="p-5 overflow-x-auto">
+                  <table className="w-full text-xs" style={{ minWidth: 520 }}>
+                    <thead>
+                      <tr className="text-[9.5px] uppercase tracking-wide text-[#28071C]/40 border-b border-[#28071C]/15">
+                        <th className="text-left py-2 pr-3">Indicador</th>
+                        {Object.keys(channelScenario.channel_data ?? {}).map(ch => (
+                          <th key={ch} className="text-right py-2 px-2">{CHANNEL_LABELS[ch] ?? ch}</th>
+                        ))}
+                        <th className="text-right py-2 px-2 bg-[#F2F2F2]">Consolidado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {([
+                        { label: "Receita Bruta", pick: (d: Record<string, number>) => d.receita ?? 0, fmt: (v: number) => fmtMoneyM(v), macroVal: macro?.receitaBruta },
+                        { label: "MKD (%)", pick: (d: Record<string, number>) => d.mkdPct ?? 0, fmt: (v: number) => fmtPct1(v), macroVal: macro?.mkdPct },
+                        { label: "Giro", pick: (d: Record<string, number>) => d.giro ?? 0, fmt: (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), macroVal: macro?.giro },
+                        { label: "Produção (peças)", pick: (d: Record<string, number>) => d.producao ?? 0, fmt: (v: number) => fmtInt(v), macroVal: macro?.pecasVendidas },
+                      ]).map(row => (
+                        <tr key={row.label} className="border-b border-[#28071C]/8 last:border-0">
+                          <td className="py-2 pr-3 font-semibold text-[#28071C]">{row.label}</td>
+                          {Object.entries(channelScenario.channel_data ?? {}).map(([ch, data]) => (
+                            <td key={ch} className="text-right font-mono py-2 px-2 text-[#28071C]/75">{row.fmt(row.pick(data as Record<string, number>))}</td>
+                          ))}
+                          <td className="text-right font-mono py-2 px-2 bg-[#F2F2F2] font-bold">{row.macroVal != null ? row.fmt(row.macroVal) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
             {/* ─── Necessidade de Entrada — Ano Civil ───────────────────── */}
             <section className="bg-white rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-[#28071C]/8 flex items-baseline justify-between flex-wrap gap-2">
@@ -587,8 +707,9 @@ export default function FinalPlan() {
                           <th className="text-right py-2 px-2">Faturamento</th>
                           <th className="text-right py-2 px-2">Margem</th>
                           <th className="text-right py-2 px-2">Preço Médio</th>
-                          <th className="text-right py-2 px-2">Remarcação</th>
-                          <th className="text-right py-2 px-2">GMROI</th>
+                          {extraIndicatorKeys.map(key => (
+                            <th key={key} className="text-right py-2 px-2">{EXTRA_INDICATOR_LABELS[key]}</th>
+                          ))}
                           <th className="text-left py-2 px-2 w-[110px]">Risco</th>
                           <th className="text-center py-2 px-2 w-[40px]">Obs.</th>
                         </tr>
@@ -603,8 +724,7 @@ export default function FinalPlan() {
                               <td className="text-right font-mono py-2 px-2">{fmtMoneyM(div.total)}</td>
                               <td className="py-2 px-2"></td>
                               <td className="py-2 px-2"></td>
-                              <td className="py-2 px-2"></td>
-                              <td className="py-2 px-2"></td>
+                              {extraIndicatorKeys.map(key => <td key={key} className="py-2 px-2"></td>)}
                               <td className="py-2 px-2"></td>
                               <td className="py-2 px-2"></td>
                             </tr>
@@ -631,8 +751,18 @@ export default function FinalPlan() {
                                     <td className="text-right font-mono py-2 px-2">{fmtMoneyM(cat.total)}</td>
                                     <td className="text-right font-mono py-2 px-2">{cat.marginPct != null ? fmtPct1(cat.marginPct) : "—"}</td>
                                     <td className="text-right font-mono py-2 px-2">{cat.avgPrice != null ? fmtMoney2(cat.avgPrice) : "—"}</td>
-                                    <td className="text-right font-mono py-2 px-2">{cat.mkdPct != null ? fmtPct1(cat.mkdPct) : "—"}</td>
-                                    <td className="text-right font-mono py-2 px-2 text-[#28071C]/25" title="Sem estoque médio real por categoria ainda — não é possível calcular GMROI sem inventar dado.">—</td>
+                                    {extraIndicatorKeys.map(key => {
+                                      const value = extraIndicatorValue(key, cat);
+                                      return (
+                                        <td
+                                          key={key}
+                                          className={`text-right font-mono py-2 px-2 ${value == null ? "text-[#28071C]/25" : ""}`}
+                                          title={value == null ? "Sem estoque médio real por categoria ainda — não é possível calcular sem inventar dado." : undefined}
+                                        >
+                                          {fmtExtraIndicatorValue(key, value)}
+                                        </td>
+                                      );
+                                    })}
                                     <td className="py-2 px-2">{riskBar(cat.risk)}</td>
                                     <td className="text-center py-2 px-2">
                                       {cat.note ? (
@@ -655,8 +785,17 @@ export default function FinalPlan() {
                                       <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{fmtMoneyM(sub.revenueEstimate)}</td>
                                       <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.marginPct != null ? fmtPct1(sub.marginPct) : "—"}</td>
                                       <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.avgPrice != null ? fmtMoney2(sub.avgPrice) : "—"}</td>
-                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.mkdPct != null ? fmtPct1(sub.mkdPct) : "—"}</td>
-                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/25">—</td>
+                                      {extraIndicatorKeys.map(key => {
+                                        const subProducaoPecas = totalRevenueStructure > 0 && totalPecasVendidas > 0
+                                          ? (sub.revenueEstimate / totalRevenueStructure) * totalPecasVendidas
+                                          : null;
+                                        const value = extraIndicatorValue(key, { mkdPct: sub.mkdPct, producaoPecas: subProducaoPecas });
+                                        return (
+                                          <td key={key} className={`text-right font-mono py-1.5 px-2 ${value == null ? "text-[#28071C]/25" : "text-[#28071C]/70"}`}>
+                                            {fmtExtraIndicatorValue(key, value)}
+                                          </td>
+                                        );
+                                      })}
                                       <td className="py-1.5 px-2">{riskBar({
                                         sustentador: (sub.pctSustentadorMargem ?? 0) + (sub.pctBasico ?? 0),
                                         motorGiro: sub.pctMotorGiro,
