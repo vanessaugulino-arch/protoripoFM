@@ -41,6 +41,8 @@ export interface HierarchyRevenueWeight {
   discountSum: number
   /** Σ(quantidade × preço de tabela) — divisor do MKD% real (discountSum ÷ priceSaleQtySum). */
   priceSaleQtySum: number
+  /** Σ(margem % × receita) — dividir por totalRevenue pra achar a Margem % ponderada real. */
+  marginWeightedSum: number
 }
 
 export interface ConsolidatedRow {
@@ -86,6 +88,7 @@ export async function getHierarchyRevenueByPath(tenantId: string): Promise<Hiera
     pmvWeightedSum:  Number(r.pmv_weighted_sum) || 0,
     discountSum:     Number(r.discount_sum) || 0,
     priceSaleQtySum: Number(r.price_sale_qty_sum) || 0,
+    marginWeightedSum: Number(r.margin_weighted_sum) || 0,
   }))
 }
 
@@ -101,25 +104,27 @@ export async function getHierarchyRevenueByPath(tenantId: string): Promise<Hiera
 export async function getCategoryHistoricalIndicators(
   tenantId: string,
   divisionId: string,
-): Promise<Record<string, { avgPrice: number; mkdPct: number | null }>> {
+): Promise<Record<string, { avgPrice: number; mkdPct: number | null; marginPct: number }>> {
   const weights = await getHierarchyRevenueByPath(tenantId)
-  const byCategory = new Map<string, { revenue: number; pmvW: number; discount: number; priceSaleQty: number }>()
+  const byCategory = new Map<string, { revenue: number; pmvW: number; discount: number; priceSaleQty: number; marginW: number }>()
   for (const w of weights) {
     if (normalizeDivision(w.division) !== divisionId) continue
-    const acc = byCategory.get(w.category) ?? { revenue: 0, pmvW: 0, discount: 0, priceSaleQty: 0 }
+    const acc = byCategory.get(w.category) ?? { revenue: 0, pmvW: 0, discount: 0, priceSaleQty: 0, marginW: 0 }
     acc.revenue     += w.totalRevenue
     acc.pmvW        += w.pmvWeightedSum
     acc.discount    += w.discountSum
     acc.priceSaleQty += w.priceSaleQtySum
+    acc.marginW     += w.marginWeightedSum
     byCategory.set(w.category, acc)
   }
 
-  const result: Record<string, { avgPrice: number; mkdPct: number | null }> = {}
+  const result: Record<string, { avgPrice: number; mkdPct: number | null; marginPct: number }> = {}
   for (const [category, acc] of byCategory) {
     if (acc.revenue <= 0) continue
     result[category] = {
       avgPrice: acc.pmvW / acc.revenue,
       mkdPct:   acc.priceSaleQty > 0 ? (acc.discount / acc.priceSaleQty) * 100 : null,
+      marginPct: acc.marginW / acc.revenue,
     }
   }
   return result

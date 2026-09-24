@@ -61,8 +61,11 @@ import { exportChannelScenarios } from "../../services/channelScenarioService";
 import {
   getHistoricalProfiles,
   normalizeChannelPcts,
+  getHistoricalYears,
+  defaultReferenceYear,
   type HistoricalChannelProfile,
 } from "../../services/supabase/historicalProfileService";
+import { ReferenceYearSelector } from "../components/ReferenceYearSelector";
 import {
   type ChannelId,
   type ChannelData,
@@ -194,10 +197,12 @@ export default function ChannelPlanning() {
         // reload nesta tela faz hasM1Version ficar sempre falso mesmo com o
         // M1 salvo de verdade no banco.
         initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
-        // Carrega perfis históricos para inicializar proporções reais de canal
-        getHistoricalProfiles(tid)
-          .then(hp => setHistChannelProfiles(hp.channels))
-          .catch(() => {});
+        // Anos com histórico real — alimenta o seletor "Ano de Referência" e
+        // o default (penúltimo ano, mesma regra do M1).
+        getHistoricalYears(tid).then(years => {
+          setHistYears(years);
+          setReferenceYear(prev => prev ?? defaultReferenceYear(years));
+        }).catch(() => {});
 
         dbListChannelScenarios(tid, defaultYear)
           .then(rows => setSavedScenarios(rows))
@@ -232,6 +237,18 @@ export default function ChannelPlanning() {
   const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
   const [reviewedYears, setReviewedYears]       = useState<number[]>([]);
   const [histChannelProfiles, setHistChannelProfiles] = useState<HistoricalChannelProfile[]>([]);
+  const [histYears, setHistYears] = useState<number[]>([]);
+  const [referenceYear, setReferenceYear] = useState<number | undefined>(undefined);
+
+  // Ano Anterior escopado ao Ano de Referência selecionado — antes somava o
+  // histórico INTEIRO (todos os anos juntos) contra o plano de 1 ano só,
+  // produzindo deltas sem sentido (ex.: -75%, +143%).
+  useEffect(() => {
+    if (!tenantId || referenceYear == null) return;
+    getHistoricalProfiles(tenantId, referenceYear)
+      .then(hp => setHistChannelProfiles(hp.channels))
+      .catch(() => setHistChannelProfiles([]));
+  }, [tenantId, referenceYear]);
   // Painel informativo (só leitura): como a receita do ano se divide por
   // divisão real do M4 — M2 nunca armazenou nada disso, é só a % aplicada
   // no M4 pra cada temporada do ano, mostrada aqui como referência.
@@ -1073,6 +1090,9 @@ export default function ChannelPlanning() {
                 Meta macro: R$ {macroReceita.toLocaleString("pt-BR")}
               </span>
             )}
+            {histYears.length > 0 && (
+              <ReferenceYearSelector years={histYears} value={referenceYear} onChange={setReferenceYear} />
+            )}
           </div>
         </div>
 
@@ -1317,7 +1337,7 @@ export default function ChannelPlanning() {
                       const histDelta = histVal != null && histVal !== 0 ? ((currentVal - histVal) / histVal) * 100 : null;
                       return (
                         <div key={`${ch}-${field.key}`}
-                          className={`flex items-center justify-between gap-2 px-2.5 rounded-lg ${rowH} border transition-colors ${
+                          className={`flex items-center gap-2 px-2.5 rounded-lg ${rowH} border transition-colors ${
                             dragging
                               ? "bg-red-50 border-red-300 ring-1 ring-red-200"
                               : field.isDriver
@@ -1325,26 +1345,28 @@ export default function ChannelPlanning() {
                                 : "bg-[#28071C]/3 border-[#28071C]/8"
                           }`}
                         >
-                          {field.isDriver ? (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={
-                                focusedCell?.ch === ch && focusedCell?.key === field.key
-                                  ? editingValue
-                                  : fmt(channelData[ch][field.key], field.format)
-                              }
-                              onFocus={() => handleDriverFocus(ch, field.key)}
-                              onChange={e => handleDriverChange(ch, field.key, e.target.value)}
-                              onBlur={handleDriverBlur}
-                              onClick={e => (e.target as HTMLInputElement).select()}
-                              className={`w-16 flex-shrink-0 bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
-                            />
-                          ) : (
-                            <span className="text-[#28071C]/55 text-xs font-mono flex-shrink-0">{fmt(channelData[ch][field.key], field.format)}</span>
-                          )}
+                          <div className="flex-1 min-w-0 flex items-center">
+                            {field.isDriver ? (
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={
+                                  focusedCell?.ch === ch && focusedCell?.key === field.key
+                                    ? editingValue
+                                    : fmt(channelData[ch][field.key], field.format)
+                                }
+                                onFocus={() => handleDriverFocus(ch, field.key)}
+                                onChange={e => handleDriverChange(ch, field.key, e.target.value)}
+                                onBlur={handleDriverBlur}
+                                onClick={e => (e.target as HTMLInputElement).select()}
+                                className={`w-16 flex-shrink-0 bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
+                              />
+                            ) : (
+                              <span className="text-[#28071C]/55 text-xs font-mono">{fmt(channelData[ch][field.key], field.format)}</span>
+                            )}
+                          </div>
                           {histVal != null && (
-                            <div className="flex flex-col items-end flex-shrink-0 border-l border-[#28071C]/8 pl-2" title="Ano anterior — dado real (sales_history)">
+                            <div className="flex-1 min-w-0 flex flex-col items-end border-l border-[#28071C]/8 pl-2" title="Ano anterior — dado real (sales_history)">
                               <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/35">Ano ant.</span>
                               <span className="text-[10px] text-[#28071C]/55 font-mono">{fmt(histVal, field.format)}</span>
                               {histDelta != null && (
@@ -1379,17 +1401,14 @@ export default function ChannelPlanning() {
                               </span>
                             )}
                           </div>
-                          {consHist != null && (
-                            <div className="flex flex-col items-end flex-shrink-0 border-l border-[#28071C]/10 pl-2" title="Ano anterior — dado real (sales_history)">
-                              <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/35">Ano ant.</span>
-                              <span className="text-[10px] text-[#28071C]/55 font-mono">{fmt(consHist, field.format)}</span>
-                              {consHistDelta != null && (
-                                <span className={`flex items-center gap-0.5 text-[9px] font-semibold ${consHistDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                                  {consHistDelta >= 0 ? <ArrowUp className="w-2 h-2" /> : <ArrowDown className="w-2 h-2" />}
-                                  {consHistDelta >= 0 ? "+" : ""}{consHistDelta.toFixed(0)}%
-                                </span>
-                              )}
-                            </div>
+                          {consHistDelta != null && (
+                            <span
+                              className={`flex items-center gap-0.5 text-[10px] font-semibold flex-shrink-0 ${consHistDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}
+                              title={`Ano anterior (real): ${fmt(consHist!, field.format)}`}
+                            >
+                              {consHistDelta >= 0 ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />}
+                              {consHistDelta >= 0 ? "+" : ""}{consHistDelta.toFixed(0)}% a.a.
+                            </span>
                           )}
                         </div>
                       );

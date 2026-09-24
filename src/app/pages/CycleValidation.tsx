@@ -13,7 +13,8 @@ import {
 } from "../../services/supabase/divisionSeasonalityService";
 import { listSeasonsDb } from "../../services/supabase/seasonService";
 import { useNavigate, useLocation } from "react-router";
-import { getChannelSeasonality, getSalesMonthlyAggregates } from "../../services/supabase/historicalProfileService";
+import { getChannelSeasonality, getSalesMonthlyAggregates, getHistoricalYears, defaultReferenceYear } from "../../services/supabase/historicalProfileService";
+import { ReferenceYearSelector } from "../components/ReferenceYearSelector";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
@@ -275,6 +276,13 @@ export default function CycleValidation() {
     return planned.length > 0 ? Math.max(...planned) : new Date().getFullYear();
   });
 
+  // Ano de Referência — mesmo conceito do M1/M2: qual ano do histórico real
+  // serve de base pro "Ano Anterior". Default = penúltimo ano disponível;
+  // usuário pode trocar. Antes disto, a comparação era sempre fixa em
+  // selectedFiscalYear-1, sem opção de escolha.
+  const [histYears, setHistYears] = useState<number[]>([]);
+  const [referenceYear, setReferenceYear] = useState<number | undefined>(undefined);
+
   // Seasons
   const [seasons, setSeasons] = useState<Temporada[]>([]);
   const [tenantCanalIds, setTenantCanalIds]         = useState<string[]>([]);
@@ -371,6 +379,8 @@ export default function CycleValidation() {
     listSeasonsDb(tid).then(setSeasons).catch(() => {});
 
     getChannelSeasonality(tid).then(setChannelSeasonality).catch(() => {});
+
+    getHistoricalYears(tid).then(setHistYears).catch(() => {});
 
     // Tenant channels from onboarding_profiles
     db.from("onboarding_profiles")
@@ -534,22 +544,30 @@ export default function CycleValidation() {
     });
   }, [relevantSeasons, selectedFiscalYear]);
 
-  // ── Carrega receita do ano anterior (referência de comparação) ────────────
+  // Default do Ano de Referência = ano fiscal anterior (mesmo comportamento
+  // fixo que já existia), só quando ainda não há escolha do usuário e o ano
+  // realmente existe no histórico — senão cai pro penúltimo ano disponível.
   useEffect(() => {
-    if (!tenantId) return;
+    if (referenceYear != null || histYears.length === 0) return;
+    setReferenceYear(
+      histYears.includes(selectedFiscalYear - 1) ? selectedFiscalYear - 1 : defaultReferenceYear(histYears)
+    );
+  }, [histYears, selectedFiscalYear, referenceYear]);
+
+  // ── Carrega receita do Ano de Referência selecionado (comparação) ─────────
+  useEffect(() => {
+    if (!tenantId || referenceYear == null) return;
     setIsLoadingData(true);
 
-    // Receita do ano civil anterior (Jan–Dez completo) — referência de
-    // comparação. Antes calculada a partir da janela exata da temporada
-    // (getSeasonDateRange); como a tela agora é o ano fiscal inteiro
-    // (calendário Jan–Dez), a comparação é simplesmente o mesmo calendário
-    // um ano antes — sem depender de nenhuma temporada específica existir.
+    // Receita do ano civil de referência (Jan–Dez completo). Antes fixo em
+    // selectedFiscalYear-1 (calendário anterior); agora segue o Ano de
+    // Referência escolhido no topo (mesmo conceito já usado no M1/M2).
     // Agregado no banco (get_sales_monthly_aggregates), não mais lendo linha
     // a linha com LIMIT fixo — ver comentário na função.
     getSalesMonthlyAggregates(tenantId).then(rows => {
       const map: Record<string, Record<string, number>> = {};
       for (const r of rows) {
-        if (r.saleYear !== selectedFiscalYear - 1) continue;
+        if (r.saleYear !== referenceYear) continue;
         if (r.saleMonth < 1 || r.saleMonth > 12) continue;
         const cid   = matchChannelToCanal(r.channel);
         const month = MONTHS_FULL[r.saleMonth - 1];
@@ -559,7 +577,7 @@ export default function CycleValidation() {
       setPrevYearRevenue(map);
     }).catch(() => {})
       .finally(() => setIsLoadingData(false));
-  }, [tenantId, relevantSeasons, selectedFiscalYear]);
+  }, [tenantId, relevantSeasons, referenceYear]);
 
   // ── Meta de receita por canal do M2 aplicado do ano fiscal selecionado ─────
   // Base pra sugerir a curva mensal inicial (junto de channelSeasonality).
@@ -937,6 +955,9 @@ export default function CycleValidation() {
                 ))}
               </select>
             </div>
+            {histYears.length > 0 && (
+              <ReferenceYearSelector years={histYears} value={referenceYear} onChange={setReferenceYear} />
+            )}
             <div className="flex items-center gap-4 text-xs text-[#28071C]/60">
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-[#7598CF]" />
@@ -1196,7 +1217,7 @@ export default function CycleValidation() {
                               <div className="text-sm font-bold text-[#28071C] mt-0.5">{fmtR(total)}</div>
                               {prevTotal > 0 && (
                                 <div className={`text-xs mt-0.5 ${diff >= 0 ? "text-green-600" : "text-red-500"}`}>
-                                  {diff >= 0 ? "+" : ""}{fmtR(diff)}
+                                  {diff >= 0 ? "+" : ""}{fmtR(diff)} ({diff >= 0 ? "+" : ""}{((diff / prevTotal) * 100).toFixed(0)}%)
                                 </div>
                               )}
                             </div>
@@ -1285,13 +1306,27 @@ export default function CycleValidation() {
                               <td className="py-2 px-3 text-[#28071C]/50 text-xs">Δ vs Ant.</td>
                               {activeCanalResult.months.map(m => {
                                 const diff = m.receita - m.prevReceita;
+                                const pct  = m.prevReceita > 0 ? (diff / m.prevReceita) * 100 : null;
                                 return (
-                                  <td key={m.month} className={`py-2 px-2 text-center text-xs font-medium ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-[#28071C]/40"}`}>
-                                    {m.prevReceita > 0 && diff !== 0 ? `${diff > 0 ? "+" : ""}${(diff / 1000).toFixed(0)}k` : "—"}
+                                  <td key={m.month} className={`py-2 px-2 text-center text-xs font-medium leading-tight ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-[#28071C]/40"}`}>
+                                    {m.prevReceita > 0 && diff !== 0 ? (
+                                      <>
+                                        {diff > 0 ? "+" : ""}{(diff / 1000).toFixed(0)}k
+                                        {pct != null && <div className="text-[10px]">{pct > 0 ? "+" : ""}{pct.toFixed(0)}%</div>}
+                                      </>
+                                    ) : "—"}
                                   </td>
                                 );
                               })}
-                              <td />
+                              <td className="py-2 px-3 text-center text-xs font-medium">
+                                {(() => {
+                                  const totalNow  = activeCanalResult.months.reduce((s, m) => s + m.receita, 0);
+                                  const totalPrev = activeCanalResult.months.reduce((s, m) => s + m.prevReceita, 0);
+                                  if (totalPrev <= 0) return null;
+                                  const pct = ((totalNow - totalPrev) / totalPrev) * 100;
+                                  return <span className={pct >= 0 ? "text-green-600" : "text-red-500"}>{pct >= 0 ? "+" : ""}{pct.toFixed(0)}%</span>;
+                                })()}
+                              </td>
                             </tr>
 
                             {/* Motor bottom-up section header */}

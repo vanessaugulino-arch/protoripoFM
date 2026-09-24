@@ -132,15 +132,44 @@ export async function getSalesMonthlyAggregates(tenantId: string): Promise<Sales
   }))
 }
 
+// ─── Ano de Referência ──────────────────────────────────────────────────────
+// Anos com dado real disponível em sales_history — alimenta o seletor "Ano
+// de Referência" (mesmo padrão já usado em Planning.tsx/M1). Sem isso, toda
+// comparação "Ano Anterior" somava o histórico INTEIRO (todos os anos
+// juntos) contra um plano de 1 ano só — dava deltas sem sentido (ex.: -75%,
+// +143%), porque comparava grandezas diferentes.
+
+export async function getHistoricalYears(tenantId: string): Promise<number[]> {
+  const rows = await getSalesMonthlyAggregates(tenantId)
+  const years = Array.from(new Set(rows.map(r => r.saleYear).filter(y => y > 0)))
+  return years.sort((a, b) => b - a)
+}
+
+/** Mesmo default já usado em Planning.tsx (M1): penúltimo ano disponível. */
+export function defaultReferenceYear(years: number[]): number | undefined {
+  if (years.length === 0) return undefined
+  const sorted = [...years].sort((a, b) => b - a)
+  return sorted[1] ?? sorted[0]
+}
+
 // ─── Função principal ─────────────────────────────────────────────────────────
 
-export async function getHistoricalProfiles(tenantId: string): Promise<HistoricalProfiles> {
+/**
+ * @param referenceYear Quando informado, escopa o histórico a esse ano
+ * (sales_history.sale_date) — usado pela comparação "Ano Anterior" visível
+ * nas telas (M2/M4). Omitido = todos os anos juntos, mantém o comportamento
+ * antigo — usado só pra semear um default quando ainda não há plano salvo
+ * (divisionDefaultScenario.ts/channelDefaultScenario.ts), onde a amostra
+ * mais ampla possível é aceitável.
+ */
+export async function getHistoricalProfiles(tenantId: string, referenceYear?: number): Promise<HistoricalProfiles> {
   const empty: HistoricalProfiles = {
     channels: [], divisions: [], totalReceita: 0, totalPecas: 0, hasData: false,
   }
   if (!tenantId) return empty
 
-  const rows = await getSalesMonthlyAggregates(tenantId)
+  const allRows = await getSalesMonthlyAggregates(tenantId)
+  const rows = referenceYear != null ? allRows.filter(r => r.saleYear === referenceYear) : allRows
   if (!rows.length) return empty
 
   // ─── Acumuladores por canal M2 ─────────────────────────────────────────────

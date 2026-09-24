@@ -25,8 +25,8 @@ import { getAppliedDivisionScenario } from "../../services/supabase/divisionScen
 import type { DivisionPlanBlock } from "../types/module3";
 import { getWorkingCollectionPlan, type CollectionPlanDivision } from "../../services/supabase/collectionPlanService";
 import { computeMonthlyExpectedSold, buildDivisionTimeline, type DivisionSalesTarget } from "../../engine/collectionMonthlyLedger";
-import { getConsolidated, type ConsolidatedDbRow } from "../../services/supabase/consolidatedHierarchyService";
-import { getCategoryNotes, type CategoryNote } from "../../services/supabase/sortimentGridService";
+import { getConsolidated, getCategoryHistoricalIndicators, type ConsolidatedDbRow } from "../../services/supabase/consolidatedHierarchyService";
+import { getCategoryNotes, getCategoryIndicators, type CategoryNote } from "../../services/supabase/sortimentGridService";
 
 interface UserData {
   name: string;
@@ -45,14 +45,23 @@ interface StructureRow {
   pctMotorGiro: number | null;
   pctIconeMarca: number | null;
   pctBasico: number | null;
+  /** Preço Médio: valor decidido no plano (M6), com fallback pro histórico real. */
+  avgPrice: number | null;
+  /** Peças estimadas — revenueEstimate ÷ avgPrice. */
+  pieces: number | null;
+  /** Remarcação: valor decidido no plano (M6), com fallback pro histórico real. */
+  mkdPct: number | null;
+  /** Margem real (histórico) — não existe margem editável por categoria em nenhuma tela. */
+  marginPct: number | null;
   note: CategoryNote | null;
 }
 
-const RISK_COLORS: Record<"basico" | "motorGiro" | "sustentador" | "icone", string> = {
-  basico: "#28071C22",
-  motorGiro: "#9B8CD8",
-  sustentador: "#7598CF",
-  icone: "#28071C",
+// Cores da marca — Básico funde visualmente no Sustentador de Margem (decisão
+// da usuária: só 3 segmentos na régua, não 4).
+const RISK_COLORS: Record<"sustentador" | "motorGiro" | "icone", string> = {
+  sustentador: "#94A3B8", // cinza da marca (inclui Básico)
+  motorGiro: "#28071C",   // vinho da marca
+  icone: "#F6F3AA",       // amarelo da marca
 };
 
 function weightedAvg(pairs: Array<[number | null, number]>): number | null {
@@ -132,16 +141,28 @@ export default function FinalPlan() {
         const rows = await getConsolidated(tenantId, season.id);
         const divIds = Array.from(new Set(rows.map(r => r.divisionId)));
         const notesByDiv = await Promise.all(divIds.map(id => getCategoryNotes(tenantId, season.id, id)));
+        const overridesByDiv = await Promise.all(divIds.map(id => getCategoryIndicators(tenantId, season.id, id)));
         const notesMap = new Map<string, Map<string, CategoryNote[]>>();
-        divIds.forEach((id, i) => notesMap.set(id, notesByDiv[i]));
-        return { rows, notesMap };
+        const overridesMap = new Map<string, Map<string, { avgPrice: number; mkdPct: number }>>();
+        divIds.forEach((id, i) => { notesMap.set(id, notesByDiv[i]); overridesMap.set(id, overridesByDiv[i]); });
+        return { rows, notesMap, overridesMap, divIds };
       }),
-    ).then(perSeason => {
+    ).then(async perSeason => {
       if (cancelled) return;
+
+      // Histórico real (avgPrice/mkdPct/margin) — não depende de temporada,
+      // uma busca por divisão só (getCategoryHistoricalIndicators já cobre
+      // o tenant inteiro daquela divisão).
+      const allDivIds = Array.from(new Set(perSeason.flatMap(s => s.divIds)));
+      const histByDiv = await Promise.all(allDivIds.map(id => getCategoryHistoricalIndicators(tenantId, id)));
+      const histIndicatorsMap = new Map<string, Record<string, { avgPrice: number; mkdPct: number | null; marginPct: number }>>();
+      allDivIds.forEach((id, i) => histIndicatorsMap.set(id, histByDiv[i]));
+
       // Agrega por (divisão, categoria, subcategoria) entre todas as temporadas do ano.
       const byKey = new Map<string, ConsolidatedDbRow[]>();
       const notesByDivCat = new Map<string, CategoryNote | null>();
-      for (const { rows, notesMap } of perSeason) {
+      const overridesByDivCat = new Map<string, { avgPrice: number; mkdPct: number }>();
+      for (const { rows, notesMap, overridesMap } of perSeason) {
         for (const r of rows) {
           const key = `${r.divisionId}::${r.category}::${r.subcategory}`;
           byKey.set(key, [...(byKey.get(key) ?? []), r]);
@@ -152,11 +173,22 @@ export default function FinalPlan() {
             if (notes.length > 0 && !notesByDivCat.has(noteKey)) notesByDivCat.set(noteKey, notes[0]);
           }
         }
+        for (const [divId, catMap] of overridesMap) {
+          for (const [category, ov] of catMap) {
+            const key = `${divId}::${category}`;
+            if (!overridesByDivCat.has(key)) overridesByDivCat.set(key, ov);
+          }
+        }
       }
       const out: StructureRow[] = [];
       for (const [key, group] of byKey) {
         const [divisionId, category, subcategory] = key.split("::");
         const totalRevenue = group.reduce((s, r) => s + r.revenueEstimate, 0);
+        const hist = histIndicatorsMap.get(divisionId)?.[category];
+        const override = overridesByDivCat.get(`${divisionId}::${category}`);
+        // Preço Médio/Remarcação: valor decidido no plano (M6) quando existe;
+        // sem decisão salva, cai pro histórico real como referência.
+        const avgPrice = override?.avgPrice ?? hist?.avgPrice ?? null;
         out.push({
           divisionId,
           divisionLabel: realDivisions.find(d => d.id === divisionId)?.label ?? divisionId,
@@ -167,6 +199,10 @@ export default function FinalPlan() {
           pctMotorGiro: weightedAvg(group.map(r => [r.pctMotorGiro, r.revenueEstimate])),
           pctIconeMarca: weightedAvg(group.map(r => [r.pctIconeMarca, r.revenueEstimate])),
           pctBasico: weightedAvg(group.map(r => [r.pctBasico, r.revenueEstimate])),
+          avgPrice,
+          pieces: avgPrice != null && avgPrice > 0 ? totalRevenue / avgPrice : null,
+          mkdPct: override?.mkdPct ?? hist?.mkdPct ?? null,
+          marginPct: hist?.marginPct ?? null,
           note: notesByDivCat.get(`${divisionId}::${category}`) ?? null,
         });
       }
@@ -275,35 +311,45 @@ export default function FinalPlan() {
         divisionId,
         divisionLabel: rows[0]?.divisionLabel ?? divisionId,
         total: divisionTotal,
-        categories: Array.from(byCategory.entries()).map(([category, catRows]) => ({
-          category,
-          total: catRows.reduce((s, r) => s + r.revenueEstimate, 0),
-          note: catRows.find(r => r.note)?.note ?? null,
-          risk: {
-            sustentador: weightedAvg(catRows.map(r => [r.pctSustentadorMargem, r.revenueEstimate])),
-            motorGiro: weightedAvg(catRows.map(r => [r.pctMotorGiro, r.revenueEstimate])),
-            icone: weightedAvg(catRows.map(r => [r.pctIconeMarca, r.revenueEstimate])),
-            basico: weightedAvg(catRows.map(r => [r.pctBasico, r.revenueEstimate])),
-          },
-          subcategories: catRows.filter(r => r.subcategory),
-        })).sort((a, b) => b.total - a.total),
+        categories: Array.from(byCategory.entries()).map(([category, catRows]) => {
+          const catTotal = catRows.reduce((s, r) => s + r.revenueEstimate, 0);
+          const avgPrice = catRows.find(r => r.avgPrice != null)?.avgPrice ?? null;
+          return {
+            category,
+            total: catTotal,
+            note: catRows.find(r => r.note)?.note ?? null,
+            avgPrice,
+            pieces: avgPrice != null && avgPrice > 0 ? catTotal / avgPrice : null,
+            mkdPct: catRows.find(r => r.mkdPct != null)?.mkdPct ?? null,
+            marginPct: weightedAvg(catRows.map(r => [r.marginPct, r.revenueEstimate])),
+            risk: {
+              // Básico funde no Sustentador de Margem (decisão da usuária).
+              sustentador: weightedAvg(catRows.map(r => [
+                (r.pctSustentadorMargem ?? 0) + (r.pctBasico ?? 0), r.revenueEstimate,
+              ])),
+              motorGiro: weightedAvg(catRows.map(r => [r.pctMotorGiro, r.revenueEstimate])),
+              icone: weightedAvg(catRows.map(r => [r.pctIconeMarca, r.revenueEstimate])),
+            },
+            subcategories: catRows.filter(r => r.subcategory),
+          };
+        }).sort((a, b) => b.total - a.total),
       };
     }).sort((a, b) => b.total - a.total);
   }, [structureRows]);
 
   const totalRevenueStructure = structureRows.reduce((s, r) => s + r.revenueEstimate, 0);
 
-  const riskBar = (risk: { sustentador: number | null; motorGiro: number | null; icone: number | null; basico: number | null }) => {
-    const parts: Array<[number, string]> = [
-      [risk.basico ?? 0, RISK_COLORS.basico],
-      [risk.motorGiro ?? 0, RISK_COLORS.motorGiro],
-      [risk.sustentador ?? 0, RISK_COLORS.sustentador],
-      [risk.icone ?? 0, RISK_COLORS.icone],
+  const riskBar = (risk: { sustentador: number | null; motorGiro: number | null; icone: number | null }) => {
+    const parts: Array<[number, string, string]> = [
+      [risk.sustentador ?? 0, RISK_COLORS.sustentador, "Sustentador de Margem (+ Básico)"],
+      [risk.motorGiro ?? 0, RISK_COLORS.motorGiro, "Motor de Giro"],
+      [risk.icone ?? 0, RISK_COLORS.icone, "Ícone de Marca"],
     ];
     const total = parts.reduce((s, [v]) => s + v, 0);
     if (total <= 0) return <span className="text-[#28071C]/30 text-xs">—</span>;
+    const tooltip = parts.map(([v, , label]) => `${label}: ${v.toFixed(0)}%`).join(" · ");
     return (
-      <div className="flex h-1.5 rounded-full overflow-hidden w-full max-w-[100px]">
+      <div className="flex h-1.5 rounded-full overflow-hidden w-full max-w-[100px]" title={tooltip}>
         {parts.map(([v, color], i) => v > 0 ? <span key={i} style={{ width: `${v}%`, background: color }} /> : null)}
       </div>
     );
@@ -346,14 +392,20 @@ export default function FinalPlan() {
     row(["Total", Math.round(ledgerTotals.pieces), "", ledgerTotals.value.toFixed(2)]);
     row([]);
 
-    row(["Divisão", "Categoria", "Subcategoria", "Faturamento Estimado", "% Sustentador", "% Motor de Giro", "% Ícone", "% Básico"]);
+    row([
+      "Divisão", "Categoria", "Subcategoria", "Peças", "Faturamento Estimado", "Margem %", "Preço Médio", "Remarcação %",
+      "% Sustentador (+ Básico)", "% Motor de Giro", "% Ícone",
+    ]);
     structureRows.forEach(r => row([
       r.divisionLabel, r.category, r.subcategory,
+      r.pieces != null ? Math.round(r.pieces) : "",
       r.revenueEstimate.toFixed(2),
-      r.pctSustentadorMargem?.toFixed(1) ?? "",
+      r.marginPct?.toFixed(1) ?? "",
+      r.avgPrice?.toFixed(2) ?? "",
+      r.mkdPct?.toFixed(1) ?? "",
+      ((r.pctSustentadorMargem ?? 0) + (r.pctBasico ?? 0)).toFixed(1),
       r.pctMotorGiro?.toFixed(1) ?? "",
       r.pctIconeMarca?.toFixed(1) ?? "",
-      r.pctBasico?.toFixed(1) ?? "",
     ]));
 
     return lines.join("\n");
@@ -531,7 +583,12 @@ export default function FinalPlan() {
                         <tr className="text-[9.5px] uppercase tracking-wide text-[#28071C]/40 border-b border-[#28071C]/15">
                           <th className="text-left py-2 pr-3">Estrutura</th>
                           <th className="text-right py-2 px-2">Participação</th>
-                          <th className="text-right py-2 px-2">Faturamento Estimado</th>
+                          <th className="text-right py-2 px-2">Peças</th>
+                          <th className="text-right py-2 px-2">Faturamento</th>
+                          <th className="text-right py-2 px-2">Margem</th>
+                          <th className="text-right py-2 px-2">Preço Médio</th>
+                          <th className="text-right py-2 px-2">Remarcação</th>
+                          <th className="text-right py-2 px-2">GMROI</th>
                           <th className="text-left py-2 px-2 w-[110px]">Risco</th>
                           <th className="text-center py-2 px-2 w-[40px]">Obs.</th>
                         </tr>
@@ -542,7 +599,12 @@ export default function FinalPlan() {
                             <tr className="bg-[#F2F2F2] font-bold">
                               <td className="py-2 pr-3 font-serif text-[13px] text-[#28071C]">{div.divisionLabel}</td>
                               <td className="text-right font-mono py-2 px-2">{totalRevenueStructure > 0 ? fmtPct1((div.total / totalRevenueStructure) * 100) : "—"}</td>
+                              <td className="py-2 px-2"></td>
                               <td className="text-right font-mono py-2 px-2">{fmtMoneyM(div.total)}</td>
+                              <td className="py-2 px-2"></td>
+                              <td className="py-2 px-2"></td>
+                              <td className="py-2 px-2"></td>
+                              <td className="py-2 px-2"></td>
                               <td className="py-2 px-2"></td>
                               <td className="py-2 px-2"></td>
                             </tr>
@@ -565,7 +627,12 @@ export default function FinalPlan() {
                                       </span>
                                     </td>
                                     <td className="text-right font-mono py-2 px-2">{div.total > 0 ? fmtPct1((cat.total / div.total) * 100) : "—"}</td>
+                                    <td className="text-right font-mono py-2 px-2">{cat.pieces != null ? fmtInt(cat.pieces) : "—"}</td>
                                     <td className="text-right font-mono py-2 px-2">{fmtMoneyM(cat.total)}</td>
+                                    <td className="text-right font-mono py-2 px-2">{cat.marginPct != null ? fmtPct1(cat.marginPct) : "—"}</td>
+                                    <td className="text-right font-mono py-2 px-2">{cat.avgPrice != null ? fmtMoney2(cat.avgPrice) : "—"}</td>
+                                    <td className="text-right font-mono py-2 px-2">{cat.mkdPct != null ? fmtPct1(cat.mkdPct) : "—"}</td>
+                                    <td className="text-right font-mono py-2 px-2 text-[#28071C]/25" title="Sem estoque médio real por categoria ainda — não é possível calcular GMROI sem inventar dado.">—</td>
                                     <td className="py-2 px-2">{riskBar(cat.risk)}</td>
                                     <td className="text-center py-2 px-2">
                                       {cat.note ? (
@@ -577,15 +644,24 @@ export default function FinalPlan() {
                                   </tr>
                                   {cat.note && openNotes.has(noteKey) && (
                                     <tr className="bg-[#7598CF]/5">
-                                      <td colSpan={5} className="py-2 px-6 text-[11px] italic text-[#28071C]/70">“{cat.note.note}”</td>
+                                      <td colSpan={10} className="py-2 px-6 text-[11px] italic text-[#28071C]/70">“{cat.note.note}”</td>
                                     </tr>
                                   )}
                                   {mode === "detalhado" && isOpen && cat.subcategories.map(sub => (
                                     <tr key={`${catKey}::${sub.subcategory}`} className="bg-[#F2F2F2]/60 text-[11px]">
                                       <td className="py-1.5 pr-3 pl-10 text-[#28071C]/70">{sub.subcategory}</td>
                                       <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{cat.total > 0 ? fmtPct1((sub.revenueEstimate / cat.total) * 100) : "—"}</td>
+                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.pieces != null ? fmtInt(sub.pieces) : "—"}</td>
                                       <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{fmtMoneyM(sub.revenueEstimate)}</td>
-                                      <td className="py-1.5 px-2">{riskBar({ sustentador: sub.pctSustentadorMargem, motorGiro: sub.pctMotorGiro, icone: sub.pctIconeMarca, basico: sub.pctBasico })}</td>
+                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.marginPct != null ? fmtPct1(sub.marginPct) : "—"}</td>
+                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.avgPrice != null ? fmtMoney2(sub.avgPrice) : "—"}</td>
+                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/70">{sub.mkdPct != null ? fmtPct1(sub.mkdPct) : "—"}</td>
+                                      <td className="text-right font-mono py-1.5 px-2 text-[#28071C]/25">—</td>
+                                      <td className="py-1.5 px-2">{riskBar({
+                                        sustentador: (sub.pctSustentadorMargem ?? 0) + (sub.pctBasico ?? 0),
+                                        motorGiro: sub.pctMotorGiro,
+                                        icone: sub.pctIconeMarca,
+                                      })}</td>
                                       <td></td>
                                     </tr>
                                   ))}
@@ -597,9 +673,8 @@ export default function FinalPlan() {
                       </tbody>
                     </table>
                     <div className="flex gap-4 mt-4 text-[10.5px] text-[#28071C]/55">
-                      <span><i className="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: RISK_COLORS.basico }} />Básico</span>
+                      <span><i className="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: RISK_COLORS.sustentador }} />Sustentador de Margem (+ Básico)</span>
                       <span><i className="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: RISK_COLORS.motorGiro }} />Motor de Giro</span>
-                      <span><i className="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: RISK_COLORS.sustentador }} />Sustentador de Margem</span>
                       <span><i className="inline-block w-2 h-2 rounded-sm mr-1" style={{ background: RISK_COLORS.icone }} />Ícone de Marca</span>
                     </div>
                   </div>
