@@ -1509,6 +1509,53 @@ export type Database = {
         }
         Relationships: []
       }
+      plan_cascade_runs: {
+        Row: {
+          applied_scenario_id: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          module: number
+          season_id: string | null
+          status: string
+          tenant_id: string
+          updated_at: string
+          year: number
+        }
+        Insert: {
+          applied_scenario_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          module: number
+          season_id?: string | null
+          status?: string
+          tenant_id: string
+          updated_at?: string
+          year: number
+        }
+        Update: {
+          applied_scenario_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          module?: number
+          season_id?: string | null
+          status?: string
+          tenant_id?: string
+          updated_at?: string
+          year?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plan_cascade_runs_season_id_fkey"
+            columns: ["season_id"]
+            isOneToOne: false
+            referencedRelation: "seasons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plan_observations: {
         Row: {
           id: string
@@ -2823,6 +2870,44 @@ export type Database = {
         }
         Returns: undefined
       }
+      get_division_giro_by_risk_level: {
+        Args: {
+          p_date_from: string
+          p_date_to: string
+          p_division: string
+          p_tenant_id: string
+        }
+        Returns: Json
+      }
+      get_division_historical_tier_price: {
+        Args: {
+          p_date_from: string
+          p_date_to: string
+          p_division: string
+          p_price_max: number
+          p_price_min: number
+          p_tenant_id: string
+        }
+        Returns: number
+      }
+      get_division_inventory_position: {
+        Args: {
+          p_date_from: string
+          p_date_to: string
+          p_division: string
+          p_tenant_id: string
+        }
+        Returns: Json
+      }
+      get_division_replenishments: {
+        Args: {
+          p_date_from: string
+          p_date_to: string
+          p_division: string
+          p_tenant_id: string
+        }
+        Returns: Json
+      }
       get_hierarchy_revenue_by_path: {
         Args: { p_tenant_id: string }
         Returns: {
@@ -2842,6 +2927,10 @@ export type Database = {
           products_count: number
           sales_count: number
         }[]
+      }
+      get_plan_cascade_status: {
+        Args: { p_tenant_id: string; p_year: number }
+        Returns: Json
       }
       get_sales_historical_summary: {
         Args: { p_tenant_id: string }

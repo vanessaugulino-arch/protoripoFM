@@ -8,6 +8,7 @@ import {
   FlaskConical,
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
+import { resumeCascadeIfIncomplete } from "../../services/cascadeOrchestrator";
 import { getReviewedYears } from "../../services/supabase/channelScenarioService";
 import { getM3AppliedYears } from "../../services/supabase/divisionScenarioService";
 import { getSazonalidadeCompletedYears } from "../../services/supabase/planningScenarioService";
@@ -261,7 +262,15 @@ export default function Dashboard() {
         // Cache de ciclos (M1) só é populado no login/PlanningSetup — em qualquer
         // outra entrada nesta tela (reload, nova aba) ele está vazio e
         // getPlannedYears()/getPlanCycle() ficam mudos até isto rodar de novo.
-        initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
+        initPlanCycles(tid).then(() => {
+          setCyclesReady(v => v + 1);
+          // Cascata Automática: retoma qualquer rodada 1 que ficou incompleta
+          // (aba fechada no meio) — nunca mexe no que já está 'done', só
+          // continua as etapas 'pending'/'blocked_on_dependency'.
+          for (const year of getPlannedYears()) {
+            resumeCascadeIfIncomplete(tid, year, u.email).catch(() => {});
+          }
+        }).catch(() => {});
 
         // Carrega anos revisados (M2), anos com Divisão aplicada e anos com
         // Sazonalidade completa, do Supabase

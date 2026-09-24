@@ -60,39 +60,26 @@ import {
   getHistoricalProfiles,
   normalizeChannelPcts,
 } from "../../services/supabase/historicalProfileService";
+import {
+  type ChannelId,
+  type ChannelData,
+  type MacroRates,
+  CHANNEL_SALES_IDS,
+  CHANNEL_FALLBACK_RATES,
+  RATE_KEYS_FOR_DELTA,
+  APPROVAL_BANDS,
+  isOutsideBand,
+  applyRevenue,
+  buildChannel,
+  initChannelData,
+  computeConsolidatedFromRaw,
+} from "../../engine/channelDefaultScenario";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface UserData { id?: string; name: string; email: string; profile: string }
 
-interface ChannelData {
-  receita: number;           // computed: macroReceita × pct/100
-  margemBrutaRS: number;     // computed: receita × margemBruta/100
-  margemBruta: number;       // % — driver
-  pmv: number;               // R$ — driver
-  ticketMedio: number;       // R$ — driver
-  custoMedio: number;        // R$ — driver
-  giro: number;              // — driver
-  cobertura: number;         // days — driver
-  orcamento: number;           // computed: producao × custoMedio
-  estoqueMedioRS: number;    // computed: receita / giro
-  estoqueMedioPecas: number; // computed
-  mkdPct: number;            // % — driver
-  markdown: number;          // computed: receita × mkdPct/100
-  producao: number;          // computed: receita / pmv
-  totalPecas: number;        // computed: = producao
-  gmroi: number;             // — driver
-}
-
-type ChannelId = "atacado" | "varejo" | "ecommerce";
-
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const CHANNEL_SALES_IDS: Record<ChannelId, SalesChannelId[]> = {
-  atacado:   ["atacado"],
-  varejo:    ["varejo_fisico", "franquia", "popup"],
-  ecommerce: ["ecommerce_proprio", "marketplace", "social_commerce"],
-};
 
 const CHANNEL_LABELS: Record<ChannelId, string> = {
   atacado: "Atacado", varejo: "Varejo", ecommerce: "E-commerce",
@@ -113,42 +100,6 @@ const MACRO_FIELD_LABELS: Record<string, string> = {
 };
 
 const RATE_MACRO_FIELDS = new Set(["margemBruta", "mkdPct", "giro", "cobertura", "gmroi"]);
-
-// ── Bandas bilaterais de aprovação ────────────────────────────────────────────
-// higherIsBetter: true = ↑ melhor | false = ↓ melhor | null = bilateral (cobertura)
-// badNeg: magnitude do gap NEGATIVO que dispara (para ↑: abaixo da meta; para ↓: abaixo tb = suspeito)
-// badPos: magnitude do gap POSITIVO que dispara (para ↑: acima da banda; para ↓: acima da meta = ruim)
-// mode 'pct' = % relativo ao planejado | 'abs' = unidades absolutas
-const APPROVAL_BANDS: Record<string, {
-  higherIsBetter: boolean | null;
-  badNeg: number;
-  badPos: number;
-  mode: 'pct' | 'abs';
-}> = {
-  receitaBruta:  { higherIsBetter: true,  badNeg: 2,   badPos: 2,   mode: 'pct' },
-  margemBruta:   { higherIsBetter: true,  badNeg: 0.5, badPos: 2,   mode: 'abs' },
-  giro:          { higherIsBetter: true,  badNeg: 0.5, badPos: 0.5, mode: 'abs' },
-  pmv:           { higherIsBetter: true,  badNeg: 5,   badPos: 7,   mode: 'pct' },
-  ticketMedio:   { higherIsBetter: true,  badNeg: 5,   badPos: 7,   mode: 'pct' },
-  gmroi:         { higherIsBetter: true,  badNeg: 0.3, badPos: 0.5, mode: 'abs' },
-  custoMedio:    { higherIsBetter: false, badNeg: 5,   badPos: 2,   mode: 'pct' },
-  mkdPct:        { higherIsBetter: false, badNeg: 2,   badPos: 0.5, mode: 'abs' },
-  cobertura:     { higherIsBetter: null,  badNeg: 8,   badPos: 8,   mode: 'abs' },
-  producaoPecas: { higherIsBetter: true,  badNeg: 2,   badPos: 2,   mode: 'pct' },
-  orcamento:     { higherIsBetter: false, badNeg: 5,   badPos: 2,   mode: 'pct' },
-};
-
-function isOutsideBand(key: string, planned: number, projected: number): boolean {
-  const band = APPROVAL_BANDS[key];
-  if (!band || !planned) return false;
-  const gap         = projected - planned;
-  const absPlanned  = Math.abs(planned);
-  const negMag      = band.mode === 'pct' ? (-gap / absPlanned) * 100 : -gap;
-  const posMag      = band.mode === 'pct' ? (gap  / absPlanned) * 100 :  gap;
-  if (band.higherIsBetter === null) return Math.abs(gap) > band.badNeg; // bilateral
-  if (band.higherIsBetter)         return negMag > band.badNeg || posMag > band.badPos;
-  /* lower is better */             return posMag > band.badPos || negMag > band.badNeg;
-}
 
 const DRIVER_FIELDS = new Set<keyof ChannelData>([
   "margemBruta", "pmv", "ticketMedio", "custoMedio", "giro", "cobertura", "mkdPct", "gmroi",
@@ -212,119 +163,7 @@ const DRIVER_TOOLTIP: Partial<Record<keyof ChannelData, string>> = {
   gmroi:        "Lucro bruto gerado por cada R$ investido em estoque. GMROI > 1 indica retorno positivo. Benchmark saudável: acima de 2,0.",
 };
 
-// ─── Pure functions ────────────────────────────────────────────────────────────
-
-function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
-  const orcRate        = data.receita > 0 ? data.orcamento / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365);
-  const estoqueMedioRS = data.giro > 0 ? newReceita / data.giro : 0;
-  const producao       = data.pmv > 0 ? newReceita / data.pmv : 0;
-  return {
-    ...data,
-    receita:           newReceita,
-    margemBrutaRS:     newReceita * data.margemBruta / 100,
-    orcamento:         newReceita * orcRate,
-    estoqueMedioRS,
-    estoqueMedioPecas: data.pmv > 0 ? estoqueMedioRS / data.pmv : 0,
-    producao,
-    totalPecas:        producao,
-    markdown:          newReceita * data.mkdPct / 100,
-  };
-}
-
-function buildChannel(
-  receita: number,
-  rates: Pick<ChannelData, "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi">
-): ChannelData {
-  const estoqueMedioRS = rates.giro > 0 ? receita / rates.giro : 0;
-  const producao       = rates.pmv > 0 ? receita / rates.pmv : 0;
-  const orcRate2       = rates.custoMedio > 0 && rates.pmv > 0 ? rates.custoMedio / rates.pmv : 0.365;
-  return {
-    receita,
-    margemBrutaRS:     receita * rates.margemBruta / 100,
-    ...rates,
-    orcamento:         receita * orcRate2,
-    estoqueMedioRS,
-    estoqueMedioPecas: rates.pmv > 0 ? estoqueMedioRS / rates.pmv : 0,
-    producao,
-    totalPecas:        producao,
-    markdown:          receita * rates.mkdPct / 100,
-  };
-}
-
-// Taxas fallback usadas apenas quando o M1 não tem o indicador planejado.
-// Quando o M1 tem o valor, ele é passado via macroRates e todos os canais
-// iniciam com a mesma taxa → consolidado = exatamente o valor do M1.
-const CHANNEL_FALLBACK_RATES: Record<ChannelId, Pick<ChannelData,
-  "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi"
->> = {
-  atacado:   { margemBruta: 38.5, pmv: 165, ticketMedio: 320, custoMedio: 60, giro: 4.5, cobertura: 80, mkdPct: 4.0, gmroi: 1.85 },
-  varejo:    { margemBruta: 48.0, pmv: 185, ticketMedio: 290, custoMedio: 72, giro: 4.6, cobertura: 75, mkdPct: 4.0, gmroi: 2.35 },
-  ecommerce: { margemBruta: 52.0, pmv: 195, ticketMedio: 340, custoMedio: 75, giro: 4.8, cobertura: 70, mkdPct: 4.0, gmroi: 2.65 },
-};
-
-function initChannelData(
-  macroReceita: number,
-  macroRates?: Partial<Pick<ChannelData, "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi">>
-): Record<ChannelId, ChannelData> {
-  // Se o M1 fornece a taxa, todos os canais iniciam com ela → agregação produz EXATAMENTE o valor do M1.
-  // O usuário então ajusta por canal; desvios disparam o fluxo de aprovação.
-  const ratesFor = (ch: ChannelId) => ({
-    margemBruta: macroRates?.margemBruta ?? CHANNEL_FALLBACK_RATES[ch].margemBruta,
-    pmv:         macroRates?.pmv         ?? CHANNEL_FALLBACK_RATES[ch].pmv,
-    ticketMedio: macroRates?.ticketMedio ?? CHANNEL_FALLBACK_RATES[ch].ticketMedio,
-    custoMedio:  macroRates?.custoMedio  ?? CHANNEL_FALLBACK_RATES[ch].custoMedio,
-    giro:        macroRates?.giro        ?? CHANNEL_FALLBACK_RATES[ch].giro,
-    cobertura:   macroRates?.cobertura   ?? CHANNEL_FALLBACK_RATES[ch].cobertura,
-    mkdPct:      macroRates?.mkdPct      ?? CHANNEL_FALLBACK_RATES[ch].mkdPct,
-    gmroi:       macroRates?.gmroi       ?? CHANNEL_FALLBACK_RATES[ch].gmroi,
-  });
-  return {
-    atacado:   buildChannel(macroReceita * 0.40, ratesFor("atacado")),
-    varejo:    buildChannel(macroReceita * 0.35, ratesFor("varejo")),
-    ecommerce: buildChannel(macroReceita * 0.25, ratesFor("ecommerce")),
-  };
-}
-
 const INIT_PERCENTS: Record<ChannelId, number> = { atacado: 40, varejo: 35, ecommerce: 25 };
-
-// Tipo para as taxas do M1 passadas a M2
-type MacroRates = Partial<Pick<ChannelData,
-  "margemBruta" | "pmv" | "ticketMedio" | "custoMedio" | "giro" | "cobertura" | "mkdPct" | "gmroi"
->>;
-
-const RATE_KEYS_FOR_DELTA: Array<keyof MacroRates> = [
-  "giro", "margemBruta", "mkdPct", "pmv", "cobertura", "gmroi", "custoMedio", "ticketMedio",
-];
-
-/**
- * Calcula taxas consolidadas a partir de dados de canais salvos — sempre dos absolutos
- * acumulados, nunca média ponderada de taxas.
- * Usado para computar o delta entre o cenário salvo e o novo alvo do M1.
- */
-function computeConsolidatedFromRaw(
-  chData: Record<string, Record<string, number>>,
-  channels: ChannelId[]
-): MacroRates {
-  const totalR        = channels.reduce((s, ch) => s + (chData[ch]?.receita       ?? 0), 0);
-  const totalEstMedio = channels.reduce((s, ch) => s + (chData[ch]?.estoqueMedioRS  ?? 0), 0);
-  const totalLucro    = channels.reduce((s, ch) => s + (chData[ch]?.margemBrutaRS  ?? 0), 0);
-  const totalOrc      = channels.reduce((s, ch) => s + (chData[ch]?.orcamento      ?? 0), 0);
-  const totalMkd      = channels.reduce((s, ch) => s + (chData[ch]?.markdown       ?? 0), 0);
-  const totalProd     = channels.reduce((s, ch) => s + (chData[ch]?.producao       ?? 0), 0);
-  const wAvg = (key: string) => totalR > 0
-    ? channels.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR
-    : undefined;
-  return {
-    giro:        totalEstMedio > 0 ? totalR / totalEstMedio          : undefined,
-    cobertura:   totalR > 0       ? (totalEstMedio / totalR) * 365   : undefined,
-    gmroi:       totalEstMedio > 0 ? totalLucro / totalEstMedio      : undefined,
-    margemBruta: totalR > 0       ? (totalLucro / totalR) * 100      : undefined,
-    mkdPct:      totalR > 0       ? (totalMkd / totalR) * 100        : undefined,
-    pmv:         totalProd > 0    ? totalR / totalProd               : undefined,
-    custoMedio:  totalProd > 0    ? totalOrc / totalProd             : undefined,
-    ticketMedio: wAvg("ticketMedio"),
-  };
-}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function ChannelPlanning() {

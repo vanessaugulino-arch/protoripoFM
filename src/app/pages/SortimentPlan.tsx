@@ -86,6 +86,21 @@ import {
 } from "../../services/supabase/collectionPlanService";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import {
+  type Division,
+  type Collection,
+  type CollectionEntry,
+  type CategoryMix,
+  type TierLayer,
+  type CollectionType,
+  type ProfileType,
+  type PriceTier,
+  type MixStatus,
+  DIVISION_NAMES,
+  midpointPrice,
+  buildDivisionsFromM3,
+  buildCollectionsFromM5Division,
+} from "../../engine/sortimentDefaultScenario";
+import {
   getConsolidated,
   computeAndSaveConsolidated,
   exportConsolidatedCsv,
@@ -116,6 +131,7 @@ import {
   hasPendingRequest,
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
+import { isPlanClosed } from "../../services/supabase/cascadeProgressService";
 import { isTemporadaPast, MONTHS } from "../../services/temporadaService";
 import type { Temporada } from "../../services/temporadaService";
 import {
@@ -146,55 +162,7 @@ interface Scenario {
   data: Division[];
 }
 
-type CollectionType = "colecao" | "drop";
-type ProfileType = "Sustentador de Margem" | "Motor de Giro" | "Ícone de Marca";
-type PriceTier = "P1" | "P2" | "P3";
-type MixStatus = "nao_configurado" | "em_andamento" | "validado";
 type ModuleView = "sortiment" | "mix";
-
-interface TierLayer {
-  tier: PriceTier;
-  tierPct: number;   // % da receita da categoria nesta faixa
-  avgPrice: number;  // Preço médio de venda (R$) — editável
-  profile: ProfileType;
-}
-
-interface CategoryMix {
-  id: string;
-  category: string;
-  participationPct: number; // % da receita da coleção
-}
-
-interface CollectionEntry {
-  date: string;  // "YYYY-MM-DD"
-  label: string; // "Entrada 1", "Entrada 2"...
-}
-
-interface Collection {
-  id: string;
-  name: string;
-  type: CollectionType;
-  numEntradas: number;
-  revenuePct: number;   // % da meta de receita da divisão
-  entries: CollectionEntry[];
-  categories: CategoryMix[];
-  tierLayers: Record<string, TierLayer[]>; // chave = category.id
-  mixStatus: MixStatus;
-}
-
-interface Division {
-  id: string;
-  name: string;
-  revenueTarget: number;    // Meta de receita (R$) — do Módulo 4
-  participationPct: number; // % de participação — do Módulo 4
-  targetMarginPct: number;  // Margem alvo (%) — do Módulo 4
-  targetMkdPct: number;     // MKD alvo (%) — do Módulo 4 (semente da Remarcação, Aba 2)
-  pricePyramid: { p1: number; p2: number; p3: number }; // % do Módulo 4
-  avgPriceP1: number;
-  avgPriceP2: number;
-  avgPriceP3: number;
-  collections: Collection[];
-}
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -377,116 +345,6 @@ function monthLabel(ym: string) {
   const months = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
   const m = parseInt(ym.slice(5, 7)) - 1;
   return `${months[m]}/${ym.slice(2, 4)}`;
-}
-
-// ─── M3 → M5 Bridge ──────────────────────────────────────────────────────────
-
-const DIVISION_NAMES: Record<string, string> = {
-  feminino: "Feminino",
-  masculino: "Masculino",
-  acessorios: "Acessórios",
-  infantil: "Infantil",
-};
-
-/** Converte faixa de preço "119-169" em preço médio */
-function midpointPrice(range: string, fallback: number): number {
-  if (!range) return fallback;
-  const parts = range.split("-").map(p => parseFloat(p.trim())).filter(v => !isNaN(v));
-  if (parts.length === 2) return Math.round((parts[0] + parts[1]) / 2);
-  if (parts.length === 1) return parts[0];
-  return fallback;
-}
-
-/**
- * Constrói o array inicial de Division[] para o M5 a partir do cenário ativo do M3.
- * @param m3Row   Linha ativa do division_scenarios (is_applied = true)
- * @param macroRec  Receita total da coleção (do M1, em R$) para calcular revenueTarget
- */
-function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Division[] {
-  const divMap = (m3Row.divisions ?? {}) as Record<string, any>;
-  const divIds = Object.keys(divMap);
-  if (!divIds.length) return [];
-
-  return divIds
-    .map(divId => {
-      const block = divMap[divId] as any;
-      if (!block) return null;
-
-      const participation: number = block.participation ?? 0;
-      const indicators = block.indicators ?? {};
-      const priceRange = block.priceRange ?? {};
-      const riskMatrix = block.riskMatrix ?? {};
-
-      // Receita alvo da divisão = participação % × receita total da coleção
-      const revenueTarget = macroRec > 0 ? Math.round(macroRec * participation / 100) : 0;
-
-      // Preços médios por faixa (P1=entry, P2=middle, P3=premium)
-      const avgPriceP1 = midpointPrice(priceRange.entry ?? "", 120);
-      const avgPriceP2 = midpointPrice(priceRange.middle ?? "", 180);
-      const avgPriceP3 = midpointPrice(priceRange.premium ?? "", 280);
-
-      // Pirâmide de preços: entryPercent/middlePercent/premiumPercent (%)
-      const p1 = priceRange.entryPercent   ?? 40;
-      const p2 = priceRange.middlePercent  ?? 40;
-      const p3 = priceRange.premiumPercent ?? 20;
-
-      // Margem alvo
-      const targetMarginPct = indicators.margin ?? 60;
-      // MKD alvo da divisão (M4) — semente da Remarcação na Aba 2 da Cascata
-      // do Sortimento. Ainda não existe MKD real por categoria (ver
-      // HISTORICAL_CASCADE_ARCHITECTURE.md) — usa o alvo da divisão inteira
-      // uniformemente até essa leitura existir.
-      const targetMkdPct = indicators.mkd ?? 15;
-
-      return {
-        id: divId,
-        name: DIVISION_NAMES[divId] ?? divId.charAt(0).toUpperCase() + divId.slice(1),
-        revenueTarget,
-        participationPct: participation,
-        targetMarginPct,
-        targetMkdPct,
-        pricePyramid: { p1, p2, p3 },
-        avgPriceP1,
-        avgPriceP2,
-        avgPriceP3,
-        collections: [],
-      } as Division;
-    })
-    .filter((d): d is Division => d !== null)
-    .sort((a, b) => b.revenueTarget - a.revenueTarget);
-}
-
-/**
- * Converte as entries de uma divisão do Plano de Coleção (M5 — volume em peças
- * por mês) nas Collection[] do Sortimento (M6 — % de receita da divisão).
- * Cada entry do M5 já é uma coleção/drop com nome+tipo+mês+peças — vira 1
- * Collection com 1 entrada de data. O revenuePct é aproximado a partir da
- * participação de peças dentro da divisão (o M5 não modela preço/receita).
- */
-function buildCollectionsFromM5Division(
-  m5div: CollectionPlanDivision | undefined,
-  monthToYear: Map<string, number>,
-): Collection[] {
-  if (!m5div || !m5div.entries || m5div.entries.length === 0) return [];
-  const totalPieces = m5div.entries.reduce((s, e) => s + (e.plannedPieces || 0), 0);
-  if (totalPieces <= 0) return [];
-
-  return m5div.entries.map((e, i) => {
-    const year = monthToYear.get(e.month);
-    const monthIdx = MONTHS.indexOf(e.month); // 0-based
-    const date = year && monthIdx >= 0 ? `${year}-${String(monthIdx + 1).padStart(2, "0")}-01` : "";
-    return {
-      id: e.id || `m5-${i}-${Date.now()}`,
-      name: e.name || `Coleção ${i + 1}`,
-      type: e.type,
-      numEntradas: 1,
-      revenuePct: Math.round((e.plannedPieces / totalPieces) * 1000) / 10,
-      entries: date ? [{ date, label: "Entrada 1" }] : [],
-      categories: [],
-      tierLayers: {},
-      mixStatus: "nao_configurado" as MixStatus,
-    };
-  });
 }
 
 // Sentinel parent_path para tratar CATEGORIAS como irmãs entre si (mesma
@@ -914,6 +772,9 @@ export default function SortimentPlan() {
           mixRevenue:       d.collections.reduce((s, c) => s + colRevenue(d, c), 0),
         })),
       };
+      // Pós-fechamento (Cascata Automática): toda revisão vai direto pro M1
+      // aprovar — antes de fechado, mantém a relação de sempre (Sortimento pede à Divisão).
+      const closed = await isPlanClosed(user.tenant_id, year);
       await createApprovalRequest({
         tenantId:           user.tenant_id,
         year,
@@ -923,7 +784,7 @@ export default function SortimentPlan() {
         // Nomes de variáveis locais (requestM3Justif etc.) continuam com "M3"
         // por serem só identificadores internos — não afeta o comportamento.
         fromModule:         6,
-        toModule:           4,
+        toModule:           closed ? 1 : 4,
         requesterEmail:     user.email,
         justification:      requestM3Justif.trim(),
         proposedData:       proposedData as Record<string, unknown>,

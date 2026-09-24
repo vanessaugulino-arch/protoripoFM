@@ -61,8 +61,17 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * Todos os blocos iniciam com a mesma taxa macro → o consolidado inicial
  * produz EXATAMENTE os valores do M1.
  * O usuário depois ajusta por divisão; desvios disparam o fluxo de aprovação.
+ *
+ * @param participationOverrides Cascata Automática: participação real (histórica
+ * ou sugerida pela Sazonalidade) por divisão, quando já disponível — substitui
+ * a divisão igualitária padrão e mantém unitsExpectedSold/estoque consistentes
+ * com ela (ver Module3DivisionPlanning.tsx, mesmo padrão de sazonalidadeSuggestedPct).
  */
-function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget): Record<BusinessDivisionId, DivisionPlanBlock> {
+export function initializeDivisions(
+  divisionIds: string[],
+  macroTargets?: MacroTarget,
+  participationOverrides?: Record<string, number>,
+): Record<BusinessDivisionId, DivisionPlanBlock> {
   const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
   // Bootstrap com divisão igualitária — o efeito de proporções históricas reais
   // (Module3DivisionPlanning, via getHistoricalProfiles) corrige isso logo em
@@ -78,18 +87,19 @@ function initializeDivisions(divisionIds: string[], macroTargets?: MacroTarget):
   const giro     = 180 / coverage;
 
   divisionIds.forEach((divId) => {
+    const participation = participationOverrides?.[divId] ?? equalShare;
     // Peças esperadas: deriva de receita_divisão ÷ preço médio, igual à mesma
     // fórmula usada no motor de consolidação (calculateScenarioConsolidated).
     // Antes era um literal fixo (1200) igual pra QUALQUER divisão, dando a
     // falsa impressão de que duas divisões distintas tinham o mesmo volume —
     // agora varia com a participação real de cada uma (mesmo que comece
     // igualitária, aqui) e com a receita real da temporada.
-    const revDiv = (macroTargets?.revenue ?? 0) * (equalShare / 100);
+    const revDiv = (macroTargets?.revenue ?? 0) * (participation / 100);
     const unitsExpectedSold = avgPrice > 0 && revDiv > 0 ? Math.round(revDiv / avgPrice) : 1200;
 
     divisions[divId] = {
       divisionId: divId,
-      participation: equalShare,
+      participation,
       indicators: {
         avgPrice,
         mkd:         15,

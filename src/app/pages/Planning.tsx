@@ -18,7 +18,11 @@ import {
 } from '../../services/supabase/planApprovalService';
 import { applyChannelScenario as dbApplyChannelScenario } from '../../services/supabase/channelScenarioService';
 import { applyDivisionScenarioById } from '../../services/supabase/divisionScenarioService';
-import { recomputeOfficialMacro, recomputeMacroFromDivisions } from '../../services/supabase/officialPlanService';
+import { recomputeOfficialMacro, recomputeMacroFromDivisions, linkAppliedMonthScenario } from '../../services/supabase/officialPlanService';
+import { getPlanCascadeStatus, isPlanClosed } from '../../services/supabase/cascadeProgressService';
+import { runCascadeFromM1 } from '../../services/cascadeOrchestrator';
+import { getCycle, applyScenario as applyPlanningScenario } from '../../services/supabase/planningScenarioService';
+import { applyCollectionPlanScenario } from '../../services/supabase/collectionPlanService';
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
@@ -547,7 +551,27 @@ export default function Planning() {
     setSaveDialogOpen(true)
   }
 
+  const CASCADE_MODULE_LABELS: Record<number, string> = {
+    2: "Canal", 3: "Sazonalidade", 4: "Divisão", 5: "Coleção", 6: "Sortimento",
+  }
+
   const handleConfirmSave = async () => {
+    // Trava da Cascata Automática: uma vez que a rodada 1 começou (M1 salvo
+    // pela 1ª vez pra este ano), o M1 só pode ser reeditado depois que TODOS
+    // os módulos abaixo tiverem aplicado — é o M1 quem valida essas edições,
+    // então ele não pode mudar debaixo do pé de quem ainda está processando.
+    if (tenantId) {
+      const cascadeStatus = await getPlanCascadeStatus(tenantId, year)
+      if (cascadeStatus.started && !cascadeStatus.closed) {
+        const pending = cascadeStatus.steps.filter(s => s.status !== "done")
+        const pendingModules = [...new Set(pending.map(s => CASCADE_MODULE_LABELS[s.module] ?? `Módulo ${s.module}`))]
+        alert(
+          `O Planejamento Estratégico está travado: a cascata automática ainda está processando ${pendingModules.join(", ")}.\n\n` +
+          `Assim que todos os módulos aplicarem a rodada 1, o M1 libera para edição de novo.`
+        )
+        return
+      }
+    }
     const { name, dbSaved } = await saveScenario(scenarioNameInput || undefined)
     if (!dbSaved) {
       alert(`O cenário "${name}" apareceu na tela, mas não foi possível confirmar a gravação no banco de dados.\n\nTente salvar novamente — se persistir, avise o suporte.`)
@@ -562,6 +586,13 @@ export default function Planning() {
     }
     setSaveDialogOpen(false)
     setScenarioNameInput("")
+    // Cascata Automática: só dispara mesmo na 1ª vez que o M1 é salvo pra
+    // este ano (runCascadeFromM1 checa isso sozinho) — uma revisão posterior
+    // (plano já fechado) não redispara a rodada 1. Roda em segundo plano,
+    // sem travar a tela; plan_cascade_runs é a fonte de verdade do progresso.
+    if (tenantId) {
+      runCascadeFromM1(tenantId, year, user?.email).catch(() => { /* falhas ficam registradas em plan_cascade_runs, não aqui */ })
+    }
   }
 
   const [isExportingPDF, setIsExportingPDF] = useState(false)
@@ -622,17 +653,28 @@ export default function Planning() {
     try {
       await resolveApproval(req.id, decision, user.email)
       // Se aprovado, aplica o cenário do módulo SOLICITANTE e sobrescreve o macro
-      // oficial pela realidade granular (upward ripple). Ramifica pelo from_module:
-      //   M2 (canal)   → aplica cenário de canal + recompute do canal
-      //   M4 (divisão) → aplica cenário de divisão + recompute divisão→mês→macro
-      // Correção do bug B2: antes aplicava SEMPRE cenário de canal, quebrando
-      // Divisão→M1. Divisão é M4 (era M3) — renumerado pela nova ordem do fluxo
-      // (Canal → Sazonalidade → Divisão → Sortimento).
-      if (decision === 'approved' && req.scenario_id && tenantId) {
-        if (req.from_module === 4) {
+      // oficial pela realidade granular (upward ripple). Ramifica pelo from_module —
+      // desde o roteamento pós-fechamento (Cascata Automática), QUALQUER módulo
+      // (2 a 6) pode mandar pedido direto pro M1, não só Canal/Divisão como antes.
+      if (decision === 'approved' && tenantId) {
+        if (req.from_module === 4 && req.scenario_id) {
           await applyDivisionScenarioById(tenantId, req.scenario_id)
           await recomputeMacroFromDivisions(tenantId, req.year)
-        } else {
+        } else if (req.from_module === 3 && req.scenario_id) {
+          const cycle = await getCycle(tenantId, req.year)
+          if (cycle) {
+            await applyPlanningScenario(tenantId, cycle.id, req.scenario_id, user.email)
+            await linkAppliedMonthScenario(tenantId, req.year, req.scenario_id)
+          }
+        } else if (req.from_module === 5 && req.scenario_id) {
+          const seasonId = (req.proposed_data as { seasonId?: string } | null)?.seasonId
+          if (seasonId) await applyCollectionPlanScenario(tenantId, seasonId, req.scenario_id)
+        } else if (req.from_module === 6) {
+          // M6 não tem cenário separado do plano de trabalho (sortiment_plans já
+          // é a versão corrente) — só reafirma o Plano Oficial a partir das
+          // divisões aplicadas, mesmo padrão já usado quando M4 aprova M6.
+          await recomputeMacroFromDivisions(tenantId, req.year)
+        } else if (req.scenario_id) {
           await dbApplyChannelScenario(tenantId, req.year, req.scenario_id)
           await recomputeOfficialMacro(tenantId, req.year)
         }

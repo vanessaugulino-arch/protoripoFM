@@ -70,6 +70,7 @@ import {
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
 import { advanceDetailLevel } from "../../services/supabase/officialPlanService";
+import { isPlanClosed } from "../../services/supabase/cascadeProgressService";
 
 interface UserData {
   name: string;
@@ -497,11 +498,15 @@ export default function CollectionPlan() {
       // revisado, mesmo que o rascunho continue mudando depois do envio).
       const snapshotName = `Aprovação ${new Date().toLocaleString("pt-BR")}`;
       const snapshot = await saveCollectionPlanScenario(tenantId, selectedSeasonId, snapshotName, divisionsPlan, sourceDivisionScenarioId);
+      const year = selectedTemporada.anoFiscal ?? new Date().getFullYear();
+      // Pós-fechamento (Cascata Automática): toda revisão vai direto pro M1
+      // aprovar — antes de fechado, mantém a relação de sempre (Coleção pede à Divisão).
+      const closed = await isPlanClosed(tenantId, year);
       await createApprovalRequest({
         tenantId,
-        year: selectedTemporada.anoFiscal ?? new Date().getFullYear(),
+        year,
         fromModule: 5,
-        toModule: 4,
+        toModule: closed ? 1 : 4,
         requesterEmail: user.email,
         justification: approvalJustification.trim(),
         proposedData: { seasonId: selectedSeasonId, divisions: snapshot.divisions } as Record<string, unknown>,

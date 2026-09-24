@@ -128,13 +128,18 @@ export async function listScenarios(
   return (data ?? []) as PlanningScenarioRow[];
 }
 
+/**
+ * @param sourceChannelScenarioId Linhagem M2→M3 (só relevante para linhas de
+ * Sazonalidade/M3 — linhas de M1 deixam null).
+ */
 export async function saveScenario(
   tenantId: string,
   cycleId: string,
   name: string,
   version: number,
   values: Record<string, unknown>,
-  createdBy?: string
+  createdBy?: string,
+  sourceChannelScenarioId?: string | null,
 ): Promise<PlanningScenarioRow> {
   const { data, error } = await supabase
     .from("planning_scenarios")
@@ -146,6 +151,7 @@ export async function saveScenario(
       values: values as unknown as import('../../lib/database.types').Json,
       is_applied: false,
       created_by: createdBy ?? null,
+      source_channel_scenario_id: sourceChannelScenarioId ?? null,
     })
     .select()
     .single();

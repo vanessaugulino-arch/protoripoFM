@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { supabase } from "../../lib/supabase";
 import { getCycle, listScenarios as dbListScenarios } from "../../services/supabase/planningScenarioService";
 import { linkAppliedMonthScenario } from "../../services/supabase/officialPlanService";
+import { isPlanClosed } from "../../services/supabase/cascadeProgressService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   listSupplyFornecedores, calcBudgetProjection, getAvgPurchaseCost,
@@ -24,6 +25,7 @@ import {
   type ImpactedIndicator,
 } from "../../services/supabase/planApprovalService";
 import { getReviewedYears, getAppliedChannelScenario } from "../../services/supabase/channelScenarioService";
+import { ONBOARDING_TO_CANAL_ID, computeMonthDivergence } from "../../engine/monthDefaultScenario";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
@@ -82,13 +84,6 @@ const TODOS_CANAIS: { id: string; name: string; color: string; prevColor: string
   { id: "marketplace",     name: "Marketplace",     color: "#5BB8C4", prevColor: "#5BB8C455" },
   { id: "social_commerce", name: "Social Commerce", color: "#E8A0BF", prevColor: "#E8A0BF55" },
 ];
-
-const ONBOARDING_TO_CANAL_ID: Record<string, string> = {
-  varejo_fisico: "varejo", ecommerce_proprio: "ecommerce",
-  marketplace: "marketplace", atacado: "atacado",
-  franquia: "franquia", multimarca_canal: "multimarca",
-  popup: "popup", social_commerce: "social_commerce",
-};
 
 // ── Helper functions ────────────────────────────────────────────────────────────
 function generateMonthRange(mesInicio: string, mesFim: string): string[] {
@@ -683,9 +678,7 @@ export default function CycleValidation() {
     [canalCalcResults],
   );
 
-  const divergence    = totalPlanned - macroMeta.metaReceita;
-  const divergencePct = macroMeta.metaReceita > 0 ? (divergence / macroMeta.metaReceita) * 100 : 0;
-  const hasDivergence = macroMeta.metaReceita > 0 && Math.abs(divergence) > 500;
+  const { divergence, divergencePct, hasDivergence } = computeMonthDivergence(macroMeta.metaReceita, totalPlanned);
 
   const avgCoverage = useMemo(() => {
     const all = canalCalcResults.flatMap(c => c.months.map(m => m.coberturaReal)).filter(v => v > 0);
@@ -857,13 +850,15 @@ export default function CycleValidation() {
     setIsSubmittingApproval(true);
     try {
       const appliedSc = scenarios.find(s => s.id === appliedScenarioId) ?? scenarios[scenarios.length - 1] ?? null;
+      // Pós-fechamento (Cascata Automática): toda revisão vai direto pro M1
+      // aprovar, sem passar pela cadeia normal — antes de fechado, mantém a
+      // relação de sempre (Sazonalidade pede ao Canal).
+      const closed = await isPlanClosed(tenantId, selectedFiscalYear);
       await createApprovalRequest({
         // BUG real corrigido aqui: usava sempre o ano civil corrente, nunca
         // o ano fiscal que o usuário estava de fato planejando.
         tenantId, year: selectedFiscalYear,
-        // Sazonalidade agora é M3 (era M4) — pede aprovação ao M2 (Canal), mesma
-        // relação de sempre, só renumerada pela nova ordem do fluxo.
-        fromModule: 3, toModule: 2,
+        fromModule: 3, toModule: closed ? 1 : 2,
         requesterEmail: user.email,
         justification: approvalJustification,
         proposedData: { totalPlanned, divergence, divergencePct, avgCoverage },
