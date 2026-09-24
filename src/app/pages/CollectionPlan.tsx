@@ -519,7 +519,6 @@ export default function CollectionPlan() {
             <div id="tour-cp-header" className="flex items-center">
               <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 5</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-2">· Plano de Coleção</span>
-              <AssortmentEngineeringTabs active="collection" />
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -538,6 +537,7 @@ export default function CollectionPlan() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
+        <AssortmentEngineeringTabs active="collection" />
         {eligibleSeasons.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
             <div className="bg-white rounded-2xl shadow-md border border-[#28071C]/8 p-10 max-w-lg w-full">

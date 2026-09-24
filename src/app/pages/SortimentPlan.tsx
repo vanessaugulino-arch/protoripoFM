@@ -39,6 +39,8 @@ import {
   HelpCircle,
   SendHorizonal,
   StickyNote,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { AssortmentEngineeringTabs } from "../components/AssortmentEngineeringTabs";
@@ -1345,7 +1347,6 @@ export default function SortimentPlan() {
                 Fashion Mind · Módulo 6
               </span>
               <span className="text-[#F6F3AA]/70 text-sm ml-2">· Engenharia de Sortimento</span>
-              <AssortmentEngineeringTabs active="sortiment" />
               {/* Temporada selecionada — chip clicável para trocar */}
               {seasonId ? (
                 <button
@@ -1546,7 +1547,8 @@ export default function SortimentPlan() {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-5">
+      <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
+        <AssortmentEngineeringTabs active="sortiment" />
 
         {/* ── Guard: nenhuma temporada planejada selecionada ──────────────── */}
         {!seasonId && (
@@ -2064,24 +2066,40 @@ export default function SortimentPlan() {
                                           const pct = cell?.pct ?? 0;
                                           const cellRevenue = categoryRevenue * (pct / 100);
                                           const cellPieces = avgPriceByTier[tier] > 0 ? cellRevenue / avgPriceByTier[tier] : 0;
+                                          const histRevenue = cell?.historicalRevenue ?? 0;
+                                          const histDelta = histRevenue > 0 ? ((cellRevenue - histRevenue) / histRevenue) * 100 : null;
                                           return (
-                                            <td key={rl} className="py-2 px-2 text-center">
-                                              <div className="flex items-center justify-center gap-0.5">
-                                                <input
-                                                  type="number"
-                                                  min={0}
-                                                  max={100}
-                                                  step={0.1}
-                                                  value={Math.round(pct * 10) / 10}
-                                                  onChange={e => handleGridCellEdit(grid, tier, rl, parseFloat(e.target.value) || 0)}
-                                                  className="w-14 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
-                                                />
-                                                <span className="text-[9px] text-[#28071C]/40">%</span>
-                                              </div>
-                                              <div className="text-[9px] text-[#28071C]/50 mt-0.5">
-                                                {gridUnit === "revenue"
-                                                  ? fmtCurrency(cellRevenue)
-                                                  : `${Math.round(cellPieces).toLocaleString("pt-BR")} pçs`}
+                                            <td key={rl} className="py-2 px-2">
+                                              <div className="flex items-center justify-center gap-4">
+                                                <div className="flex flex-col items-center flex-shrink-0">
+                                                  <div className="flex items-center justify-center gap-0.5">
+                                                    <input
+                                                      type="number"
+                                                      min={0}
+                                                      max={100}
+                                                      step={0.1}
+                                                      value={Math.round(pct * 10) / 10}
+                                                      onChange={e => handleGridCellEdit(grid, tier, rl, parseFloat(e.target.value) || 0)}
+                                                      className="w-14 text-center bg-white border border-[#28071C]/15 rounded px-1 py-0.5 text-[#28071C] font-medium focus:outline-none focus:ring-1 focus:ring-[#7598CF]"
+                                                    />
+                                                    <span className="text-[9px] text-[#28071C]/40">%</span>
+                                                  </div>
+                                                  <div className="text-[9px] text-[#28071C]/50 mt-0.5">
+                                                    {gridUnit === "revenue"
+                                                      ? fmtCurrency(cellRevenue)
+                                                      : `${Math.round(cellPieces).toLocaleString("pt-BR")} pçs`}
+                                                  </div>
+                                                </div>
+                                                {histDelta !== null && (
+                                                  <div className="flex flex-col items-center flex-shrink-0 border-l border-[#28071C]/8 pl-4" title="Estimativa proporcional a partir do histórico real de vendas desta categoria/risco">
+                                                    <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/35">Ano ant.</span>
+                                                    <span className="text-[10px] text-[#28071C]/55">{fmtCurrency(histRevenue)}</span>
+                                                    <span className={`flex items-center gap-0.5 text-[9px] font-semibold ${histDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                                      {histDelta >= 0 ? <ArrowUp className="w-2 h-2" /> : <ArrowDown className="w-2 h-2" />}
+                                                      {histDelta >= 0 ? "+" : ""}{histDelta.toFixed(0)}%
+                                                    </span>
+                                                  </div>
+                                                )}
                                               </div>
                                             </td>
                                           );

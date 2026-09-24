@@ -37,6 +37,16 @@ export interface GridCell {
   riskLevel:  RiskLevelId
   pct:        number   // 0–100, participação desta célula na receita da categoria
   isOverride: boolean  // true quando veio de sortiment_grid_adjustments (não do cálculo)
+  /**
+   * Referência real do ano anterior para esta célula: receita histórica da
+   * categoria neste nível de risco (getHierarchyRevenueByPath, todas as
+   * faixas somadas) distribuída pela mesma participação de faixa (P1/P2/P3)
+   * já decidida na Pirâmide de Preço — não existe faixa de preço marcada no
+   * histórico de vendas, então esta é uma estimativa proporcional (mesmo
+   * princípio já usado no painel M2/M3), não um valor histórico exato desta
+   * combinação faixa×risco. 0 quando não há histórico para este risco.
+   */
+  historicalRevenue: number
 }
 
 export interface CategoryGrid {
@@ -98,6 +108,7 @@ export async function computeCategoryGrids(
           riskLevel:  rl,
           pct:        override ?? (tierPct[tier] * riskPct[rl] * 100),
           isOverride: override != null,
+          historicalRevenue: (riskTotals.get(rl) ?? 0) * tierPct[tier],
         })
       }
     }
