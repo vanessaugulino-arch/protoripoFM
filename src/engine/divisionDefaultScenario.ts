@@ -15,8 +15,9 @@ import { seasonFiscalYearsTouched } from '../services/supabase/planningScenarioS
 import { expandSeasonMonths } from './seasonMonths'
 import { getHistoricalProfiles, normalizeDivisionPcts } from '../services/supabase/historicalProfileService'
 import { getDivisionSeasonality } from '../services/supabase/divisionSeasonalityService'
+import { getDivisionRiskProfile } from '../services/supabase/consolidatedHierarchyService'
 import { initializeDivisions } from '../hooks/useModule3'
-import type { MacroTarget, DivisionPlanBlock } from '../app/types/module3'
+import type { MacroTarget, DivisionPlanBlock, RiskMatrix } from '../app/types/module3'
 import { MONTHS } from '../services/temporadaService'
 
 export interface SeasonRef {
@@ -130,6 +131,10 @@ export async function computeDefaultDivisionScenario(
     }
   }
 
-  const divisions = initializeDivisions(divisionIds, macroTargets, participationOverrides)
+  // Matriz de risco real (products.risk_level por divisão) — mesma fonte do
+  // painel de Giro por Perfil de Risco do M5, fecha o gap "Básico só no M6".
+  const riskMatrixOverrides = await getDivisionRiskProfile(tenantId).catch(() => ({} as Record<string, RiskMatrix>))
+
+  const divisions = initializeDivisions(divisionIds, macroTargets, participationOverrides, riskMatrixOverrides)
   return { divisions, macroTargets }
 }

@@ -47,6 +47,8 @@ const CHANNEL_PLANNING_TOUR: TourStep[] = [
 import { exportToPDF } from "../../utils/exportPDF";
 import type { SalesChannelId } from "../types/onboarding";
 import { useOnboardingProfile } from "../../hooks/useOnboardingProfile";
+import { getAppliedDivisionParticipationForYear, type DivisionParticipationBySeason } from "../../services/supabase/divisionScenarioService";
+import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import {
   saveChannelScenario as dbSaveChannelScenario,
@@ -229,6 +231,17 @@ export default function ChannelPlanning() {
   const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
   const [reviewedYears, setReviewedYears]       = useState<number[]>([]);
   const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
+  // Painel informativo (só leitura): como a receita do ano se divide por
+  // divisão real do M4 — M2 nunca armazenou nada disso, é só a % aplicada
+  // no M4 pra cada temporada do ano, mostrada aqui como referência.
+  const [divisionParticipationByYear, setDivisionParticipationByYear] = useState<DivisionParticipationBySeason[]>([]);
+  const [tenantDivisions, setTenantDivisions] = useState<TenantDivision[]>([]);
+
+  useEffect(() => {
+    if (!tenantId) { setDivisionParticipationByYear([]); return; }
+    getAppliedDivisionParticipationForYear(tenantId, selectedYear).then(setDivisionParticipationByYear).catch(() => setDivisionParticipationByYear([]));
+    fetchTenantDivisions(tenantId).then(setTenantDivisions).catch(() => {});
+  }, [tenantId, selectedYear]);
 
   const planCycle    = getPlanCycle(selectedYear);
   // Trava real (não só a do card do Dashboard): sem M1 salvo para este ano,
@@ -1023,6 +1036,39 @@ export default function ChannelPlanning() {
                 Plano {consolidated.receita >= histReference.totalReceita ? "+" : ""}{(((consolidated.receita - histReference.totalReceita) / histReference.totalReceita) * 100).toFixed(1)}% vs. ano anterior
               </span>
             )}
+          </div>
+        )}
+
+        {/* ── Divisão (estimado) — painel só-leitura ────────────────────────────
+            M2 nunca armazenou divisão nenhuma (só canal). Isto NÃO é um
+            cruzamento real canal×divisão — é a % real aplicada no M4 pra cada
+            temporada do ano, multiplicada pela receita total do plano aqui,
+            como referência de "pra onde essa receita tende a ir". */}
+        {divisionParticipationByYear.length > 0 && (
+          <div className="bg-white/70 border border-[#28071C]/8 rounded-xl px-4 py-2.5 mb-4">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-[#28071C]/40">Divisão (estimado, do Módulo 4)</span>
+              <span className="text-[9px] text-[#28071C]/35" title="Não é um dado real por canal — é a % de participação aplicada no M4 para a temporada, aplicada sobre a receita total do plano. M2 não armazena divisão.">
+                ⓘ estimativa proporcional
+              </span>
+            </div>
+            <div className="space-y-1">
+              {divisionParticipationByYear.map(season => (
+                <div key={season.seasonId} className="flex items-center gap-3 flex-wrap text-xs">
+                  <span className="text-[#28071C]/50 font-medium">{season.seasonName}:</span>
+                  {Object.entries(season.participations).map(([divId, pct]) => {
+                    const label = tenantDivisions.find(d => d.id === divId)?.label ?? divId;
+                    const estRevenue = macroReceita * (pct / 100);
+                    return (
+                      <span key={divId} className="text-[#28071C]/70">
+                        {label}: <strong className="text-[#28071C]">{pct.toFixed(0)}%</strong>
+                        <span className="text-[#28071C]/40"> (R$ {Math.round(estRevenue).toLocaleString("pt-BR")})</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

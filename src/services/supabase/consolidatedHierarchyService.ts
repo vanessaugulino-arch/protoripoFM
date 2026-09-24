@@ -45,6 +45,7 @@ export interface ConsolidatedRow {
   pctSustentadorMargem: number | null
   pctMotorGiro: number | null
   pctIconeMarca: number | null
+  pctBasico: number | null
 }
 
 const NO_SUBCATEGORY = '(sem subcategoria)'
@@ -74,6 +75,41 @@ export async function getHierarchyRevenueByPath(tenantId: string): Promise<Hiera
     riskLevel:    (r.risk_level as string) ?? null,
     totalRevenue: Number(r.total_revenue) || 0,
   }))
+}
+
+/**
+ * Matriz de risco REAL por divisão — distribuição de receita histórica por
+ * products.risk_level (mesma fonte usada no painel de Giro por Perfil de
+ * Risco do M5), agregada a partir de getHierarchyRevenueByPath. Fecha o gap
+ * "Básico só existe no M6" — antes o M4 só tinha um default genérico
+ * (3 vias, sem nenhuma base real), sem nenhuma ponte com o histórico real de
+ * risco que o catálogo já tem.
+ */
+export async function getDivisionRiskProfile(
+  tenantId: string,
+): Promise<Record<string, { sustentadorMargem: number; motorGiro: number; iconeMarca: number; basico: number }>> {
+  const weights = await getHierarchyRevenueByPath(tenantId)
+  const byDivision = new Map<string, Map<string, number>>()
+  for (const w of weights) {
+    if (!w.riskLevel) continue
+    const divId = normalizeDivision(w.division)
+    if (!byDivision.has(divId)) byDivision.set(divId, new Map())
+    const m = byDivision.get(divId)!
+    m.set(w.riskLevel, (m.get(w.riskLevel) ?? 0) + w.totalRevenue)
+  }
+
+  const result: Record<string, { sustentadorMargem: number; motorGiro: number; iconeMarca: number; basico: number }> = {}
+  for (const [divId, m] of byDivision) {
+    const sum = Array.from(m.values()).reduce((s, v) => s + v, 0)
+    if (sum <= 0) continue
+    result[divId] = {
+      sustentadorMargem: ((m.get('sustentador') ?? 0) / sum) * 100,
+      motorGiro:          ((m.get('motor_giro')  ?? 0) / sum) * 100,
+      iconeMarca:         ((m.get('icone')       ?? 0) / sum) * 100,
+      basico:             ((m.get('basico')      ?? 0) / sum) * 100,
+    }
+  }
+  return result
 }
 
 // ── Composição: aplica os inputs reais (M3 + Pirâmide) sobre a hierarquia real,
@@ -141,6 +177,7 @@ export async function computeConsolidatedRows(
     const pctSustentadorMargem = riskMatrix.sustentadorMargem ?? null
     const pctMotorGiro         = riskMatrix.motorGiro ?? null
     const pctIconeMarca        = riskMatrix.iconeMarca ?? null
+    const pctBasico            = riskMatrix.basico ?? null
 
     // Caminhos reais do catálogo desta divisão (compara pelo id normalizado —
     // products.division guarda o rótulo bruto, ex. "Feminino").
@@ -210,6 +247,7 @@ export async function computeConsolidatedRows(
             pctSustentadorMargem,
             pctMotorGiro,
             pctIconeMarca,
+            pctBasico,
           })
         }
       }
@@ -252,6 +290,7 @@ export async function computeAndSaveConsolidated(
       pct_sustentador_margem: r.pctSustentadorMargem,
       pct_motor_giro:         r.pctMotorGiro,
       pct_icone_marca:        r.pctIconeMarca,
+      pct_basico:             r.pctBasico,
       updated_at:             new Date().toISOString(),
     }))
 
@@ -301,6 +340,7 @@ export async function getConsolidated(
     pctSustentadorMargem:  r.pct_sustentador_margem != null ? Number(r.pct_sustentador_margem) : null,
     pctMotorGiro:          r.pct_motor_giro != null ? Number(r.pct_motor_giro) : null,
     pctIconeMarca:         r.pct_icone_marca != null ? Number(r.pct_icone_marca) : null,
+    pctBasico:             r.pct_basico != null ? Number(r.pct_basico) : null,
     updatedAt:             r.updated_at,
   }))
 }
@@ -310,7 +350,7 @@ export async function getConsolidated(
 export function buildConsolidatedCsv(rows: ConsolidatedDbRow[]): string {
   const header = [
     'Divisão', 'Categoria', 'Subcategoria', 'Linha', 'Faixa de Preço',
-    'Receita Estimada', '% Sustentador de Margem', '% Motor de Giro', '% Ícone de Marca',
+    'Receita Estimada', '% Sustentador de Margem', '% Motor de Giro', '% Ícone de Marca', '% Básico',
     'Atualizado em',
   ]
   const lines = rows.map(r => [
@@ -323,6 +363,7 @@ export function buildConsolidatedCsv(rows: ConsolidatedDbRow[]): string {
     r.pctSustentadorMargem?.toFixed(1) ?? '',
     r.pctMotorGiro?.toFixed(1) ?? '',
     r.pctIconeMarca?.toFixed(1) ?? '',
+    r.pctBasico?.toFixed(1) ?? '',
     r.updatedAt,
   ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(';'))
 

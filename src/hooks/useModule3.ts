@@ -66,11 +66,15 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * ou sugerida pela Sazonalidade) por divisão, quando já disponível — substitui
  * a divisão igualitária padrão e mantém unitsExpectedSold/estoque consistentes
  * com ela (ver Module3DivisionPlanning.tsx, mesmo padrão de sazonalidadeSuggestedPct).
+ * @param riskMatrixOverrides Cascata Automática: matriz de risco real por
+ * divisão (distribuição de products.risk_level, mesma fonte usada no painel
+ * de Giro por Perfil de Risco do M5) — substitui o default genérico quando disponível.
  */
 export function initializeDivisions(
   divisionIds: string[],
   macroTargets?: MacroTarget,
   participationOverrides?: Record<string, number>,
+  riskMatrixOverrides?: Record<string, RiskMatrix>,
 ): Record<BusinessDivisionId, DivisionPlanBlock> {
   const divisions: Record<BusinessDivisionId, DivisionPlanBlock> = {} as Record<BusinessDivisionId, DivisionPlanBlock>;
   // Bootstrap com divisão igualitária — o efeito de proporções históricas reais
@@ -115,10 +119,11 @@ export function initializeDivisions(
         middlePercent: 50,
         premiumPercent: 20,
       },
-      riskMatrix: {
-        sustentadorMargem: 40,
-        motorGiro: 40,
+      riskMatrix: riskMatrixOverrides?.[divId] ?? {
+        sustentadorMargem: 35,
+        motorGiro: 35,
         iconeMarca: 20,
+        basico: 10,
       },
       volumeCoverage: {
         coverage,

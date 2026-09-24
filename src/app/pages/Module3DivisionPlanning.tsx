@@ -134,7 +134,7 @@ import {
   applyDivisionScenario,
 } from "../../services/supabase/divisionScenarioService";
 import { recomputeMacroFromDivisions, advanceDetailLevel } from "../../services/supabase/officialPlanService";
-import { computeAndSaveConsolidated, exportConsolidatedCsv } from "../../services/supabase/consolidatedHierarchyService";
+import { computeAndSaveConsolidated, exportConsolidatedCsv, getDivisionRiskProfile } from "../../services/supabase/consolidatedHierarchyService";
 import { useModule3 } from "../../hooks/useModule3";
 import {
   fetchHistoricalTierAvgs,
@@ -563,11 +563,18 @@ export default function Module3DivisionPlanning() {
       .map((t) => {
         const anoBase = t.anoFiscal ?? new Date().getFullYear();
         const anosNecessarios = seasonFiscalYearsTouched(t.mesInicio, t.mesFim, anoBase);
-        const anosFaltando = anosNecessarios.filter((y) => !sazonalidadeCompletedYears.includes(y));
-        return { temporada: t, anosNecessarios, anosFaltando, liberada: anosFaltando.length === 0 };
+        // Antes só checava a Sazonalidade (M3) aqui — o Canal (M2) só era
+        // checado depois, no momento de aplicar (handleApplyMetas). Agora o
+        // seletor já mostra a temporada travada se faltar QUALQUER um dos
+        // dois, em vez de deixar o usuário escolher, planejar tudo, e só
+        // descobrir a trava do M2 ao tentar aplicar.
+        const anosFaltandoM2 = anosNecessarios.filter((y) => !m2ReviewedYears.includes(y));
+        const anosFaltandoM3 = anosNecessarios.filter((y) => !sazonalidadeCompletedYears.includes(y));
+        const anosFaltando = Array.from(new Set([...anosFaltandoM2, ...anosFaltandoM3])).sort((a, b) => a - b);
+        return { temporada: t, anosNecessarios, anosFaltando, anosFaltandoM2, anosFaltandoM3, liberada: anosFaltando.length === 0 };
       })
       .sort((a, b) => (a.temporada.anoFiscal ?? 0) - (b.temporada.anoFiscal ?? 0));
-  }, [temporadas, sazonalidadeCompletedYears]);
+  }, [temporadas, sazonalidadeCompletedYears, m2ReviewedYears]);
 
   // Anos fiscais disponíveis para o 1º passo do popup — cada um com quantas
   // das suas temporadas já estão liberadas, pra dar uma pista antes de entrar.
@@ -719,6 +726,26 @@ export default function Module3DivisionPlanning() {
       }
     });
   }, [selectedSeasonId, sazonalidadeSuggestedPct, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Semeia a Matriz de Risco com a distribuição REAL de products.risk_level
+  // por divisão (mesma fonte do painel de Giro por Perfil de Risco do M5) —
+  // antes o default era só um chute genérico (35/35/20/10), igual pra
+  // qualquer tenant/divisão. Mesmo padrão one-shot das outras sementes: só
+  // roda uma vez por temporada e só antes de haver plano salvo.
+  const seededRiskMatrixRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!tenantId || !selectedSeasonId || divisionIds.length === 0) return;
+    if (seededRiskMatrixRef.current.has(selectedSeasonId)) return;
+    seededRiskMatrixRef.current.add(selectedSeasonId);
+    if (listModule3Scenarios(selectedSeasonId).length > 0) return; // já tem plano salvo
+
+    getDivisionRiskProfile(tenantId).then(profiles => {
+      divisionIds.forEach(divId => {
+        const p = profiles[divId];
+        if (p) updateRiskMatrix(divId, p);
+      });
+    }).catch(() => {});
+  }, [tenantId, selectedSeasonId, divisionIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Busca médias históricas por faixa para todas as divisões — usadas na compact card view.
   // Carrega os ranges dinâmicos do OperationSettings antes de filtrar os produtos;
@@ -1152,9 +1179,9 @@ export default function Module3DivisionPlanning() {
                 {/* Mesmo filtro de liberação do popup — antes este select
                     deixava escolher qualquer temporada, inclusive travada
                     esperando Sazonalidade de outro ano, sem nenhum aviso. */}
-                {temporadasComStatus.map(({ temporada: t, liberada }) => (
+                {temporadasComStatus.map(({ temporada: t, liberada, anosFaltandoM2, anosFaltandoM3 }) => (
                   <option key={t.id} value={t.id} disabled={!liberada}>
-                    {t.nome}{!liberada ? " (aguardando Sazonalidade)" : ""}
+                    {t.nome}{!liberada ? ` (aguardando ${[anosFaltandoM2.length > 0 ? "Canal" : null, anosFaltandoM3.length > 0 ? "Sazonalidade" : null].filter(Boolean).join(" e ")})` : ""}
                   </option>
                 ))}
               </select>
@@ -1843,7 +1870,7 @@ export default function Module3DivisionPlanning() {
                 </>
               )}
 
-              {seasonPickerStep === "temporada" && temporadasDoAnoSelecionado.map(({ temporada: t, anosNecessarios, anosFaltando, liberada }) => {
+              {seasonPickerStep === "temporada" && temporadasDoAnoSelecionado.map(({ temporada: t, anosNecessarios, anosFaltandoM2, anosFaltandoM3, liberada }) => {
                 const isSelected = String(t.id) === selectedSeasonId;
                 const cruzaAno = anosNecessarios.length > 1;
                 return (
@@ -1877,7 +1904,10 @@ export default function Module3DivisionPlanning() {
                     </p>
                     {!liberada && (
                       <p className="text-amber-700 text-xs mt-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                        Aguardando Sazonalidade (Módulo 3) do(s) ano(s) {anosFaltando.join(", ")} — complete lá antes de planejar a divisão desta temporada.
+                        Aguardando {[
+                          anosFaltandoM2.length > 0 ? `Canal (Módulo 2) do(s) ano(s) ${anosFaltandoM2.join(", ")}` : null,
+                          anosFaltandoM3.length > 0 ? `Sazonalidade (Módulo 3) do(s) ano(s) ${anosFaltandoM3.join(", ")}` : null,
+                        ].filter(Boolean).join(" e ")} — complete antes de planejar a divisão desta temporada.
                       </p>
                     )}
                   </button>
@@ -2138,7 +2168,7 @@ function DivisionBlockCard({
   const [showReviewModal, setShowReviewModal] = useState(false);
 
   const riskValid = isValidRiskMatrix(block.riskMatrix);
-  const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca;
+  const riskTotal = block.riskMatrix.sustentadorMargem + block.riskMatrix.motorGiro + block.riskMatrix.iconeMarca + (block.riskMatrix.basico ?? 0);
 
   const divisionName = divisionLabel;
 
@@ -2428,11 +2458,13 @@ function DivisionBlockCard({
           <CompactRiskField label="Sustentador de Margem" value={block.riskMatrix.sustentadorMargem} onChange={(v) => onUpdateRiskMatrix({ sustentadorMargem: v })} color="bg-blue-500" />
           <CompactRiskField label="Motor de Giro"        value={block.riskMatrix.motorGiro}        onChange={(v) => onUpdateRiskMatrix({ motorGiro: v })}        color="bg-amber-500" />
           <CompactRiskField label="Ícone de Marca"       value={block.riskMatrix.iconeMarca}       onChange={(v) => onUpdateRiskMatrix({ iconeMarca: v })}       color="bg-red-500" />
+          <CompactRiskField label="Básico"               value={block.riskMatrix.basico ?? 0}      onChange={(v) => onUpdateRiskMatrix({ basico: v })}           color="bg-slate-400" />
         </div>
         <div className="mt-2 h-1 rounded-full overflow-hidden flex">
           <div className="bg-blue-500  transition-all duration-300" style={{ width: `${block.riskMatrix.sustentadorMargem}%` }} />
           <div className="bg-amber-500 transition-all duration-300" style={{ width: `${block.riskMatrix.motorGiro}%` }} />
           <div className="bg-red-500   transition-all duration-300" style={{ width: `${block.riskMatrix.iconeMarca}%` }} />
+          <div className="bg-slate-400 transition-all duration-300" style={{ width: `${block.riskMatrix.basico ?? 0}%` }} />
         </div>
       </div>
 

@@ -3,9 +3,9 @@ import { supabase } from "../../lib/supabase";
 import { useNavigate } from "react-router";
 import {
   LogOut, Settings, TrendingUp, BarChart3, Package, FileText,
-  Layers, Shield, User, Lock, ChevronRight, Globe, Users,
+  Layers, User, Lock, ChevronRight, Globe, Users,
   MonitorPlay, ClipboardList, SlidersHorizontal, Bug, HelpCircle,
-  FlaskConical,
+  FlaskConical, FileDown,
 } from "lucide-react";
 import { getPlanCycle, getPlannedYears, initPlanCycles } from "../types/planCycle";
 import { resumeCascadeIfIncomplete } from "../../services/cascadeOrchestrator";
@@ -42,14 +42,14 @@ const DASHBOARD_TOUR: TourStep[] = [
     content: "Cada canal se divide por linha de produto e Coleção, já com a curva mensal da Sazonalidade definida. Você define a pirâmide de preço de cada divisão e visualiza o risco antes de aprovar a distribuição.",
   },
   {
-    targetId: "tour-module-5",
-    title: "Plano de Coleção",
-    content: "Distribua o volume de peças estimado da temporada entre coleções e drops por mês, acompanhando a cobertura em tempo real.",
-  },
-  {
     targetId: "tour-module-6",
     title: "Engenharia de Sortimento",
-    content: "Desenvolva a engenharia de sortimento com base nas metas definidas. Detalhe categorias, preços e atributos.",
+    content: "Distribua coleções e drops por mês e desenvolva o sortimento em categorias, preços e atributos — as duas etapas de uma mesma decisão, em abas.",
+  },
+  {
+    targetId: "tour-module-7",
+    title: "Plano Final",
+    content: "Consolide o plano completo — macro, sazonalidade, divisão, coleções e sortimento — numa tela pronta para imprimir ou baixar em Excel.",
   },
   {
     targetId: "tour-settings-btn",
@@ -139,35 +139,35 @@ const MODULE_CARDS: ModuleCard[] = [
     requiresModules: [3],
   },
   {
-    // Fase 4/5: novo módulo — régua de tempo da temporada onde o usuário
-    // distribui o volume de peças estimado (vindo do M4/Divisão) entre
-    // coleções e drops por mês. Libera junto com o M6 (Sortimento), pois o
-    // usuário pode justificar sua estratégia de coleções na Engenharia de
-    // Sortimento mesmo antes de fechar o Plano de Coleção.
-    id: 5,
-    title: "Plano de Coleção",
-    level: "Operacional",
-    levelColor: "text-[#28071C]",
-    icon: Shield,
-    description: "Distribua o volume de peças estimado da temporada entre coleções e drops por mês, acompanhando a cobertura em tempo real.",
-    cta: "Planejar coleção",
-    route: "/collection-plan",
-    ceoOnly: false,
-    requiresModules: [4],
-  },
-  {
-    // Fase 4/5: era M5 "Plano de Sortimento" — renomeado e renumerado para
-    // M6 com a entrada do Plano de Coleção como novo M5.
+    // Fase 5/6: Plano de Coleção (M5) e Sortimento (M6) viraram abas de uma
+    // única experiência "Engenharia de Sortimento" — um só card no Dashboard,
+    // a barra de abas (AssortmentEngineeringTabs) leva de uma pra outra.
     id: 6,
     title: "Engenharia de Sortimento",
     level: "Operacional",
     levelColor: "text-[#28071C]",
     icon: FileText,
-    description: "Desenvolva a engenharia de sortimento com base nas metas definidas. Detalhe categorias, preços e atributos.",
+    description: "Distribua coleções e drops por mês e desenvolva o sortimento em categorias, preços e atributos — as duas etapas de uma mesma decisão, em abas.",
     cta: "Acessar sortimento",
     route: "/sortiment-plan",
     ceoOnly: false,
     requiresModules: [4],
+  },
+  {
+    // Fase 5/6: novo módulo — consolida M1-M6 para impressão/apresentação e
+    // exportação. Disponível a partir do M1 salvo (o usuário pode assumir um
+    // plano só no macro, mesmo não sendo o recomendado); a própria tela
+    // degrada mostrando o que já existir dos módulos seguintes.
+    id: 7,
+    title: "Plano Final",
+    level: "Entrega",
+    levelColor: "text-[#28071C]",
+    icon: FileDown,
+    description: "Consolide o plano completo — macro, sazonalidade, divisão, coleções e sortimento — para imprimir ou baixar em Excel.",
+    cta: "Ver plano final",
+    route: "/final-plan",
+    ceoOnly: false,
+    requiresModules: [1],
   },
 ];
 

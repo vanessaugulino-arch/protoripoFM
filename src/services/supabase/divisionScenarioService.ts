@@ -19,6 +19,58 @@ export interface DivisionScenarioRow {
   source_month_scenario_id: string | null;
 }
 
+// ─── Quebra por divisão de um ano fiscal (painel informativo M2/M3) ──────────
+// M2 (Canal) e M3 (Sazonalidade) não armazenam divisão nenhuma — só canal e
+// canal×mês. Isso mostra, de forma só-leitura, como a receita do ano se
+// divide por divisão real do M4 (uma ou duas temporadas, Verão/Inverno) —
+// uma estimativa proporcional (mesma divisão aplicada a qualquer canal/mês),
+// não um cruzamento real canal×divisão (que não existe em lugar nenhum hoje).
+
+export interface DivisionParticipationBySeason {
+  seasonId: string;
+  seasonName: string;
+  /** divisionId -> % de participação (0-100) aplicada no M4 para esta temporada. */
+  participations: Record<string, number>;
+}
+
+export async function getAppliedDivisionParticipationForYear(
+  tenantId: string,
+  year: number,
+): Promise<DivisionParticipationBySeason[]> {
+  const db = supabase as any;
+  const { data, error } = await db
+    .from("division_scenarios")
+    .select("season_id, divisions")
+    .eq("tenant_id", tenantId)
+    .eq("year", year)
+    .eq("is_applied", true);
+
+  if (error || !data || data.length === 0) return [];
+
+  // Sem FK declarada entre division_scenarios.season_id e seasons.id — o
+  // PostgREST não resolve um embed automático aqui, por isso 2 consultas
+  // separadas + join no cliente, em vez de seasons(name).
+  const seasonIds = (data as any[]).map(r => r.season_id as string);
+  const { data: seasonsRows } = await db
+    .from("seasons")
+    .select("id, name")
+    .in("id", seasonIds);
+  const nameById = new Map<string, string>((seasonsRows ?? []).map((s: any) => [s.id, s.name as string]));
+
+  return (data as any[]).map(row => {
+    const divisions = (row.divisions ?? {}) as Record<string, { participation?: number }>;
+    const participations: Record<string, number> = {};
+    for (const [divId, block] of Object.entries(divisions)) {
+      participations[divId] = block?.participation ?? 0;
+    }
+    return {
+      seasonId: row.season_id as string,
+      seasonName: nameById.get(row.season_id as string) ?? row.season_id,
+      participations,
+    };
+  });
+}
+
 // ─── Anos com cenário de divisão aplicado (para desbloqueio do M5) ────────────
 // Usado pelo Dashboard: M5 só libera para o ANO cujo M3 foi de fato aplicado —
 // sem isso, um M3 aplicado num ciclo antigo "vazava" e liberava M5 para sempre,

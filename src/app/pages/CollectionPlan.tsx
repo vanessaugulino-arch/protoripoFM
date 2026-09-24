@@ -71,6 +71,8 @@ import {
 } from "../../services/supabase/planApprovalService";
 import { advanceDetailLevel } from "../../services/supabase/officialPlanService";
 import { isPlanClosed } from "../../services/supabase/cascadeProgressService";
+import { computeMonthlyExpectedSold, buildDivisionTimeline } from "../../engine/collectionMonthlyLedger";
+import { AssortmentEngineeringTabs } from "../components/AssortmentEngineeringTabs";
 
 interface UserData {
   name: string;
@@ -328,27 +330,8 @@ export default function CollectionPlan() {
   // não está disponível (ex.: cenário legado sem plannedRevenue salvo). ──
   const monthlyExpectedSold = useCallback((divisionId: string): Record<string, number> => {
     const target = targets[divisionId];
-    if (!target || seasonMonths.length === 0) return {};
-    const { participation, avgPrice, unitsExpectedSold } = target;
-
-    if (sazonalidadeMonthlyTotal && avgPrice > 0 && participation > 0) {
-      const result: Record<string, number> = {};
-      seasonMonths.forEach(m => {
-        const receitaMes = sazonalidadeMonthlyTotal[m] ?? 0;
-        result[m] = (receitaMes * (participation / 100)) / avgPrice;
-      });
-      return result;
-    }
-
-    // Fallback: peso histórico distribuindo o total de peças da temporada.
-    if (!unitsExpectedSold) return {};
     const profile = histProfiles.find(p => p.division === divisionId);
-    const weights = seasonMonths.map(m => profile?.monthlyPcts[m] ?? 0);
-    const sumW = weights.reduce((s, w) => s + w, 0);
-    const norm = sumW > 0 ? weights.map(w => w / sumW) : seasonMonths.map(() => 1 / seasonMonths.length);
-    const result: Record<string, number> = {};
-    seasonMonths.forEach((m, i) => { result[m] = unitsExpectedSold * norm[i]; });
-    return result;
+    return computeMonthlyExpectedSold(target, seasonMonths, sazonalidadeMonthlyTotal, profile);
   }, [targets, histProfiles, seasonMonths, sazonalidadeMonthlyTotal]);
 
   // ─── Timeline mensal: 4 linhas pedidas pela usuária —
@@ -369,32 +352,12 @@ export default function CollectionPlan() {
   // Importante: o estoque projetado (stockEnd) usa SEMPRE o que foi de fato
   // planejado em coleções (entered), nunca a necessidade — a necessidade é
   // só uma referência para a estilista decidir se ajusta o plano.
-  const COBERTURA_JANELA_DIAS = 90;
   const buildTimeline = useCallback((divisionId: string) => {
     const div = divisionsPlan[divisionId];
     const target = targets[divisionId];
     if (!div) return [];
     const expected = monthlyExpectedSold(divisionId);
-    const covMonths = Math.round(COBERTURA_JANELA_DIAS / 30); // 3 meses ≈ 90 dias
-    let stockStart = target?.initialStock ?? 0;
-    return seasonMonths.map((month, i) => {
-      const entries = div.entries.filter(e => e.month === month);
-      const entered = entries.reduce((s, e) => s + e.plannedPieces, 0);
-      const soldExpected = expected[month] ?? 0;
-      const necessidadeEntrada = Math.max(0, soldExpected - stockStart);
-      const diferenca = entered - necessidadeEntrada;
-      const stockEnd = stockStart + entered - soldExpected;
-      // Demanda dos próximos ~90 dias (mês atual + os 2 seguintes dentro da
-      // temporada) — janela fixa, não extrapolação de um único mês.
-      const demanda90d = seasonMonths
-        .slice(i, i + covMonths)
-        .reduce((s, m) => s + (expected[m] ?? 0), 0);
-      const coverageDays = demanda90d > 0
-        ? (stockEnd / demanda90d) * COBERTURA_JANELA_DIAS
-        : (stockEnd > 0 ? Infinity : 0);
-      stockStart = stockEnd;
-      return { month, entries, necessidadeEntrada, entered, diferenca, soldExpected, stockEnd, coverageDays };
-    });
+    return buildDivisionTimeline(div.entries, target, seasonMonths, expected);
   }, [divisionsPlan, targets, monthlyExpectedSold, seasonMonths]);
 
   // ─── Alocado vs volume-teto, por divisão ─────────────────────────────────
@@ -553,9 +516,10 @@ export default function CollectionPlan() {
             <button onClick={() => navigate("/dashboard")} className="text-[#F6F3AA] hover:opacity-80 transition-opacity">
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div id="tour-cp-header">
+            <div id="tour-cp-header" className="flex items-center">
               <span className="text-[#F6F3AA] text-base font-semibold">Fashion Mind · Módulo 5</span>
               <span className="text-[#F6F3AA]/70 text-sm ml-2">· Plano de Coleção</span>
+              <AssortmentEngineeringTabs active="collection" />
             </div>
           </div>
           <div className="flex items-center gap-4">

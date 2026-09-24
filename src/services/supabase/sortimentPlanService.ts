@@ -27,6 +27,8 @@ export interface SortimentScenario {
   savedAt: string;
   // data é o array de Division[] armazenado como jsonb
   data: Record<string, unknown>[];
+  /** Plano de Coleção (M5, collection_plans.id) que originou este cenário — null se montado direto do M4. */
+  sourceCollectionPlanId: string | null;
 }
 
 export interface SortimentWorkingPlan {
@@ -112,7 +114,7 @@ export async function listPlanScenarios(
 ): Promise<SortimentScenario[]> {
   const { data, error } = await supabase
     .from("sortiment_plans")
-    .select("id, name, saved_at, divisions")
+    .select("id, name, saved_at, divisions, source_collection_plan_id")
     .eq("tenant_id", tenantId)
     .eq("season_id", seasonId)
     .eq("is_applied", false)
@@ -128,14 +130,22 @@ export async function listPlanScenarios(
     name: row.name as string,
     savedAt: row.saved_at as string,
     data: (row.divisions as Record<string, unknown>[]) ?? [],
+    sourceCollectionPlanId: (row.source_collection_plan_id as string | null) ?? null,
   }));
 }
 
+/**
+ * @param sourceCollectionPlanId Vínculo com o Plano de Coleção (M5) que deu
+ * origem a este cenário — permite listar Coleção+Sortimento como uma única
+ * "Engenharia de Sortimento". Omitido (undefined/null) em cenários montados
+ * direto do M4, sem passar por um Plano de Coleção nomeado.
+ */
 export async function savePlanScenario(
   tenantId: string,
   seasonId: string,
   name: string,
   divisions: Record<string, unknown>[],
+  sourceCollectionPlanId?: string | null,
 ): Promise<SortimentScenario> {
   const savedAt = new Date().toISOString();
   const { data, error } = await supabase
@@ -147,8 +157,9 @@ export async function savePlanScenario(
       divisions: divisions as unknown as import('../../lib/database.types').Json,
       is_applied: false,
       saved_at: savedAt,
+      source_collection_plan_id: sourceCollectionPlanId ?? null,
     })
-    .select("id, name, saved_at, divisions")
+    .select("id, name, saved_at, divisions, source_collection_plan_id")
     .single();
 
   if (error) throw error;
@@ -158,6 +169,7 @@ export async function savePlanScenario(
     name: data.name as string,
     savedAt: data.saved_at as string,
     data: (data.divisions as Record<string, unknown>[]) ?? [],
+    sourceCollectionPlanId: (data.source_collection_plan_id as string | null) ?? null,
   };
 }
 

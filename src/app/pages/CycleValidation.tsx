@@ -26,6 +26,8 @@ import {
 } from "../../services/supabase/planApprovalService";
 import { getReviewedYears, getAppliedChannelScenario } from "../../services/supabase/channelScenarioService";
 import { ONBOARDING_TO_CANAL_ID, computeMonthDivergence } from "../../engine/monthDefaultScenario";
+import { getAppliedDivisionParticipationForYear, type DivisionParticipationBySeason } from "../../services/supabase/divisionScenarioService";
+import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
@@ -302,6 +304,17 @@ export default function CycleValidation() {
 
   // Macro reference
   const [macroMeta, setMacroMeta] = useState({ metaReceita: 0, margemMeta: 45, orcamento: 0 });
+
+  // Painel informativo (só leitura): como a receita do ano se divide por
+  // divisão real do M4 — M3 nunca armazenou divisão nenhuma, é só a %
+  // aplicada no M4 pra cada temporada do ano, mostrada aqui como referência.
+  const [divisionParticipationByYear, setDivisionParticipationByYear] = useState<DivisionParticipationBySeason[]>([]);
+  const [tenantDivisions, setTenantDivisions] = useState<TenantDivision[]>([]);
+  useEffect(() => {
+    if (!tenantId) { setDivisionParticipationByYear([]); return; }
+    getAppliedDivisionParticipationForYear(tenantId, selectedFiscalYear).then(setDivisionParticipationByYear).catch(() => setDivisionParticipationByYear([]));
+    fetchTenantDivisions(tenantId).then(setTenantDivisions).catch(() => {});
+  }, [tenantId, selectedFiscalYear]);
 
   // Module view
   // Fase 3: a aba "Plano por Divisão" foi removida daqui — dependia da
@@ -1045,6 +1058,38 @@ export default function CycleValidation() {
                 </div>
               </div>
             </div>
+
+            {/* ── Divisão (estimado) — painel só-leitura ──────────────────────
+                M3 nunca armazenou divisão nenhuma (só canal×mês). NÃO é um
+                cruzamento real canal×divisão — é a % real aplicada no M4 pra
+                cada temporada do ano, aplicada sobre a meta macro do ano. */}
+            {divisionParticipationByYear.length > 0 && (
+              <div className="bg-white/70 border border-[#28071C]/8 rounded-xl px-4 py-2.5">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[#28071C]/40">Divisão (estimado, do Módulo 4)</span>
+                  <span className="text-[9px] text-[#28071C]/35" title="Não é um dado real por canal/mês — é a % de participação aplicada no M4 para a temporada, aplicada sobre a meta macro do ano. M3 não armazena divisão.">
+                    ⓘ estimativa proporcional
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {divisionParticipationByYear.map(season => (
+                    <div key={season.seasonId} className="flex items-center gap-3 flex-wrap text-xs">
+                      <span className="text-[#28071C]/50 font-medium">{season.seasonName}:</span>
+                      {Object.entries(season.participations).map(([divId, pct]) => {
+                        const label = tenantDivisions.find(d => d.id === divId)?.label ?? divId;
+                        const estRevenue = macroMeta.metaReceita * (pct / 100);
+                        return (
+                          <span key={divId} className="text-[#28071C]/70">
+                            {label}: <strong className="text-[#28071C]">{pct.toFixed(0)}%</strong>
+                            <span className="text-[#28071C]/40"> ({fmtR(estRevenue)})</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Module tab bar ── */}
             <div className="flex items-center gap-1 bg-white/60 backdrop-blur-sm rounded-2xl p-1.5 shadow-sm">

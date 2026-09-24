@@ -659,6 +659,7 @@ export type Database = {
           division_id: string
           id: string
           linha: string
+          pct_basico: number | null
           pct_icone_marca: number | null
           pct_motor_giro: number | null
           pct_sustentador_margem: number | null
@@ -674,6 +675,7 @@ export type Database = {
           division_id: string
           id?: string
           linha?: string
+          pct_basico?: number | null
           pct_icone_marca?: number | null
           pct_motor_giro?: number | null
           pct_sustentador_margem?: number | null
@@ -689,6 +691,7 @@ export type Database = {
           division_id?: string
           id?: string
           linha?: string
+          pct_basico?: number | null
           pct_icone_marca?: number | null
           pct_motor_giro?: number | null
           pct_sustentador_margem?: number | null

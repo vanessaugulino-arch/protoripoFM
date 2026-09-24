@@ -55,8 +55,12 @@ export interface RiskMatrix {
   sustentadorMargem: number;   // % Sustentador de Margem
   motorGiro: number;           // % Motor de Giro
   iconeMarca: number;          // % Ícone de Marca
+  // 2026-09: 4ª via — antes só existia no M6 (RISK_LEVELS inclui 'basico'),
+  // o M4 ficava 3 vias sem reconciliação com a grade Faixa×Risco do
+  // Sortimento, que já é 4 vias há tempos.
+  basico: number;              // % Básico
 
-  // Validação: sustentadorMargem + motorGiro + iconeMarca = 100
+  // Validação: sustentadorMargem + motorGiro + iconeMarca + basico = 100
 }
 
 // ─── Volume, Orçamento e Cobertura ──────────────────────────────────────────────
@@ -236,7 +240,8 @@ export function isValidRiskMatrix(riskMatrix: RiskMatrix): boolean {
   const total =
     riskMatrix.sustentadorMargem +
     riskMatrix.motorGiro +
-    riskMatrix.iconeMarca;
+    riskMatrix.iconeMarca +
+    (riskMatrix.basico ?? 0);
   return Math.abs(total - 100) < 0.01; // Tolerância de 0.01%
 }
 

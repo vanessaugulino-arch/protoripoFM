@@ -41,6 +41,7 @@ import {
   StickyNote,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
+import { AssortmentEngineeringTabs } from "../components/AssortmentEngineeringTabs";
 import { useTour } from "../hooks/useTour";
 
 const SORTIMENT_TOUR: TourStep[] = [
@@ -466,6 +467,7 @@ export default function SortimentPlan() {
       sustentador: first.pctSustentadorMargem,
       motorGiro: first.pctMotorGiro,
       icone: first.pctIconeMarca,
+      basico: first.pctBasico,
     };
   }, [cascadeForActiveDivision]);
 
@@ -650,9 +652,22 @@ export default function SortimentPlan() {
   const [m3RequestPending,   setM3RequestPending]   = useState(false);
   const [m3RequestSent,      setM3RequestSent]      = useState(false);
 
+  // Pré-preenche o nome do cenário com o do Plano de Coleção (M5) vinculado,
+  // assim que o modal abre — nome é sempre o mesmo dos dois lados.
+  useEffect(() => {
+    if (!showSaveModal || !sourceCollectionPlanId) return;
+    const linked = collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId);
+    if (linked) setScenarioName(linked.name);
+  }, [showSaveModal, sourceCollectionPlanId, collectionPlansForSeason]);
+
   const saveScenario = () => {
-    if (!scenarioName.trim() || !seasonId || !user?.tenant_id) return;
-    const name = scenarioName.trim();
+    // Vinculado a um Plano de Coleção (M5): nome é sempre o do M5 (fonte
+    // única de verdade), evita nomes divergentes entre as duas etapas.
+    const linkedCollectionPlan = sourceCollectionPlanId
+      ? collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId)
+      : undefined;
+    const name = (linkedCollectionPlan?.name ?? scenarioName).trim();
+    if (!name || !seasonId || !user?.tenant_id) return;
     const data: Division[] = JSON.parse(JSON.stringify(divisions)); // deep clone
     setScenarioName("");
     setShowSaveModal(false);
@@ -661,6 +676,7 @@ export default function SortimentPlan() {
       seasonId,
       name,
       data as unknown as Record<string, unknown>[],
+      sourceCollectionPlanId,
     ).then(row => {
       setScenarios(prev => [...prev, { ...row, data }]);
     }).catch(err => {
@@ -732,6 +748,56 @@ export default function SortimentPlan() {
   const exportCascadeCsv = () => {
     if (!user?.tenant_id || !seasonId) return;
     exportConsolidatedCsv(user.tenant_id, seasonId).catch(() => {});
+  };
+
+  // Cascata por mês — fecha o gap "M6 não tem dimensão de mês na própria
+  // grade": a grade categoria×subcategoria×linha×faixa em si (e a tabela que
+  // a alimenta, division_hierarchy_consolidated) segue sem coluna de mês —
+  // mudar isso multiplicaria o número de linhas por 12 pra um dado que já é
+  // estimado. Em vez disso, deriva o mês combinando dois dados reais que já
+  // existem: a receita já calculada por categoria/faixa (consolidatedRows) e
+  // a distribuição real por mês das collections/drops de cada divisão (a
+  // mesma que já embasa "Coleções por Mês"). Pressupõe que o mix de
+  // categoria/faixa não muda mês a mês dentro da divisão — mesmo nível de
+  // aproximação já usado em todo o resto da cascata do M6.
+  const exportCascadeByMonthCsv = () => {
+    const header = ["Divisão", "Categoria", "Subcategoria", "Linha", "Faixa de Preço", "Mês", "Receita Estimada (R$)"];
+    const lines: string[] = [];
+    for (const div of divisions) {
+      const monthShare: Record<string, number> = {}; // "YYYY-MM" -> % da receita da divisão
+      for (const col of div.collections) {
+        if (col.entries.length === 0) continue;
+        const perEntryPct = col.revenuePct / col.entries.length;
+        for (const entry of col.entries) {
+          if (!entry.date) continue;
+          const ym = entry.date.slice(0, 7);
+          monthShare[ym] = (monthShare[ym] ?? 0) + perEntryPct;
+        }
+      }
+      const months = Object.entries(monthShare);
+      const divRows = consolidatedRows.filter(r => r.divisionId === div.id);
+      for (const row of divRows) {
+        const targets = months.length > 0 ? months : [["(sem mês definido)", 100]] as [string, number][];
+        for (const [ym, pct] of targets) {
+          const monthRevenue = row.revenueEstimate * (pct / 100);
+          if (monthRevenue <= 0) continue;
+          lines.push([
+            div.name, row.category, row.subcategory, row.linha, row.priceTier.toUpperCase(),
+            ym, monthRevenue.toFixed(2),
+          ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
+        }
+      }
+    }
+    const csv = [header.map(h => `"${h}"`).join(";"), ...lines].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sortimento_cascata_por_mes_${seasonId ?? ""}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   // ── Solicitar ajuste ao Módulo 4 (Sortimento → Divisão) ─────────────────────
@@ -1274,11 +1340,12 @@ export default function SortimentPlan() {
             >
               <ArrowLeft className="w-6 h-6" />
             </button>
-            <div id="tour-sort-header">
+            <div id="tour-sort-header" className="flex items-center flex-wrap">
               <span className="text-[#F6F3AA] text-base font-semibold">
                 Fashion Mind · Módulo 6
               </span>
               <span className="text-[#F6F3AA]/70 text-sm ml-2">· Engenharia de Sortimento</span>
+              <AssortmentEngineeringTabs active="sortiment" />
               {/* Temporada selecionada — chip clicável para trocar */}
               {seasonId ? (
                 <button
@@ -1361,6 +1428,14 @@ export default function SortimentPlan() {
             >
               <Download className="w-3.5 h-3.5" />
               Cascata (CSV)
+            </button>
+            <button
+              onClick={exportCascadeByMonthCsv}
+              title="Exportar CSV com a cascata categoria/subcategoria/linha × faixa, distribuída pelos meses reais das collections/drops de cada divisão"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Cascata por Mês (CSV)
             </button>
             <div className="w-px h-6 bg-white/20" />
             <div className="flex items-center gap-2 text-[#F6F3AA]">
@@ -1772,7 +1847,7 @@ export default function SortimentPlan() {
                     <p className="text-[#28071C]/40 text-xs uppercase tracking-widest mb-3">
                       Nível de Risco — {activeDivision.name} (definido no Módulo 4)
                     </p>
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-4 gap-4">
                       <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-3">
                         <p className="text-[#28071C]/50 text-xs">Sustentador de Margem</p>
                         <p className="text-[#28071C] font-bold text-lg">
@@ -1789,6 +1864,12 @@ export default function SortimentPlan() {
                         <p className="text-[#28071C]/50 text-xs">Ícone de Marca</p>
                         <p className="text-[#28071C] font-bold text-lg">
                           {cascadeRisk.icone != null ? fmtPct(cascadeRisk.icone) : "—"}
+                        </p>
+                      </div>
+                      <div className="bg-[#F2F2F2]/60 rounded-xl px-4 py-3">
+                        <p className="text-[#28071C]/50 text-xs">Básico</p>
+                        <p className="text-[#28071C] font-bold text-lg">
+                          {cascadeRisk.basico != null ? fmtPct(cascadeRisk.basico) : "—"}
                         </p>
                       </div>
                     </div>
@@ -2670,23 +2751,41 @@ export default function SortimentPlan() {
               </button>
             </div>
             <div className="px-6 py-6 space-y-4">
-              <p className="text-[#28071C]/60 text-sm">
-                Dê um nome a este cenário para consultá-lo depois sem perder o plano atual.
-              </p>
-              <div>
-                <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide mb-2">
-                  Nome do Cenário
-                </label>
-                <input
-                  type="text"
-                  value={scenarioName}
-                  onChange={e => setScenarioName(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && saveScenario()}
-                  placeholder="Ex.: Cenário Conservador, Revisão Abril…"
-                  autoFocus
-                  className="w-full border-2 border-[#28071C]/20 rounded-xl px-4 py-2.5 text-[#28071C] focus:outline-none focus:border-[#7598CF] text-sm"
-                />
-              </div>
+              {sourceCollectionPlanId && collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId) ? (
+                <>
+                  <p className="text-[#28071C]/60 text-sm">
+                    Este cenário está vinculado a um Plano de Coleção (M5) — o nome é sempre o mesmo dos dois lados, pra não divergir.
+                  </p>
+                  <div>
+                    <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide mb-2">
+                      Nome do Cenário (herdado do M5)
+                    </label>
+                    <div className="w-full border-2 border-[#28071C]/10 bg-[#28071C]/5 rounded-xl px-4 py-2.5 text-[#28071C] text-sm">
+                      {collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId)?.name}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-[#28071C]/60 text-sm">
+                    Dê um nome a este cenário para consultá-lo depois sem perder o plano atual.
+                  </p>
+                  <div>
+                    <label className="block text-[#28071C]/70 text-xs uppercase tracking-wide mb-2">
+                      Nome do Cenário
+                    </label>
+                    <input
+                      type="text"
+                      value={scenarioName}
+                      onChange={e => setScenarioName(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && saveScenario()}
+                      placeholder="Ex.: Cenário Conservador, Revisão Abril…"
+                      autoFocus
+                      className="w-full border-2 border-[#28071C]/20 rounded-xl px-4 py-2.5 text-[#28071C] focus:outline-none focus:border-[#7598CF] text-sm"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="px-6 pb-6 flex items-center justify-between">
               <button
@@ -2697,7 +2796,7 @@ export default function SortimentPlan() {
               </button>
               <button
                 onClick={saveScenario}
-                disabled={!scenarioName.trim()}
+                disabled={!scenarioName.trim() && !(sourceCollectionPlanId && collectionPlansForSeason.find(p => p.id === sourceCollectionPlanId))}
                 className="flex items-center gap-2 px-6 py-2.5 bg-[#28071C] text-white rounded-xl hover:bg-[#28071C]/90 shadow-md text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Save className="w-4 h-4" />

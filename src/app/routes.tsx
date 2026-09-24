@@ -15,6 +15,7 @@ import Admin_Permissions from "./pages/Admin_Permissions";
 import TenantSelector from "./pages/TenantSelector";
 import SortimentPlan from "./pages/SortimentPlan";
 import CollectionPlan from "./pages/CollectionPlan";
+import FinalPlan from "./pages/FinalPlan";
 import Onboarding from "./pages/Onboarding";
 import PlanningGateway from "./pages/PlanningGateway";
 import PlanningSetup from "./pages/PlanningSetup";
@@ -101,6 +102,10 @@ export const router = createBrowserRouter([
   {
     path: "/sortiment-plan",
     Component: SortimentPlan,
+  },
+  {
+    path: "/final-plan",
+    Component: FinalPlan,
   },
   {
     path: "/tenant-selector",
