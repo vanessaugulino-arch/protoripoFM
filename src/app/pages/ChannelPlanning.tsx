@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
   Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown, HelpCircle,
-  SendHorizonal, ArrowRight,
+  SendHorizonal, ArrowRight, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
@@ -61,6 +61,7 @@ import { exportChannelScenarios } from "../../services/channelScenarioService";
 import {
   getHistoricalProfiles,
   normalizeChannelPcts,
+  type HistoricalChannelProfile,
 } from "../../services/supabase/historicalProfileService";
 import {
   type ChannelId,
@@ -230,7 +231,7 @@ export default function ChannelPlanning() {
   const defaultYear  = routeYear ?? (plannedYears.length > 0 ? Math.max(...plannedYears) : new Date().getFullYear() + 1);
   const [selectedYear, setSelectedYear]         = useState<number>(defaultYear);
   const [reviewedYears, setReviewedYears]       = useState<number[]>([]);
-  const [histChannelProfiles, setHistChannelProfiles] = useState<import("../../services/supabase/historicalProfileService").HistoricalChannelProfile[]>([]);
+  const [histChannelProfiles, setHistChannelProfiles] = useState<HistoricalChannelProfile[]>([]);
   // Painel informativo (só leitura): como a receita do ano se divide por
   // divisão real do M4 — M2 nunca armazenou nada disso, é só a % aplicada
   // no M4 pra cada temporada do ano, mostrada aqui como referência.
@@ -921,6 +922,57 @@ export default function ChannelPlanning() {
     }
   };
 
+  // ── Ano Anterior por indicador/canal — só onde existe dado real por canal
+  // (sales_history × get_sales_monthly_aggregates). Giro/Cobertura/Orçamento/
+  // GMROI não têm base real por canal hoje — ficam sem referência, em vez de
+  // inventar um número.
+  const getHistFieldValue = (hist: HistoricalChannelProfile | undefined, key: keyof ChannelData): number | null => {
+    if (!hist) return null;
+    switch (key) {
+      case "receita":       return hist.totalReceita;
+      case "margemBrutaRS": return hist.totalReceita > 0 ? hist.totalReceita * (hist.avgMargin / 100) : null;
+      case "margemBruta":   return hist.avgMargin;
+      case "pmv":           return hist.avgPmv;
+      case "ticketMedio":   return hist.ticketMedio;
+      case "custoMedio":    return hist.avgCost;
+      case "producao":      return hist.totalPecas;
+      case "totalPecas":    return hist.totalPecas;
+      case "mkdPct":        return hist.avgMkdPct;
+      case "markdown":      return hist.markdownTotal;
+      default:              return null;
+    }
+  };
+
+  // Mesma referência, agregada entre os canais visíveis (coluna Consolidado) —
+  // soma direta pros absolutos, média ponderada por receita pros % e por unidade.
+  const getHistConsolidatedValue = (key: keyof ChannelData): number | null => {
+    const profiles = visibleChannels
+      .map(ch => histChannelProfiles.find(p => p.canalId === ch))
+      .filter((p): p is HistoricalChannelProfile => !!p);
+    const totalReceitaHist = profiles.reduce((s, p) => s + p.totalReceita, 0);
+    if (profiles.length === 0 || totalReceitaHist <= 0) return null;
+
+    const weightedAvg = (pick: (p: HistoricalChannelProfile) => number | null) => {
+      const withVal = profiles.filter(p => pick(p) != null);
+      const w = withVal.reduce((s, p) => s + p.totalReceita, 0);
+      return w > 0 ? withVal.reduce((s, p) => s + (pick(p) as number) * p.totalReceita, 0) / w : null;
+    };
+
+    switch (key) {
+      case "receita":       return totalReceitaHist;
+      case "producao":
+      case "totalPecas":    return profiles.reduce((s, p) => s + p.totalPecas, 0);
+      case "markdown":      return profiles.reduce((s, p) => s + p.markdownTotal, 0);
+      case "margemBrutaRS": return profiles.reduce((s, p) => s + p.totalReceita * (p.avgMargin / 100), 0);
+      case "margemBruta":   return weightedAvg(p => p.avgMargin);
+      case "pmv":           return weightedAvg(p => p.avgPmv);
+      case "custoMedio":    return weightedAvg(p => p.avgCost);
+      case "ticketMedio":   return weightedAvg(p => p.ticketMedio);
+      case "mkdPct":        return weightedAvg(p => p.avgMkdPct);
+      default:              return null;
+    }
+  };
+
   const consolidatedKpi = (key: keyof ChannelData): number =>
     ({ receita: consolidated.receita, margemBrutaRS: consolidated.margemBrutaRS,
        margemBruta: consolidated.margemBruta, pmv: consolidated.pmv,
@@ -1196,7 +1248,7 @@ export default function ChannelPlanning() {
           </div>
 
           <div className="p-4 overflow-x-auto">
-            <div className="grid gap-1.5 min-w-[520px] max-w-[860px]" style={gridStyle}>
+            <div className="grid gap-1.5 min-w-[520px]" style={gridStyle}>
 
               {/* Header */}
               <div className="flex items-center px-2.5 bg-[#28071C]/5 rounded-lg h-9">
@@ -1218,8 +1270,12 @@ export default function ChannelPlanning() {
                 const fieldTooltip = getFieldTooltip(field.key, field.isDriver);
                 const consImpacted = isConsolidatedImpacted(field.key);
                 const macroTarget  = consImpacted ? getMacroTarget(field.key) : null;
-                // When impacted, allow the row to grow to show "meta X" below the value
-                const rowH = consImpacted ? "min-h-[2.5rem] h-auto py-1.5" : "h-10";
+                // Existe Ano Anterior real pra este indicador em algum canal visível (ou no consolidado)?
+                const rowHasHist = visibleChannels.some(
+                  ch => getHistFieldValue(histChannelProfiles.find(p => p.canalId === ch), field.key) != null,
+                ) || getHistConsolidatedValue(field.key) != null;
+                // When impacted or com Ano Anterior, allow the row to grow to show o extra abaixo do valor
+                const rowH = (consImpacted || rowHasHist) ? "min-h-[2.5rem] h-auto py-1.5" : "h-10";
 
                 return (
                   <>
@@ -1256,9 +1312,12 @@ export default function ChannelPlanning() {
                     {/* Channel cells */}
                     {visibleChannels.map(ch => {
                       const dragging = field.isDriver && isChannelDragging(ch, field.key);
+                      const histVal = getHistFieldValue(histChannelProfiles.find(p => p.canalId === ch), field.key);
+                      const currentVal = channelData[ch][field.key];
+                      const histDelta = histVal != null && histVal !== 0 ? ((currentVal - histVal) / histVal) * 100 : null;
                       return (
                         <div key={`${ch}-${field.key}`}
-                          className={`flex items-center px-2.5 rounded-lg ${rowH} border transition-colors ${
+                          className={`flex items-center justify-between gap-2 px-2.5 rounded-lg ${rowH} border transition-colors ${
                             dragging
                               ? "bg-red-50 border-red-300 ring-1 ring-red-200"
                               : field.isDriver
@@ -1279,29 +1338,62 @@ export default function ChannelPlanning() {
                               onChange={e => handleDriverChange(ch, field.key, e.target.value)}
                               onBlur={handleDriverBlur}
                               onClick={e => (e.target as HTMLInputElement).select()}
-                              className={`w-full bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
+                              className={`w-16 flex-shrink-0 bg-transparent text-xs font-medium focus:outline-none rounded px-0.5 ${dragging ? "text-red-700" : "text-[#28071C]"}`}
                             />
                           ) : (
-                            <span className="text-[#28071C]/55 text-xs font-mono">{fmt(channelData[ch][field.key], field.format)}</span>
+                            <span className="text-[#28071C]/55 text-xs font-mono flex-shrink-0">{fmt(channelData[ch][field.key], field.format)}</span>
+                          )}
+                          {histVal != null && (
+                            <div className="flex flex-col items-end flex-shrink-0 border-l border-[#28071C]/8 pl-2" title="Ano anterior — dado real (sales_history)">
+                              <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/35">Ano ant.</span>
+                              <span className="text-[10px] text-[#28071C]/55 font-mono">{fmt(histVal, field.format)}</span>
+                              {histDelta != null && (
+                                <span className={`flex items-center gap-0.5 text-[9px] font-semibold ${histDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                  {histDelta >= 0 ? <ArrowUp className="w-2 h-2" /> : <ArrowDown className="w-2 h-2" />}
+                                  {histDelta >= 0 ? "+" : ""}{histDelta.toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
                       );
                     })}
 
                     {/* Consolidated cell — shows "meta X" below when off-target */}
-                    <div key={`cons-${field.key}`}
-                      className={`flex flex-col justify-center px-2.5 rounded-lg ${rowH} border ${consImpacted ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"}`}
-                    >
-                      <span className={`text-xs font-semibold font-mono leading-tight ${consImpacted ? "text-red-700" : "text-[#28071C]"}`}>
-                        {fmt(consolidatedKpi(field.key), field.format)}
-                      </span>
-                      {macroTarget != null && (
-                        <span className="text-[9px] text-red-400 font-mono leading-tight mt-0.5">
-                          meta {fmt(macroTarget, field.format)}
-                          {!field.isDriver && ADJUST_HINT[field.key] && ` — ${ADJUST_HINT[field.key]}`}
-                        </span>
-                      )}
-                    </div>
+                    {(() => {
+                      const consHist = getHistConsolidatedValue(field.key);
+                      const consVal = consolidatedKpi(field.key);
+                      const consHistDelta = consHist != null && consHist !== 0 ? ((consVal - consHist) / consHist) * 100 : null;
+                      return (
+                        <div key={`cons-${field.key}`}
+                          className={`flex items-center justify-between gap-2 px-2.5 rounded-lg ${rowH} border ${consImpacted ? "bg-red-50 border-red-200" : "bg-[#28071C]/4 border-[#28071C]/10"}`}
+                        >
+                          <div className="flex flex-col justify-center">
+                            <span className={`text-xs font-semibold font-mono leading-tight ${consImpacted ? "text-red-700" : "text-[#28071C]"}`}>
+                              {fmt(consVal, field.format)}
+                            </span>
+                            {macroTarget != null && (
+                              <span className="text-[9px] text-red-400 font-mono leading-tight mt-0.5">
+                                meta {fmt(macroTarget, field.format)}
+                                {!field.isDriver && ADJUST_HINT[field.key] && ` — ${ADJUST_HINT[field.key]}`}
+                              </span>
+                            )}
+                          </div>
+                          {consHist != null && (
+                            <div className="flex flex-col items-end flex-shrink-0 border-l border-[#28071C]/10 pl-2" title="Ano anterior — dado real (sales_history)">
+                              <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/35">Ano ant.</span>
+                              <span className="text-[10px] text-[#28071C]/55 font-mono">{fmt(consHist, field.format)}</span>
+                              {consHistDelta != null && (
+                                <span className={`flex items-center gap-0.5 text-[9px] font-semibold ${consHistDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                  {consHistDelta >= 0 ? <ArrowUp className="w-2 h-2" /> : <ArrowDown className="w-2 h-2" />}
+                                  {consHistDelta >= 0 ? "+" : ""}{consHistDelta.toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </>
                 );
               })}

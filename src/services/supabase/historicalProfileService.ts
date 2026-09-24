@@ -53,7 +53,12 @@ export interface HistoricalChannelProfile {
   pctPecas:   number    // % das peças totais (0–100)
   avgPmv:     number    // PMV médio do canal em R$
   avgCost:    number    // custo médio ponderado (dos produtos vendidos neste canal)
+  avgMargin:  number    // margem estimada % (mesmo cálculo do perfil de divisão)
+  avgMkdPct:  number | null  // remarcação real (%) — null = sem dado (nenhuma linha com produto casado)
+  markdownTotal: number // R$ absoluto de remarcação real do canal
+  ticketMedio: number | null // R$ por recibo — null = sem dado (sem receipt_number importado ainda)
   totalReceita: number  // R$ absoluto
+  totalPecas:   number  // peças absolutas (não só %, pra virar referência de "ano anterior")
 }
 
 export interface HistoricalDivisionProfile {
@@ -141,7 +146,8 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
   // ─── Acumuladores por canal M2 ─────────────────────────────────────────────
   type CanalAcc = {
     receita: number; pecas: number;
-    sumPmvW: number; sumCostW: number; wTotal: number
+    sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number
+    sumDiscount: number; sumPriceSaleQty: number; receiptCount: number
   }
   const canalAcc = new Map<string, CanalAcc>()
 
@@ -167,12 +173,19 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
 
     // ── Canal M2 ──────────────────────────────────────────────────────────────
     if (m2) {
-      const acc = canalAcc.get(m2) ?? { receita: 0, pecas: 0, sumPmvW: 0, sumCostW: 0, wTotal: 0 }
-      acc.receita  += receita
-      acc.pecas    += pecas
-      acc.sumPmvW  += row.pmvWeightedSum
-      acc.sumCostW += row.costWeightedSum
-      acc.wTotal   += receita
+      const acc = canalAcc.get(m2) ?? {
+        receita: 0, pecas: 0, sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0,
+        sumDiscount: 0, sumPriceSaleQty: 0, receiptCount: 0,
+      }
+      acc.receita         += receita
+      acc.pecas           += pecas
+      acc.sumPmvW         += row.pmvWeightedSum
+      acc.sumCostW        += row.costWeightedSum
+      acc.sumMarginW      += row.marginWeightedSum
+      acc.wTotal          += receita
+      acc.sumDiscount     += row.discountSum
+      acc.sumPriceSaleQty += row.priceSaleQtySum
+      acc.receiptCount    += row.receiptCount
       canalAcc.set(m2, acc)
     }
 
@@ -206,7 +219,12 @@ export async function getHistoricalProfiles(tenantId: string): Promise<Historica
     pctPecas:      totalPecas > 0 ? Math.round((acc.pecas / totalPecas) * 1000) / 10 : 0,
     avgPmv:        acc.wTotal > 0 ? Math.round(acc.sumPmvW  / acc.wTotal) : 0,
     avgCost:       acc.wTotal > 0 ? Math.round(acc.sumCostW / acc.wTotal) : 0,
+    avgMargin:     acc.wTotal > 0 ? Math.round((acc.sumMarginW / acc.wTotal) * 10) / 10 : 0,
+    avgMkdPct:     acc.sumPriceSaleQty > 0 ? Math.round((acc.sumDiscount / acc.sumPriceSaleQty) * 1000) / 10 : null,
+    markdownTotal: acc.sumDiscount,
+    ticketMedio:   acc.receiptCount > 0 ? Math.round((acc.receita / acc.receiptCount) * 100) / 100 : null,
     totalReceita:  acc.receita,
+    totalPecas:    acc.pecas,
   })).sort((a, b) => b.pctReceita - a.pctReceita)
 
   // ─── Monta resultado de divisões ──────────────────────────────────────────

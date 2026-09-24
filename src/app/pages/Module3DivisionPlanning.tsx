@@ -53,6 +53,8 @@ import {
   CheckCheck,
   HelpCircle,
   ArrowRight,
+  ArrowUp,
+  ArrowDown,
   SendHorizonal,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
@@ -146,6 +148,7 @@ import {
 import {
   getHistoricalProfiles,
   normalizeDivisionPcts,
+  type HistoricalDivisionProfile,
 } from "../../services/supabase/historicalProfileService";
 import type { PriceTierId } from "../types/pricePyramid";
 
@@ -326,6 +329,10 @@ export default function Module3DivisionPlanning() {
 
   // Médias históricas por divisão — carregadas quando a temporada de referência é selecionada
   const [historicalAvgs, setHistoricalAvgs] = useState<Partial<Record<BusinessDivisionId, TierHistoricalAvg>>>({});
+
+  // Indicadores Comerciais (PMV/MKD/Margem) ano anterior, por divisão — real,
+  // mesma fonte já usada pra semear a % de participação acima.
+  const [histDivisionProfiles, setHistDivisionProfiles] = useState<HistoricalDivisionProfile[]>([]);
 
   // ─── Inicialização ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -695,6 +702,7 @@ export default function Module3DivisionPlanning() {
     ]).then(([_, profiles]) => {
       reloadScenarios();
       setScenarioListVersion(v => v + 1);
+      setHistDivisionProfiles(profiles.divisions);
 
       // Aplica proporções históricas somente quando não há cenário salvo para a temporada
       const existingScenarios = listModule3Scenarios(selectedSeasonId);
@@ -1458,6 +1466,7 @@ export default function Module3DivisionPlanning() {
                   tenantId={tenantId}
                   historicalAvgs={historicalAvgs}
                   historicalAvgsIsReal={historicalAvgsIsReal}
+                  histDivisionProfile={histDivisionProfiles.find(p => p.division === divId)}
                   diasDaTemporada={diasDaTemporada}
                   realInventory={realInventoryByDiv[divId]}
                   realReplenishments={realReplenishmentsByDiv[divId]}
@@ -2140,6 +2149,8 @@ interface DivisionBlockCardProps {
   historicalAvgs: Partial<Record<BusinessDivisionId, TierHistoricalAvg>>;
   /** true = historicalAvgs veio de sales_history escopado pela Temporada de Referência; false = fallback no catálogo vigente (sem dimensão de tempo). */
   historicalAvgsIsReal: boolean;
+  /** Ano Anterior real (PMV/MKD/Margem) desta divisão — undefined enquanto carrega ou sem histórico. */
+  histDivisionProfile?: HistoricalDivisionProfile;
   diasDaTemporada: number;
   /** Posição real de estoque (inventory_snapshots) desta divisão na temporada — undefined enquanto carrega. */
   realInventory?: InventoryPosition;
@@ -2159,6 +2170,7 @@ function DivisionBlockCard({
   tenantId,
   historicalAvgs,
   historicalAvgsIsReal,
+  histDivisionProfile,
   diasDaTemporada,
   realInventory,
   realReplenishments,
@@ -2347,6 +2359,7 @@ function DivisionBlockCard({
             value={block.indicators.avgPrice}
             onChange={(v) => onUpdateIndicators({ avgPrice: v })}
             tooltip="Preço Médio de Venda — valor médio por peça desta divisão. Determina o volume de peças necessário para atingir a receita da divisão."
+            histValue={histDivisionProfile?.avgPmv}
           />
           <CompactField
             label="MKD"
@@ -2356,6 +2369,7 @@ function DivisionBlockCard({
             min={0}
             max={100}
             tooltip="Percentual de desconto médio aplicado sobre a receita bruta. Markdown alto corrói a margem da divisão."
+            histValue={histDivisionProfile?.avgMkdPct}
           />
           <CompactField
             label="Margem"
@@ -2365,6 +2379,7 @@ function DivisionBlockCard({
             min={0}
             max={100}
             tooltip="Margem Bruta — percentual que sobra da receita após o custo dos produtos desta divisão."
+            histValue={histDivisionProfile?.avgMargin}
           />
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-0.5">
@@ -2628,6 +2643,7 @@ function CompactField({
   min,
   max,
   tooltip,
+  histValue,
 }: {
   label: string;
   value: number;
@@ -2636,7 +2652,10 @@ function CompactField({
   min?: number;
   max?: number;
   tooltip?: string;
+  /** Ano Anterior real (mesma unidade de `value`) — undefined/null = sem histórico, não mostra nada. */
+  histValue?: number | null;
 }) {
+  const histDelta = histValue != null && histValue !== 0 ? ((value - histValue) / histValue) * 100 : null;
   return (
     <div className="flex items-center justify-between gap-2">
       <div className="flex items-center gap-0.5 shrink-0">
@@ -2653,6 +2672,20 @@ function CompactField({
           </div>
         )}
       </div>
+      {histValue != null && (
+        <div className="flex items-center gap-1 flex-1 justify-center min-w-0" title="Ano anterior — dado real (sales_history)">
+          <span className="text-[8px] font-semibold uppercase tracking-wide text-[#28071C]/30 whitespace-nowrap">Ano ant.</span>
+          <span className="text-[10px] text-[#28071C]/50 font-mono whitespace-nowrap">
+            {suffix === "%" ? `${histValue.toFixed(1)}%` : histValue.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+          </span>
+          {histDelta != null && (
+            <span className={`flex items-center gap-0.5 text-[9px] font-semibold whitespace-nowrap ${histDelta >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {histDelta >= 0 ? <ArrowUp className="w-2 h-2" /> : <ArrowDown className="w-2 h-2" />}
+              {histDelta >= 0 ? "+" : ""}{histDelta.toFixed(0)}%
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-0.5 flex-shrink-0">
         <input
           type="number"

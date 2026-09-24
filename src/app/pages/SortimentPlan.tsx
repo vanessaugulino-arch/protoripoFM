@@ -107,6 +107,7 @@ import {
   getConsolidated,
   computeAndSaveConsolidated,
   exportConsolidatedCsv,
+  getCategoryHistoricalIndicators,
   type ConsolidatedDbRow,
 } from "../../services/supabase/consolidatedHierarchyService";
 import {
@@ -592,6 +593,18 @@ export default function SortimentPlan() {
       .then(setCategoryIndicatorOverrides)
       .catch(() => setCategoryIndicatorOverrides(new Map()));
   }, [seasonId, user?.tenant_id, activeDivId]);
+
+  // Ano Anterior real de Preço Médio/Remarcação por categoria — mesma fonte
+  // já usada pra "hist.:" da Participação (getHierarchyRevenueByPath), agora
+  // com PMV/MKD% reais também (migration 042).
+  const [categoryHistIndicators, setCategoryHistIndicators] = useState<Record<string, { avgPrice: number; mkdPct: number | null }>>({});
+
+  useEffect(() => {
+    if (!user?.tenant_id || !activeDivId) { setCategoryHistIndicators({}); return; }
+    getCategoryHistoricalIndicators(user.tenant_id, activeDivId)
+      .then(setCategoryHistIndicators)
+      .catch(() => setCategoryHistIndicators({}));
+  }, [user?.tenant_id, activeDivId]);
 
   // ── Fase E — notas de decisão por categoria (base do relatório de decisões) ─
   const [categoryNotes, setCategoryNotes] = useState<Map<string, CategoryNote[]>>(new Map());
@@ -1930,6 +1943,7 @@ export default function SortimentPlan() {
                         const avgPrice = effectiveAvgPrice(grid.category);
                         const mkdPct = effectiveMkdPct(grid.category);
                         const pieces = avgPrice > 0 ? categoryRevenue / avgPrice : 0;
+                        const histIndicators = categoryHistIndicators[grid.category];
                         return (
                           <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
                             <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center gap-6 flex-wrap">
@@ -1966,6 +1980,11 @@ export default function SortimentPlan() {
                                     />
                                   </div>
                                   <span className="text-[9px] text-[#28071C]/40">{Math.round(pieces).toLocaleString("pt-BR")} pçs</span>
+                                  {histIndicators && Math.abs(avgPrice - histIndicators.avgPrice) > 0.5 && (
+                                    <span className="text-[9px] text-[#7598CF]/70 mt-0.5" title="Preço médio real desta categoria no histórico de vendas">
+                                      hist.: R$ {histIndicators.avgPrice.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                                    </span>
+                                  )}
                                 </div>
 
                                 <div className="flex flex-col">
@@ -1979,6 +1998,11 @@ export default function SortimentPlan() {
                                     />
                                     <span className="text-[9px] text-[#28071C]/40">%</span>
                                   </div>
+                                  {histIndicators?.mkdPct != null && Math.abs(mkdPct - histIndicators.mkdPct) > 0.5 && (
+                                    <span className="text-[9px] text-[#7598CF]/70 mt-0.5" title="Remarcação real desta categoria no histórico de vendas">
+                                      hist.: {histIndicators.mkdPct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 

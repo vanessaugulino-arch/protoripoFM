@@ -33,6 +33,14 @@ export interface HierarchyRevenueWeight {
   linha: string | null
   riskLevel: string | null
   totalRevenue: number
+  /** Peças vendidas (real) — alimenta PMV/MKD% reais por categoria. */
+  quantitySum: number
+  /** Σ(preço realizado × receita) — dividir por totalRevenue pra achar o PMV ponderado real. */
+  pmvWeightedSum: number
+  /** Σ desconto real. */
+  discountSum: number
+  /** Σ(quantidade × preço de tabela) — divisor do MKD% real (discountSum ÷ priceSaleQtySum). */
+  priceSaleQtySum: number
 }
 
 export interface ConsolidatedRow {
@@ -68,13 +76,53 @@ export async function getHierarchyRevenueByPath(tenantId: string): Promise<Hiera
   // iguais na Cascata do Sortimento, nunca refletindo o histórico real.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return ((data ?? []) as any[]).map(r => ({
-    division:     r.division as string,
-    category:     r.category as string,
-    subcategory:  (r.subcategory as string) ?? null,
-    linha:        (r.linha as string) ?? null,
-    riskLevel:    (r.risk_level as string) ?? null,
-    totalRevenue: Number(r.total_revenue) || 0,
+    division:        r.division as string,
+    category:        r.category as string,
+    subcategory:     (r.subcategory as string) ?? null,
+    linha:           (r.linha as string) ?? null,
+    riskLevel:       (r.risk_level as string) ?? null,
+    totalRevenue:    Number(r.total_revenue) || 0,
+    quantitySum:     Number(r.quantity_sum) || 0,
+    pmvWeightedSum:  Number(r.pmv_weighted_sum) || 0,
+    discountSum:     Number(r.discount_sum) || 0,
+    priceSaleQtySum: Number(r.price_sale_qty_sum) || 0,
   }))
+}
+
+/**
+ * PMV e MKD% reais por categoria, escopados a uma divisão — Ano Anterior da
+ * Engenharia de Sortimento (M6). Mesma categoria pode existir em mais de uma
+ * divisão (ex.: "Calças" em Feminino e Masculino) com histórico bem
+ * diferente, por isso escopa por divisão — mesmo padrão de computeCategoryGrids.
+ * Fórmula: PMV = soma ponderada por receita ÷ receita total (mesma de
+ * historicalProfileService.ts); MKD% = desconto total ÷ (peças × preço de
+ * tabela), mesma fórmula confirmada na migration 034, agora por categoria.
+ */
+export async function getCategoryHistoricalIndicators(
+  tenantId: string,
+  divisionId: string,
+): Promise<Record<string, { avgPrice: number; mkdPct: number | null }>> {
+  const weights = await getHierarchyRevenueByPath(tenantId)
+  const byCategory = new Map<string, { revenue: number; pmvW: number; discount: number; priceSaleQty: number }>()
+  for (const w of weights) {
+    if (normalizeDivision(w.division) !== divisionId) continue
+    const acc = byCategory.get(w.category) ?? { revenue: 0, pmvW: 0, discount: 0, priceSaleQty: 0 }
+    acc.revenue     += w.totalRevenue
+    acc.pmvW        += w.pmvWeightedSum
+    acc.discount    += w.discountSum
+    acc.priceSaleQty += w.priceSaleQtySum
+    byCategory.set(w.category, acc)
+  }
+
+  const result: Record<string, { avgPrice: number; mkdPct: number | null }> = {}
+  for (const [category, acc] of byCategory) {
+    if (acc.revenue <= 0) continue
+    result[category] = {
+      avgPrice: acc.pmvW / acc.revenue,
+      mkdPct:   acc.priceSaleQty > 0 ? (acc.discount / acc.priceSaleQty) * 100 : null,
+    }
+  }
+  return result
 }
 
 /**
