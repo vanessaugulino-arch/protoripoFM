@@ -23,6 +23,8 @@ interface PlanObservationCardProps {
   title?: string;
   placeholder?: string;
   userEmail?: string;
+  /** "inline": sem cartão branco nem sombra — para ocupar a coluna ao lado de uma tabela. */
+  variant?: "card" | "inline";
 }
 
 export function PlanObservationCard({
@@ -32,6 +34,7 @@ export function PlanObservationCard({
   title = "Observações do Plano",
   placeholder = "Registre o porquê das decisões deste plano — ex.: trade-offs entre margem, preço e remarcação, ajustes de abastecimento, contexto que não aparece nos números.",
   userEmail,
+  variant = "card",
 }: PlanObservationCardProps) {
   const [note, setNote] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -64,15 +67,17 @@ export function PlanObservationCard({
 
   if (!tenantId || !seasonKey) return null;
 
+  const inline = variant === "inline";
+
   return (
-    <div className="bg-white rounded-2xl p-5 shadow-sm">
-      <div className="flex items-center justify-between mb-3">
+    <div className={inline ? "" : "bg-white rounded-2xl p-5 shadow-sm"}>
+      <div className={`flex items-center justify-between ${inline ? "mb-2" : "mb-3"}`}>
         <div className="flex items-center gap-2">
-          <StickyNote className="w-4 h-4 text-[#7598CF]" />
-          <h3 className="font-semibold text-[#28071C]">{title}</h3>
+          <StickyNote className={inline ? "w-3.5 h-3.5 text-[#7598CF]" : "w-4 h-4 text-[#7598CF]"} />
+          <h3 className={inline ? "text-[11px] font-semibold uppercase tracking-wide text-[#28071C]/50" : "font-semibold text-[#28071C]"}>{title}</h3>
         </div>
         <span className="text-[10px] text-[#28071C]/40">
-          {saving ? "Salvando…" : savedAt ? `Salvo ${new Date(savedAt).toLocaleString("pt-BR")}` : ""}
+          {saving ? "Salvando…" : savedAt ? (inline ? "salvo" : `Salvo ${new Date(savedAt).toLocaleString("pt-BR")}`) : ""}
         </span>
       </div>
       <textarea
@@ -80,10 +85,10 @@ export function PlanObservationCard({
         onChange={e => handleChange(e.target.value)}
         placeholder={placeholder}
         disabled={!loaded}
-        rows={3}
-        className="w-full min-h-[88px] resize-y rounded-xl border border-[#28071C]/15 bg-[#F2F2F2]/60 px-3.5 py-3 text-sm text-[#28071C]/80 placeholder:text-[#28071C]/35 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 disabled:opacity-50"
+        rows={inline ? 5 : 3}
+        className={`w-full resize-y rounded-xl border border-[#28071C]/15 bg-[#F2F2F2]/60 px-3.5 py-3 text-[#28071C]/80 placeholder:text-[#28071C]/35 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 disabled:opacity-50 ${inline ? "min-h-[120px] text-[12px]" : "min-h-[88px] text-sm"}`}
       />
-      <p className="text-[10px] text-[#28071C]/40 mt-1.5">Sem limite de caracteres.</p>
+      {!inline && <p className="text-[10px] text-[#28071C]/40 mt-1.5">Sem limite de caracteres.</p>}
     </div>
   );
 }

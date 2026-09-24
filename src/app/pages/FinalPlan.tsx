@@ -23,6 +23,7 @@ import { getTemporadas, MONTHS, type Temporada } from "../../services/temporadaS
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import { fetchTenantDivisions, type TenantDivision } from "../../services/supabase/productHierarchyService";
 import { getAppliedDivisionScenario } from "../../services/supabase/divisionScenarioService";
+import type { OfficialMacro } from "../../services/supabase/officialPlanService";
 import type { DivisionPlanBlock } from "../types/module3";
 import { getWorkingCollectionPlan, type CollectionPlanDivision } from "../../services/supabase/collectionPlanService";
 import { computeMonthlyExpectedSold, buildDivisionTimeline, type DivisionSalesTarget } from "../../engine/collectionMonthlyLedger";
@@ -81,6 +82,44 @@ const EXTRA_INDICATOR_LABELS: Record<ExtraIndicatorKey, string> = {
   mkdPct: "Remarcação",
   producaoPecas: "Produção",
 };
+
+// ─── KPIs do topo: os MESMOS que a gestora priorizou no M1 ───────────────────
+// O topo mostrava 5 indicadores fixos (Receita/Margem/Remarcação/GMROI/Produção)
+// enquanto o M1 podia ter escolhido outros — quem abria o Plano Final via um
+// resumo que não era o dela. Agora a lista vem de planCycle.fieldPriorities, na
+// mesma ordem de prioridade, até 6 (o teto do M1). "raw" alimenta a variação
+// a.a. contra o ano anterior; "fromMacro: false" marca o que o macro oficial
+// não carrega e vem do valor salvo no M1.
+type KpiDef = {
+  label: string;
+  fmt: (v: number) => string;
+  raw: (m: OfficialMacro) => number | null;
+  /** Remarcação: cair é bom — inverte o sinal do delta. */
+  lowerIsBetter?: boolean;
+};
+
+const KPI_DEFS: Record<string, KpiDef> = {
+  receitaBruta:  { label: "Receita",     fmt: v => `R$ ${(v / 1_000_000).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} M`, raw: m => m.receitaBruta },
+  margemBruta:   { label: "Margem Bruta", fmt: v => `${v.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`, raw: m => m.margemBruta },
+  mkdPct:        { label: "Remarcação",  fmt: v => `${v.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`, raw: m => m.mkdPct, lowerIsBetter: true },
+  giro:          { label: "Giro",        fmt: v => `${v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}×`, raw: m => m.giro },
+  gmroi:         { label: "GMROI",       fmt: v => `${v.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}×`, raw: m => m.gmroi },
+  producaoPecas: { label: "Produção",    fmt: v => `${Math.round(v).toLocaleString("pt-BR")} pçs`, raw: m => m.pecasVendidas },
+  pmv:           { label: "PMV",         fmt: v => `R$ ${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`, raw: m => m.pmv },
+  custoMedio:    { label: "Custo Médio", fmt: v => `R$ ${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`, raw: m => m.custoMedio },
+  cobertura:     { label: "Cobertura",   fmt: v => `${Math.round(v)} dias`, raw: m => m.cobertura, lowerIsBetter: true },
+  orcamento:     { label: "Orçamento",   fmt: v => `R$ ${(v / 1_000_000).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} M`, raw: m => m.orcamento },
+  // O macro oficial não carrega ticket médio (não há contagem de clientes no
+  // rollup por canal) — vem do valor salvo no M1, identificado na tela.
+  ticketMedio:   { label: "Ticket Médio", fmt: v => `R$ ${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`, raw: () => null },
+};
+
+/** Até 6 KPIs cabem no topo; abaixo disso a grade se ajusta sozinha. */
+const KPI_GRID_CLASS: Record<number, string> = {
+  1: "sm:grid-cols-2", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3",
+  4: "sm:grid-cols-4", 5: "sm:grid-cols-5", 6: "sm:grid-cols-6",
+};
+const MAX_KPIS = 6;
 
 function weightedAvg(pairs: Array<[number | null, number]>): number | null {
   let sumW = 0, sumWV = 0, any = false;
@@ -167,6 +206,24 @@ export default function FinalPlan() {
     // Sem prioridades definidas (plano legado): prioriza os 2 que têm base
     // real por categoria hoje, em vez de Giro/GMROI (que sempre dão "—").
     return matched.length > 0 ? matched.slice(0, 2) : ["mkdPct", "producaoPecas"];
+  }, [selectedYear]);
+
+  // ─── KPIs do topo: as prioridades do M1, na ordem, até 6 ──────────────────
+  const kpiKeys = useMemo((): string[] => {
+    const cycle = getPlanCycle(selectedYear);
+    const ativos = (cycle?.fieldPriorities ?? [])
+      .filter(fp => fp.status !== "inactive" && fp.status !== "dismissed")
+      .sort((a, b) => a.rank - b.rank)
+      .map(fp => fp.key)
+      .filter(k => k in KPI_DEFS);
+    // Plano legado, sem prioridades salvas: mantém o conjunto que a tela já mostrava.
+    return (ativos.length > 0 ? ativos : ["receitaBruta", "margemBruta", "mkdPct", "gmroi", "producaoPecas"]).slice(0, MAX_KPIS);
+  }, [selectedYear]);
+
+  /** Valores salvos no M1 — cobrem o que o macro oficial não carrega (ticket médio). */
+  const m1Values = useMemo((): Record<string, number | null> => {
+    const cycle = getPlanCycle(selectedYear);
+    return (cycle?.versions?.[0]?.values ?? {}) as Record<string, number | null>;
   }, [selectedYear]);
 
   // ─── Estrutura Divisão→Categoria→Subcategoria (M6, agregada entre temporadas do ano) ──
@@ -561,28 +618,31 @@ export default function FinalPlan() {
         ) : (
           <>
             {/* ─── KPIs ──────────────────────────────────────────────────── */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              {([
-                ["Receita", fmtMoneyM(macro.receitaBruta), delta(macro.receitaBruta, priorMacro?.receitaBruta)],
-                ["Margem Bruta", fmtPct1(macro.margemBruta), delta(macro.margemBruta, priorMacro?.margemBruta)],
-                // Remarcação: queda é boa — inverte o sinal de "good" do delta padrão.
-                ["Remarcação", fmtPct1(macro.mkdPct), (() => {
-                  const d = delta(macro.mkdPct, priorMacro?.mkdPct);
-                  return d ? { pct: d.pct, good: !d.good } : null;
-                })()],
-                ["GMROI", `${macro.gmroi.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}×`, delta(macro.gmroi, priorMacro?.gmroi)],
-                ["Produção Necessária", `${fmtInt(macro.pecasVendidas)} pçs`, null],
-              ] as const).map(([label, value, d], i) => (
-                <div key={i} className="bg-white border border-[#28071C]/8 rounded-xl px-3 py-2.5 shadow-sm">
-                  <div className="text-[9.5px] font-semibold uppercase tracking-wide text-[#28071C]/40 mb-1">{label}</div>
-                  <div className="text-base font-semibold text-[#28071C] font-serif mb-1 truncate">{value}</div>
-                  {d && (
-                    <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${d.good ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
-                      {d.pct >= 0 ? "+" : ""}{d.pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% a.a.
-                    </span>
-                  )}
-                </div>
-              ))}
+            <div className={`grid grid-cols-2 ${KPI_GRID_CLASS[kpiKeys.length] ?? "sm:grid-cols-5"} gap-2`}>
+              {kpiKeys.map(key => {
+                const def = KPI_DEFS[key];
+                const doMacro = def.raw(macro);
+                const doM1 = m1Values[key];
+                const valor = doMacro ?? (typeof doM1 === "number" ? doM1 : null);
+                const anterior = priorMacro ? def.raw(priorMacro) : null;
+                const d = valor != null && anterior != null && doMacro != null ? delta(valor, anterior) : null;
+                const dAjustado = d && def.lowerIsBetter ? { pct: d.pct, good: !d.good } : d;
+                return (
+                  <div key={key} className="bg-white border border-[#28071C]/8 rounded-xl px-3 py-2.5 shadow-sm">
+                    <div className="text-[9.5px] font-semibold uppercase tracking-wide text-[#28071C]/40 mb-1">{def.label}</div>
+                    <div className="text-base font-semibold text-[#28071C] font-serif mb-1 truncate">
+                      {valor != null ? def.fmt(valor) : "—"}
+                    </div>
+                    {dAjustado ? (
+                      <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${dAjustado.good ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                        {dAjustado.pct >= 0 ? "+" : ""}{dAjustado.pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% a.a.
+                      </span>
+                    ) : doMacro == null && valor != null ? (
+                      <span className="text-[9.5px] text-[#28071C]/35">do plano macro (M1)</span>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
 
             {/* ─── Observações do Plano Macro ───────────────────────────── */}
@@ -601,7 +661,12 @@ export default function FinalPlan() {
                   <h2 className="font-serif font-semibold text-[#28071C] text-base">Indicadores por Canal</h2>
                   <p className="text-[11px] text-[#28071C]/40 mt-0.5">Plano aplicado no Módulo 2 — {selectedYear}</p>
                 </div>
-                <div className="p-5 overflow-x-auto">
+                {/* Tabela e observação lado a lado: a nota do M2 ocupa a faixa que sobrava à
+                    direita do Consolidado. Coluna separada, não célula mesclada — o número de
+                    canais varia de 1 a 3, e rowspan quebraria a cada configuração diferente.
+                    Abaixo de lg a nota desce para debaixo da tabela. */}
+                <div className="p-5 flex flex-col lg:flex-row gap-5">
+                  <div className="flex-1 min-w-0 overflow-x-auto">
                   <table className="w-full text-xs" style={{ minWidth: 520 }}>
                     <thead>
                       <tr className="text-[9.5px] uppercase tracking-wide text-[#28071C]/40 border-b border-[#28071C]/15">
@@ -629,6 +694,18 @@ export default function FinalPlan() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
+                  <div className="lg:w-[300px] lg:shrink-0 lg:border-l lg:border-[#28071C]/8 lg:pl-5">
+                    <PlanObservationCard
+                      tenantId={tenantId}
+                      module="m2_canal"
+                      seasonKey={String(selectedYear)}
+                      title="Observação do canal"
+                      placeholder="Por que a receita ficou nesta divisão entre canais, o que sustenta o giro de cada um, e o que muda se um deles não entregar."
+                      userEmail={user.email}
+                      variant="inline"
+                    />
+                  </div>
                 </div>
               </section>
             )}
