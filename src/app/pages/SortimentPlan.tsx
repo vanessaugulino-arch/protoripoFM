@@ -1946,8 +1946,8 @@ export default function SortimentPlan() {
                         const histIndicators = categoryHistIndicators[grid.category];
                         return (
                           <div key={grid.category} className="border border-[#28071C]/10 rounded-xl overflow-hidden">
-                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center gap-6 flex-wrap">
-                              <div className="flex items-center gap-[30px] flex-wrap">
+                            <div className="px-4 py-3 bg-[#F2F2F2]/40 flex items-center justify-between gap-6 flex-wrap">
+                              <div className="flex items-center justify-between flex-1 gap-8 flex-wrap min-w-0">
                                 <span className="font-semibold text-[#28071C] min-w-[90px]">{grid.category}</span>
 
                                 <div className="flex flex-col">
@@ -2006,7 +2006,7 @@ export default function SortimentPlan() {
                                 </div>
                               </div>
 
-                              <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-3 flex-shrink-0">
                                 <button
                                   onClick={() => { setNotesPanelOpen(notesPanelOpen === grid.category ? null : grid.category); setNewNoteText(""); }}
                                   title="Notas de decisão desta categoria"
