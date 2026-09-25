@@ -7,6 +7,10 @@
  *
  * M6 (Engenharia de Sortimento) tem seu próprio padrão de notas, por
  * categoria (ver SortimentPlan.tsx) — não usa este componente.
+ *
+ * Só para as telas de planejamento em si (onde a nota é escrita). Telas de
+ * resumo/entrega (Plano Final) mostram a observação só leitura, via
+ * ObservationNote — nunca editam ali.
  */
 import { useEffect, useRef, useState } from "react";
 import { StickyNote } from "lucide-react";
@@ -25,8 +29,6 @@ interface PlanObservationCardProps {
   userEmail?: string;
   /** "inline": sem cartão branco nem sombra — para ocupar a coluna ao lado de uma tabela. */
   variant?: "card" | "inline";
-  /** Caixa de texto ~30% da altura padrão — pra telas de resumo/impressão (Plano Final), onde a nota já escrita só precisa ser lida, não editada longamente. */
-  compact?: boolean;
 }
 
 export function PlanObservationCard({
@@ -37,7 +39,6 @@ export function PlanObservationCard({
   placeholder = "Registre o porquê das decisões deste plano — ex.: trade-offs entre margem, preço e remarcação, ajustes de abastecimento, contexto que não aparece nos números.",
   userEmail,
   variant = "card",
-  compact = false,
 }: PlanObservationCardProps) {
   const [note, setNote] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -73,8 +74,8 @@ export function PlanObservationCard({
   const inline = variant === "inline";
 
   return (
-    <div className={inline ? "" : `bg-white rounded-2xl shadow-sm ${compact ? "p-3" : "p-5"}`}>
-      <div className={`flex items-center justify-between ${inline ? "mb-2" : compact ? "mb-1.5" : "mb-3"}`}>
+    <div className={inline ? "" : "bg-white rounded-2xl p-5 shadow-sm"}>
+      <div className={`flex items-center justify-between ${inline ? "mb-2" : "mb-3"}`}>
         <div className="flex items-center gap-2">
           <StickyNote className={inline ? "w-3.5 h-3.5 text-[#7598CF]" : "w-4 h-4 text-[#7598CF]"} />
           <h3 className={inline ? "text-[11px] font-semibold uppercase tracking-wide text-[#28071C]/50" : "font-semibold text-[#28071C]"}>{title}</h3>
@@ -88,12 +89,10 @@ export function PlanObservationCard({
         onChange={e => handleChange(e.target.value)}
         placeholder={placeholder}
         disabled={!loaded}
-        rows={inline ? 5 : compact ? 1 : 3}
-        className={`w-full resize-y rounded-xl border border-[#28071C]/15 bg-[#F2F2F2]/60 placeholder:text-[#28071C]/35 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 disabled:opacity-50 text-[#28071C]/80 ${
-          inline ? "min-h-[120px] text-[12px] px-3.5 py-3" : compact ? "min-h-[26px] text-xs px-2.5 py-1" : "min-h-[88px] text-sm px-3.5 py-3"
-        }`}
+        rows={inline ? 5 : 3}
+        className={`w-full resize-y rounded-xl border border-[#28071C]/15 bg-[#F2F2F2]/60 px-3.5 py-3 text-[#28071C]/80 placeholder:text-[#28071C]/35 focus:outline-none focus:ring-2 focus:ring-[#7598CF]/40 disabled:opacity-50 ${inline ? "min-h-[120px] text-[12px]" : "min-h-[88px] text-sm"}`}
       />
-      {!inline && !compact && <p className="text-[10px] text-[#28071C]/40 mt-1.5">Sem limite de caracteres.</p>}
+      {!inline && <p className="text-[10px] text-[#28071C]/40 mt-1.5">Sem limite de caracteres.</p>}
     </div>
   );
 }

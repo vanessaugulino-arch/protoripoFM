@@ -15,7 +15,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArrowLeft, Download, Printer, ChevronDown, ChevronRight, StickyNote } from "lucide-react";
-import { PlanObservationCard } from "../components/PlanObservationCard";
+import { ObservationNote } from "../components/ObservationNote";
 import { getPlannedYears, initPlanCycles, getPlanCycle, type PlanFieldPriority } from "../types/planCycle";
 import { getOfficialPlan, type OfficialPlan } from "../../services/supabase/officialPlanService";
 import { getAppliedChannelScenario, type ChannelScenario } from "../../services/supabase/channelScenarioService";
@@ -645,14 +645,12 @@ export default function FinalPlan() {
               })}
             </div>
 
-            {/* ─── Observações do Plano Macro ───────────────────────────── */}
-            <PlanObservationCard
+            {/* ─── Observações do Plano Macro (só leitura — escrita no M1) ── */}
+            <ObservationNote
               tenantId={tenantId}
               module="m1_estrategico"
               seasonKey={String(selectedYear)}
-              title="Observações do Plano Macro"
-              userEmail={user.email}
-              compact
+              label="Observações do Plano Macro"
             />
 
             {/* ─── Indicadores por Canal (M2 real, aplicado) ────────────── */}
@@ -697,14 +695,11 @@ export default function FinalPlan() {
                   </table>
                   </div>
                   <div className="lg:w-[300px] lg:shrink-0 lg:border-l lg:border-[#28071C]/8 lg:pl-5">
-                    <PlanObservationCard
+                    <ObservationNote
                       tenantId={tenantId}
                       module="m2_canal"
                       seasonKey={String(selectedYear)}
-                      title="Observação do canal"
-                      placeholder="Por que a receita ficou nesta divisão entre canais, o que sustenta o giro de cada um, e o que muda se um deles não entregar."
-                      userEmail={user.email}
-                      variant="inline"
+                      label="Observação do Canal"
                     />
                   </div>
                 </div>
