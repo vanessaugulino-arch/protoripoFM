@@ -324,10 +324,22 @@ export async function runCascadeFromM1(tenantId: string, year: number, userEmail
  * Retoma uma cascata que ficou incompleta (aba fechada no meio) — chamada ao
  * carregar telas de topo (Dashboard/PlanningGateway). Reprocessa só as
  * etapas 'pending' ou 'blocked_on_dependency' (nunca mexe em 'done').
+ *
+ * BUG real corrigido aqui: antes, `!status.started` (nenhuma linha em
+ * plan_cascade_runs) fazia esta função simplesmente retornar — nunca
+ * disparava a cascata do zero. Isso deixava "órfão" qualquer M1 salvo antes
+ * da Cascata Automática existir (ou cuja aba fechou antes do primeiro passo
+ * rodar): o plano nunca descia pros módulos seguintes, e telas como o Plano
+ * Final ficavam com "ainda não há Plano de Coleção aplicado" para sempre,
+ * mesmo com M1 salvo há muito tempo. A regra é "M1 mudou → desce até o
+ * último nível" — não deveria depender do exato momento em que o save
+ * aconteceu. Agora, sem cascata iniciada, dispara `runCascadeFromM1` (que já
+ * é idempotente/seguro de chamar de novo) em vez de desistir.
  */
 export async function resumeCascadeIfIncomplete(tenantId: string, year: number, userEmail?: string): Promise<void> {
   const status = await getPlanCascadeStatus(tenantId, year)
-  if (!status.started || status.closed) return
+  if (status.closed) return
+  if (!status.started) { await runCascadeFromM1(tenantId, year, userEmail); return }
 
   const isDone = (module: number, seasonId: string | null) =>
     status.steps.some((s: CascadeStep) => s.module === module && s.seasonId === seasonId && s.status === 'done')
