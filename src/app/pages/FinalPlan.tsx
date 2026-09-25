@@ -652,6 +652,7 @@ export default function FinalPlan() {
               seasonKey={String(selectedYear)}
               title="Observações do Plano Macro"
               userEmail={user.email}
+              compact
             />
 
             {/* ─── Indicadores por Canal (M2 real, aplicado) ────────────── */}
