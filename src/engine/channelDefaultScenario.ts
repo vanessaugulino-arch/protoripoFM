@@ -97,17 +97,41 @@ export function isOutsideBand(key: string, planned: number, projected: number): 
 
 // ─── Funções puras de cálculo ─────────────────────────────────────────────────
 
+/**
+ * GMROI e cobertura do canal saem do mesmo estoque e do mesmo lucro do
+ * consolidado (Σlucro ÷ Σestoque). Antes eram metas soltas: o canal mostrava
+ * o GMROI do M1 (3,23) e o consolidado, calculado dos absolutos, outro (2,92).
+ * Estoque em peças converte pelo custo médio, como no M1 (planningEngine).
+ */
+function derivados(receita: number, margemBrutaRS: number, estoqueMedioRS: number, custoMedio: number, pmv: number) {
+  return {
+    gmroi:             estoqueMedioRS > 0 ? margemBrutaRS / estoqueMedioRS : 0,
+    cobertura:         receita > 0 ? (estoqueMedioRS / receita) * 365 : 0,
+    estoqueMedioPecas: custoMedio > 0 ? estoqueMedioRS / custoMedio : (pmv > 0 ? estoqueMedioRS / pmv : 0),
+  }
+}
+
+/**
+ * Editar GMROI ou cobertura move o giro (o único driver de estoque); o resto
+ * se recalcula em applyRevenue. GMROI = margem × giro; cobertura = 365 ÷ giro.
+ */
+export function giroFromEdit(data: ChannelData, field: 'gmroi' | 'cobertura', value: number): number {
+  if (field === 'gmroi') return data.margemBruta > 0 && value > 0 ? value / (data.margemBruta / 100) : data.giro
+  return value > 0 ? 365 / value : data.giro
+}
+
 export function applyRevenue(data: ChannelData, newReceita: number): ChannelData {
   const orcRate        = data.receita > 0 ? data.orcamento / data.receita : (data.custoMedio > 0 && data.pmv > 0 ? data.custoMedio / data.pmv : 0.365)
   const estoqueMedioRS = data.giro > 0 ? newReceita / data.giro : 0
   const producao       = data.pmv > 0 ? newReceita / data.pmv : 0
+  const margemBrutaRS  = newReceita * data.margemBruta / 100
   return {
     ...data,
     receita:           newReceita,
-    margemBrutaRS:     newReceita * data.margemBruta / 100,
+    margemBrutaRS,
     orcamento:         newReceita * orcRate,
     estoqueMedioRS,
-    estoqueMedioPecas: data.pmv > 0 ? estoqueMedioRS / data.pmv : 0,
+    ...derivados(newReceita, margemBrutaRS, estoqueMedioRS, data.custoMedio, data.pmv),
     producao,
     totalPecas:        producao,
     markdown:          newReceita * data.mkdPct / 100,
@@ -121,13 +145,14 @@ export function buildChannel(
   const estoqueMedioRS = rates.giro > 0 ? receita / rates.giro : 0
   const producao       = rates.pmv > 0 ? receita / rates.pmv : 0
   const orcRate2       = rates.custoMedio > 0 && rates.pmv > 0 ? rates.custoMedio / rates.pmv : 0.365
+  const margemBrutaRS  = receita * rates.margemBruta / 100
   return {
     receita,
-    margemBrutaRS:     receita * rates.margemBruta / 100,
+    margemBrutaRS,
     ...rates,
     orcamento:         receita * orcRate2,
     estoqueMedioRS,
-    estoqueMedioPecas: rates.pmv > 0 ? estoqueMedioRS / rates.pmv : 0,
+    ...derivados(receita, margemBrutaRS, estoqueMedioRS, rates.custoMedio, rates.pmv),
     producao,
     totalPecas:        producao,
     markdown:          receita * rates.mkdPct / 100,

@@ -78,8 +78,7 @@ import {
   applyRevenue,
   buildChannel,
   initChannelData,
-  computeConsolidatedFromRaw,
-} from "../../engine/channelDefaultScenario";
+  computeConsolidatedFromRaw, giroFromEdit } from "../../engine/channelDefaultScenario";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -486,6 +485,10 @@ export default function ChannelPlanning() {
 
     setChannelData(prev => {
       let updated: ChannelData = { ...prev[ch], [field]: value };
+      // GMROI e cobertura são consequência do giro: editar um deles move o giro.
+      if (field === "gmroi" || field === "cobertura") {
+        updated = { ...prev[ch], giro: giroFromEdit(prev[ch], field, value) };
+      }
 
       if (indicatorField) {
         // Passa pelo mesmo motor de clusters do M1/M3 — Margem/MKD/PMV/Custo
@@ -515,7 +518,7 @@ export default function ChannelPlanning() {
         };
       }
 
-      return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
+      return { ...prev, [ch]: (DRIVER_FIELDS.has(field) || field === "gmroi" || field === "cobertura") ? applyRevenue(updated, updated.receita) : updated };
     });
   };
 
