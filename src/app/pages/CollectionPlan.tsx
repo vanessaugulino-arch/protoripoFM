@@ -202,7 +202,7 @@ export default function CollectionPlan() {
         const vc = block?.volumeCoverage;
         if (!vc) continue;
         nextTargets[divId] = {
-          targetPieces: vc.productionVolume ?? 0,
+          targetPieces: vc.productionVolume || vc.unitsExpectedSold || 0,
           unitsExpectedSold: vc.unitsExpectedSold ?? 0,
           initialStock: vc.initialStock ?? 0,
           participation: block?.participation ?? 0,
@@ -212,7 +212,13 @@ export default function CollectionPlan() {
       setTargets(nextTargets);
 
       if (working && Object.keys(working).length > 0) {
-        setDivisionsPlan(working);
+        // O teto vem do M4 aplicado (nextTargets); o salvo no plano pode ser de
+        // um M4 anterior. Mantém as alocações, atualiza só o teto.
+        const comTetoAtual: Record<string, CollectionPlanDivision> = {};
+        for (const [divId, d] of Object.entries(working)) {
+          comTetoAtual[divId] = { ...d, targetPieces: nextTargets[divId]?.targetPieces || d.targetPieces };
+        }
+        setDivisionsPlan(comTetoAtual);
       } else {
         const initial: Record<string, CollectionPlanDivision> = {};
         for (const [divId, t] of Object.entries(nextTargets)) {
@@ -364,7 +370,7 @@ export default function CollectionPlan() {
   const divisionSummaries = useMemo(() => {
     return Object.entries(divisionsPlan).map(([divId, div]) => {
       const allocated = div.entries.reduce((s, e) => s + e.plannedPieces, 0);
-      const target = div.targetPieces || targets[divId]?.targetPieces || 0;
+      const target = targets[divId]?.targetPieces || div.targetPieces || 0;
       const gapPct = target > 0 ? ((allocated - target) / target) * 100 : 0;
       return { divId, allocated, target, gapPct, outsideTolerance: target > 0 && Math.abs(gapPct) > TOLERANCE_PCT };
     });

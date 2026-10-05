@@ -327,7 +327,7 @@ export default function FinalPlan() {
         const perDivision = Object.entries(divs).map(([divId, block]) => {
           const vc = block?.volumeCoverage;
           const target: DivisionSalesTarget = {
-            targetPieces: vc?.productionVolume ?? 0,
+            targetPieces: vc?.productionVolume || vc?.unitsExpectedSold || 0,
             unitsExpectedSold: vc?.unitsExpectedSold ?? 0,
             initialStock: vc?.initialStock ?? 0,
             participation: block?.participation ?? 0,

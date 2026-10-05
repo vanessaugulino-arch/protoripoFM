@@ -946,7 +946,11 @@ export default function Module3DivisionPlanning() {
         return;
       }
     }
-    const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
+    // Aplica o cenário salvo mais recente (o que reflete a tela). Antes
+    // escolhia o já ativo ou o primeiro da lista: salvar um cenário novo e
+    // clicar em Aplicar reaplicava o antigo, e o M5 recebia os números velhos.
+    const chosen = [...scenarios].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0]
+      ?? scenarios.find(s => s.isActive);
     if (chosen) {
       applyModule3Scenario(selectedSeasonId, chosen.id);
       setScenarioListVersion(v => v + 1);

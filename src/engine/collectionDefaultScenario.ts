@@ -46,7 +46,7 @@ export async function computeDefaultCollectionScenario(
   const result: Record<string, CollectionPlanDivision> = {}
 
   for (const [divId, block] of Object.entries(divs)) {
-    const targetPieces = block?.volumeCoverage?.productionVolume ?? 0
+    const targetPieces = block?.volumeCoverage?.productionVolume || block?.volumeCoverage?.unitsExpectedSold || 0
     if (targetPieces <= 0) {
       result[divId] = { targetPieces: 0, entries: [] }
       continue
