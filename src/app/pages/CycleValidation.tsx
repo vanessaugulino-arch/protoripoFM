@@ -263,7 +263,7 @@ export default function CycleValidation() {
   // Anos com M2 aplicado — trava real de "Aplicar Metas" aqui, não só o card
   // do Dashboard (que é decorativo e não impede acesso direto à tela).
   const [m2ReviewedYears, setM2ReviewedYears] = useState<number[]>([]);
-  const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
+  const [cyclesReady, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
 
   // Ano Fiscal — a tela passou a ser organizada por ano fiscal (Jan–Dez),
   // não mais por temporada isolada. Uma temporada de Verão cruza dois anos
@@ -290,6 +290,11 @@ export default function CycleValidation() {
 
   // Metrics from DB
   const [avgPmv, setAvgPmv]   = useState<Record<string, number>>({});
+  // PMV planejado por canal no M2 aplicado: vem antes do histórico e do M1.
+  // Antes a tela ignorava o M2 (ex.: atacado a R$ 101 = 65% fixo do PMV do M1,
+  // com o M2 aplicado a R$ 155).
+  const [planPmv, setPlanPmv] = useState<Record<string, number>>({});
+  const pmvDoCanal = (cid: string) => planPmv[cid] || avgPmv[cid] || 65;
   const [avgCost, setAvgCost] = useState<number>(30);
   const [prevYearRevenue, setPrevYearRevenue] = useState<Record<string, Record<string, number>>>({});
 
@@ -369,7 +374,16 @@ export default function CycleValidation() {
     // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
     // reload nesta tela lê m1Values/macroMeta desatualizados (ou "?? 45"/
     // "?? 0" fallback) mesmo com o M1 salvo de verdade no banco.
-    initPlanCycles(tid).then(() => setCyclesReady(v => v + 1)).catch(() => {});
+    initPlanCycles(tid).then(() => {
+      setCyclesReady(v => v + 1)
+      // Sem ano na rota, abre no ano mais recente planejado. Antes o estado
+      // inicial lia o cache ainda vazio e, ao recarregar, a tela abria no ano
+      // corrente (sem M2) e caía em PMV R$ 65 e custo R$ 30 de reserva.
+      if (!routeYear) {
+        const planned = getPlannedYears()
+        if (planned.length > 0) setSelectedFiscalYear(Math.max(...planned))
+      }
+    }).catch(() => {});
 
     getReviewedYears(tid).then(setM2ReviewedYears).catch(() => {});
     getAvgPurchaseCost(tid).then(setAvgPurchaseCost).catch(() => {});
@@ -502,7 +516,7 @@ export default function CycleValidation() {
         }
       });
     }).catch(() => {});
-  }, [tenantId, selectedFiscalYear]);
+  }, [tenantId, selectedFiscalYear, cyclesReady]);
 
   // ── Temporadas relevantes ao ano fiscal selecionado (view Jan–Dez) ─────────
   const relevantSeasons = useMemo(
@@ -584,14 +598,18 @@ export default function CycleValidation() {
   useEffect(() => {
     if (!tenantId) return;
     getAppliedChannelScenario(tenantId, selectedFiscalYear).then(scenario => {
-      if (!scenario) { setChannelYearTarget({}); setAppliedChannelScenarioId(null); return; }
+      if (!scenario) { setChannelYearTarget({}); setPlanPmv({}); setAppliedChannelScenarioId(null); return; }
       const targets: Record<string, number> = {};
+      const pmvs: Record<string, number> = {};
       for (const [cid, data] of Object.entries(scenario.channel_data ?? {})) {
         targets[cid] = (data as Record<string, number>)?.receita ?? 0;
+        const p = (data as Record<string, number>)?.pmv
+        if (p && p > 0) pmvs[cid] = Math.round(p);
       }
       setChannelYearTarget(targets);
+      setPlanPmv(pmvs);
       setAppliedChannelScenarioId(scenario.id);
-    }).catch(() => { setChannelYearTarget({}); setAppliedChannelScenarioId(null); });
+    }).catch(() => { setChannelYearTarget({}); setPlanPmv({}); setAppliedChannelScenarioId(null); });
   }, [tenantId, selectedFiscalYear]);
 
   // ── Pedido de ajuste já pendente para o ano fiscal selecionado ─────────────
@@ -678,7 +696,7 @@ export default function CycleValidation() {
   // ── Bottom-up engine ────────────────────────────────────────────────────────
   const canalCalcResults = useMemo((): CanalCalcResult[] => {
     return activeCanals.map(canal => {
-      const pmv     = avgPmv[canal.id] || 65;
+      const pmv     = pmvDoCanal(canal.id);
       const cRevMap = plannedRevenue[canal.id] || {};
       const prevMap = prevYearRevenue[canal.id] || {};
       const months  = computeCanalCalc(
@@ -694,7 +712,7 @@ export default function CycleValidation() {
         totalCustoEntrada: months.reduce((s, m) => s + m.custoEntrada, 0),
       };
     });
-  }, [activeCanals, plannedRevenue, prevYearRevenue, avgPmv, avgCost, coverageTarget, estoqueColeçãoPassada]);
+  }, [activeCanals, plannedRevenue, prevYearRevenue, avgPmv, planPmv, avgCost, coverageTarget, estoqueColeçãoPassada]);
 
   const totalPlanned = useMemo(
     () => canalCalcResults.reduce((s, c) => s + c.totalReceita, 0),
@@ -1150,7 +1168,7 @@ export default function CycleValidation() {
                       {activeCanals.map(c => (
                         <span key={c.id} className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.color }} />
-                          {c.name.split(" ")[0]}: <strong className="text-[#28071C]/80">{fmtR(avgPmv[c.id] || 65)}</strong>
+                          {c.name.split(" ")[0]}: <strong className="text-[#28071C]/80">{fmtR(pmvDoCanal(c.id))}</strong>
                         </span>
                       ))}
                     </div>
