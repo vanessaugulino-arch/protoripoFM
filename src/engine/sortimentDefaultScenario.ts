@@ -76,9 +76,35 @@ export function midpointPrice(range: string, fallback: number): number {
 }
 
 /**
+ * PMV da pirâmide = receita ÷ peças. As participações P1/P2/P3 são de RECEITA,
+ * então as peças são Σ(receita × participação ÷ preço) e o PMV é a média
+ * harmônica dos preços ponderada pela participação — não a média ponderada
+ * simples, que dá um preço maior e faz a soma de peças não fechar com o M5.
+ */
+export function pmvDaPiramide(precos: [number, number, number], pesos: [number, number, number]): number {
+  let somaPesos = 0, somaPesoSobrePreco = 0
+  for (let i = 0; i < 3; i++) {
+    if (pesos[i] > 0 && precos[i] > 0) { somaPesos += pesos[i]; somaPesoSobrePreco += pesos[i] / precos[i] }
+  }
+  return somaPesoSobrePreco > 0 ? somaPesos / somaPesoSobrePreco : 0
+}
+
+/**
+ * Escala os preços das três faixas pelo mesmo fator para que o PMV da
+ * pirâmide (pmvDaPiramide) seja `pmv`. Mantém a proporção entre faixas.
+ * Sem PMV (ou pesos zerados), devolve os preços como vieram.
+ */
+export function ajustarPiramideAoPmv(precos: [number, number, number], pesos: [number, number, number], pmv: number): [number, number, number] {
+  const atual = pmvDaPiramide(precos, pesos)
+  if (!(pmv > 0) || !(atual > 0)) return precos
+  const k = pmv / atual
+  return [Math.round(precos[0] * k), Math.round(precos[1] * k), Math.round(precos[2] * k)]
+}
+
+/**
  * Constrói o array inicial de Division[] para o M6 a partir do cenário aplicado do M4.
  * @param m3Row   Linha aplicada de division_scenarios
- * @param macroRec Receita total da coleção (do M1, em R$) para calcular revenueTarget
+ * @param macroRec Receita da TEMPORADA (do M4 aplicado) para calcular revenueTarget — não a anual do M1
  */
 export function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: number): Division[] {
   const divMap = (m3Row.divisions ?? {}) as Record<string, any>
@@ -96,13 +122,18 @@ export function buildDivisionsFromM3(m3Row: DivisionScenarioRow, macroRec: numbe
 
       const revenueTarget = macroRec > 0 ? Math.round(macroRec * participation / 100) : 0
 
-      const avgPriceP1 = midpointPrice(priceRange.entry ?? '', 120)
-      const avgPriceP2 = midpointPrice(priceRange.middle ?? '', 180)
-      const avgPriceP3 = midpointPrice(priceRange.premium ?? '', 280)
-
       const p1 = priceRange.entryPercent   ?? 40
       const p2 = priceRange.middlePercent  ?? 40
       const p3 = priceRange.premiumPercent ?? 20
+
+      // Preço por faixa: ponto médio da faixa do M4, ajustado para que a média
+      // ponderada da pirâmide seja o PMV planejado no M4. Antes as faixas
+      // padrão (119-169 / 179-259 / 269-389) davam PMV 219 com o M4 em 155.
+      const [avgPriceP1, avgPriceP2, avgPriceP3] = ajustarPiramideAoPmv(
+        [midpointPrice(priceRange.entry ?? '', 120), midpointPrice(priceRange.middle ?? '', 180), midpointPrice(priceRange.premium ?? '', 280)],
+        [p1, p2, p3],
+        Number(indicators.avgPrice) || 0,
+      )
 
       const targetMarginPct = indicators.margin ?? 60
       const targetMkdPct = indicators.mkd ?? 15

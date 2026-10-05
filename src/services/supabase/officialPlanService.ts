@@ -17,7 +17,7 @@
 
 import { supabase } from '../../lib/supabase'
 import { consolidateCells, type MacroCell } from '../../engine/cellConsolidation'
-import { rollupSeasonsToMacro, type SeasonRollupInput } from '../../engine/seasonRollup'
+import { mesesCobertos, rollupSeasonsToMacro, type SeasonRollupInput } from '../../engine/seasonRollup'
 
 // Colunas/-RPC adicionadas após a geração dos tipos → cast pontual.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -228,6 +228,19 @@ export async function recomputeMacroFromDivisions(
     })
   }
   if (inputs.length === 0) return null
+
+  // Só troca o macro anual pela soma das divisões quando as temporadas
+  // aplicadas cobrem o ano inteiro. Antes, aplicar só o Inverno (5 meses)
+  // gravava como meta anual a receita do Inverno (ex.: 1,19 mi de 2,85 mi).
+  if (mesesCobertos(inputs, year).size < 12) {
+    await db
+      .from('annual_plan_cycles')
+      .update({ detail_level: 3, updated_at: new Date().toISOString() })
+      .eq('tenant_id', tenantId)
+      .eq('year', year)
+      .lt('detail_level', 3)
+    return null
+  }
 
   const macro = rollupSeasonsToMacro(inputs, year)
   if (!macro) return null

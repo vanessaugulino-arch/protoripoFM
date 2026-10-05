@@ -10,21 +10,36 @@ Como usar:
 Requisitos: Python 3.6+  (sem pip, usa apenas stdlib)
 """
 
+import os
 import sys, zipfile, re, time, json
 import urllib.request, urllib.error
 from xml.etree import ElementTree as ET
 
 # ── Configuração ───────────────────────────────────────────────────────────────
 XLSX_PATH     = "Vendas_novo.xlsx"          # ajuste o caminho se necessário
-TENANT_ID     = "510da940-e4b4-4750-9b46-fe432bf77065"
-SB_URL        = "https://tlbfvuqzvpolfrjwiofx.supabase.co"
-SB_ANON_KEY   = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRsYmZ2dXF6"
-    "dnBvbGZyandpb2Z4Iiwicm9sZSI6ImFub24iLCJpYXQiOj"
-    "E3ODE2ODI3OTAsImV4cCI6MjA5NzI1ODc5MH0"
-    ".cPrpLkvrkoXfDmKnL3Y4gtvZGFPIdHig-w-gZma3fhA"
-)
+# Empresa e banco de destino: defina no ambiente ou no .env para importar na base única (Supabase da TFO).
+TENANT_ID     = os.environ.get("MIND_TENANT_ID", "510da940-e4b4-4750-9b46-fe432bf77065")
+SB_URL        = os.environ.get("SUPABASE_URL", "https://tlbfvuqzvpolfrjwiofx.supabase.co")
+
+def read_service_key() -> str:
+    """Chave de serviço: variável de ambiente ou .env local (nunca commitar).
+    Mesmo nome usado em scripts/import_data_tfo.py. A chave pública (anon)
+    não serve: importação grava direto em vendas/produtos e o banco só deve
+    aceitar isso de quem tem a chave de serviço."""
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(".env", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("SUPABASE_SERVICE_KEY="):
+                    return line.split("=", 1)[1].strip()
+    except FileNotFoundError:
+        pass
+    sys.exit("ERRO: defina SUPABASE_SERVICE_KEY (ambiente ou .env). "
+             "Pegue em Supabase > Project Settings > API > service_role.")
+
+SB_KEY        = read_service_key()
 BATCH_SIZE    = 500          # linhas por chamada RPC (pode aumentar até 2000)
 PROGRESS_FILE = "sales_import_progress.json"
 
@@ -134,8 +149,8 @@ def call_bulk_insert(batch, retry=3):
     for attempt in range(1, retry + 1):
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Content-Type",  "application/json")
-        req.add_header("Authorization", f"Bearer {SB_ANON_KEY}")
-        req.add_header("apikey",        SB_ANON_KEY)
+        req.add_header("Authorization", f"Bearer {SB_KEY}")
+        req.add_header("apikey",        SB_KEY)
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 body = resp.read().decode("utf-8")

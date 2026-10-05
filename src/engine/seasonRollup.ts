@@ -72,3 +72,18 @@ export function rollupSeasonsToMacro(
 
   return consolidateCells(cells)
 }
+
+/**
+ * Meses (1–12) do ano fiscal `year` cobertos pelas temporadas informadas.
+ * O macro anual só pode vir da soma das divisões quando cobre os 12 meses:
+ * com só o Inverno planejado, a soma é a receita de 5 meses, não do ano.
+ */
+export function mesesCobertos(inputs: Pick<SeasonRollupInput, 'monthStart' | 'monthEnd' | 'seasonFiscalYear'>[], year: number): Set<number> {
+  const out = new Set<number>()
+  for (const i of inputs) {
+    for (const m of expandSeasonMonths(i.monthStart, i.monthEnd, i.seasonFiscalYear)) {
+      if (m.year === year) out.add(m.month)
+    }
+  }
+  return out
+}

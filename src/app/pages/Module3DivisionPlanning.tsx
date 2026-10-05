@@ -49,6 +49,7 @@ import {
   Lock,
   Play,
   FileDown,
+  Printer,
   GitCompare,
   CheckCheck,
   HelpCircle,
@@ -96,7 +97,8 @@ const MODULE3_TOUR: TourStep[] = [
     content: "Ajuste as participações e indicadores por divisão, salve como cenário e crie quantas versões quiser — conservadora, moderada, agressiva. Compare lado a lado e aplique o cenário que melhor equilibra risco e meta antes de confirmar o plano.",
   },
 ];
-import { exportToPDF } from "../../utils/exportPDF";
+import { RelatorioDivisoes, baixarExcelDivisoes, nomeArquivoDivisoes, type DadosDivisoes, type FormatoMeta } from "../../reports/divisoesRelatorio";
+import { emPreviaPdf, imprimirPdf } from "../../reports/RelatorioA4";
 import {
   BusinessDivisionId,
   DivisionPlanBlock,
@@ -240,6 +242,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
   let margin = 48;
   let gmroi = 3.5;
   let pmv: number | undefined;
+  let mkd: number | undefined;
 
   if (plannedYears.length > 0) {
     // Tenta o ano fiscal da temporada primeiro; se não houver, usa o mais recente
@@ -260,6 +263,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
         margin        = (values.margemBruta  as number) ?? 48;
         gmroi         = (values.gmroi        as number) ?? 3.5;
         pmv           = (values.pmv          as number | null) ?? undefined;
+        mkd           = (values.mkdPct       as number | null) ?? undefined;
         break;
       }
     }
@@ -276,6 +280,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
     sellThrough: 75,
     gmroi,
     pmv,
+    mkd,
   };
 }
 
@@ -311,7 +316,6 @@ export default function Module3DivisionPlanning() {
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioDescription, setScenarioDescription] = useState("");
   const [scenarioListVersion, setScenarioListVersion] = useState(0);
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [isExportingConsolidated, setIsExportingConsolidated] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [applySuccess, setApplySuccess]                       = useState(false);
@@ -387,6 +391,15 @@ export default function Module3DivisionPlanning() {
 
     setIsLoading(false);
   }, [navigate]);
+
+  // Nome da empresa para capa e cabeçalho do relatório — do banco (tenants),
+  // não da sessão (suporte que trocou de cliente pode não ter o nome lá).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "");
+  useEffect(() => {
+    if (!tenantId) return;
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name); });
+  }, [tenantId]);
 
   // Fase 3: mostra o popup de temporadas assim que a lista carrega, uma vez
   // por visita à tela — antes o sistema já auto-selecionava a primeira
@@ -867,6 +880,123 @@ export default function Module3DivisionPlanning() {
     return computeMarginCompensationViaMkd(entities, item.planned);
   })();
 
+  // Indicadores do card "Consolidado de Metas Macro": foco do M1 (filtrado
+  // para os que o M4 calcula) ou o padrão quando o M1 não tem prioridades.
+  const focusKeysM4 = macroM1Extras.activeMacroKeys.length > 0
+    ? macroM1Extras.activeMacroKeys.filter(k => k in M3_INDICATOR_LABELS)
+    : ["receitaBruta", "margemBruta", "sellThrough", "gmroi"];
+  const formatoMetaM4 = (key: string): FormatoMeta =>
+    key === "receitaBruta" || key === "pmv" || key === "custoMedio" || key === "ticketMedio" ? "brl"
+    : key === "giro" || key === "gmroi" ? "multiplo"
+    : key === "cobertura" ? "inteiro"
+    : "pct";
+
+  // ─── Relatório (PDF/Excel) — mesmos números da tela ──────────────────────
+  const empresaRelatorio = nomeEmpresa || "Empresa";
+  const temporadaRelatorio = selectedTemporada?.nome ?? selectedSeasonId;
+  const dadosRelatorio: DadosDivisoes = {
+    empresa: empresaRelatorio,
+    temporada: temporadaRelatorio,
+    periodoTemporada: selectedTemporada ? seasonFiscalLabel(selectedTemporada.mesInicio, selectedTemporada.mesFim) : "",
+    ano: selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
+    referencia: referenceTemporada?.nome ?? null,
+    receitaTemporada: macroTargets.revenue,
+    receitaDaSazonalidade: !!sazonalidadeMonthlyTotal && Object.values(sazonalidadeMonthlyTotal).reduce((s, v) => s + v, 0) > 0,
+    participacaoTotal: totalParticipation,
+    metasAtingidas: impactedMacroM3.length === 0,
+    metas: focusKeysM4.map(key => {
+      const planned = macroM1Extras.values[key] ?? 0;
+      const projected = getM3ConsolidatedValue(key, state.consolidated);
+      return {
+        chave: key,
+        rotulo: M3_INDICATOR_LABELS[key],
+        meta: planned,
+        projetado: projected,
+        formato: formatoMetaM4(key),
+        dentroDaBanda: planned === 0 || !isOutsideBandM3(key, planned, projected),
+      };
+    }),
+    consolidado: {
+      receita: state.consolidated?.totalRevenue ?? 0,
+      pmv: state.consolidated?.avgPmv ?? 0,
+      mkd: state.consolidated?.avgMkd ?? 0,
+      margem: state.consolidated?.avgMargin ?? 0,
+      sellThrough: state.consolidated?.avgSellThrough ?? 0,
+    },
+    compensacao: divisionMarginCompensation
+      ? {
+          margemAtual: getM3ConsolidatedValue("margemBruta", state.consolidated),
+          margemMeta: impactedMacroM3.find(i => i.key === "margemBruta")?.planned ?? 0,
+          mkdSugerido: divisionMarginCompensation.mkdPctNew,
+          limitado: !!divisionMarginCompensation.clamped,
+        }
+      : null,
+    divisoes: divisionIds.flatMap(divId => {
+      const block = state.divisions[divId];
+      if (!block) return [];
+      const hist = histDivisionProfiles.find(p => p.division === divId);
+      const vc = block.volumeCoverage;
+      const real = Boolean(realInventoryByDiv[divId]?.hasData);
+      const tiers = [
+        { faixa: "P1 Entrada", range: block.priceRange.entry,   pctPecas: block.priceRange.entryPercent,   tierId: "p1" as PriceTierId },
+        { faixa: "P2 Médio",   range: block.priceRange.middle,  pctPecas: block.priceRange.middlePercent,  tierId: "p2" as PriceTierId },
+        { faixa: "P3 Premium", range: block.priceRange.premium, pctPecas: block.priceRange.premiumPercent, tierId: "p3" as PriceTierId },
+      ];
+      return [{
+        id: divId,
+        nome: divisionLabels[divId] ?? divId,
+        participacao: block.participation,
+        sugeridoSazonalidade: sazonalidadeSuggestedPct?.[divId] ?? null,
+        receita: macroTargets.revenue > 0 ? (block.participation / 100) * macroTargets.revenue : null,
+        pmv: block.indicators.avgPrice,
+        mkd: block.indicators.mkd,
+        margem: block.indicators.margin,
+        sellThrough: block.indicators.sellThrough,
+        pmvAnoAnterior: hist?.avgPmv ?? null,
+        mkdAnoAnterior: hist?.avgMkdPct ?? null,
+        margemAnoAnterior: hist?.avgMargin ?? null,
+        faixas: tiers.map(t => {
+          const histAvg = historicalAvgs[divId]?.[t.tierId] ?? null;
+          const mid = histAvg ?? parsePriceMidpoint(t.range);
+          return {
+            faixa: t.faixa,
+            intervalo: t.range,
+            pctPecas: t.pctPecas,
+            precoMedio: mid != null ? Math.round(mid) : null,
+            fontePreco: histAvg != null ? (historicalAvgsIsReal ? "vendido" as const : "catalogo" as const) : mid != null ? "ponto_medio" as const : null,
+          };
+        }),
+        risco: {
+          sustentadorMargem: block.riskMatrix.sustentadorMargem,
+          motorGiro: block.riskMatrix.motorGiro,
+          iconeMarca: block.riskMatrix.iconeMarca,
+          basico: block.riskMatrix.basico ?? 0,
+        },
+        volume: {
+          producao: vc.productionVolume ?? 0,
+          orcamento: vc.orcamento ?? 0,
+          vendasEsperadas: vc.unitsExpectedSold,
+          estoqueInicial: Math.round(vc.initialStock),
+          giro: vc.giro ?? 0,
+          estoqueMedio: Math.round(vc.estoqueMedio ?? 0),
+          cobertura: real ? vc.coverage : null,
+          reposicoes: Math.round(vc.replenishments),
+          stCalc: vc.initialStock + vc.replenishments > 0 ? (vc.unitsExpectedSold / (vc.initialStock + vc.replenishments)) * 100 : null,
+          real,
+        },
+      }];
+    }),
+    cenarios: scenarios.map(sc => ({
+      nome: sc.name,
+      descricao: sc.description,
+      ativo: sc.isActive,
+      criadoEm: new Date(sc.createdAt).toLocaleDateString("pt-BR"),
+      receita: sc.consolidated.totalRevenue,
+      margem: sc.consolidated.avgMargin,
+    })),
+  };
+  const previaPdf = emPreviaPdf();
+
   const handleApplyDivisionMarginCompensation = () => {
     if (!divisionMarginCompensation) return;
     for (const divId of divisionIds) {
@@ -943,7 +1073,11 @@ export default function Module3DivisionPlanning() {
         return;
       }
     }
-    const chosen = scenarios.find(s => s.isActive) ?? scenarios[0];
+    // Aplica o cenário salvo mais recente (o que reflete a tela). Antes
+    // escolhia o já ativo ou o primeiro da lista: salvar um cenário novo e
+    // clicar em Aplicar reaplicava o antigo, e o M5 recebia os números velhos.
+    const chosen = [...scenarios].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0]
+      ?? scenarios.find(s => s.isActive);
     if (chosen) {
       applyModule3Scenario(selectedSeasonId, chosen.id);
       setScenarioListVersion(v => v + 1);
@@ -979,7 +1113,8 @@ export default function Module3DivisionPlanning() {
     if (!tenantId || !user) return;
     setIsSubmittingApproval(true);
     try {
-      const scenarioForApproval = scenarios.find(s => s.isActive) ?? scenarios[scenarios.length - 1] ?? null;
+      // Mesmo critério de Aplicar metas: o cenário salvo mais recente é o que está na tela.
+      const scenarioForApproval = [...scenarios].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0] ?? null;
       await createApprovalRequest({
         tenantId,
         year:               selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
@@ -1063,16 +1198,6 @@ export default function Module3DivisionPlanning() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportPDF = async () => {
-    setIsExportingPDF(true);
-    await exportToPDF({
-      elementId: "module3-scenarios-pdf",
-      fileName:  `cenarios_divisao_${selectedSeasonId}`,
-      title:     `Comparação de Cenários — ${selectedTemporada?.nome ?? selectedSeasonId}`,
-    });
-    setIsExportingPDF(false);
-  };
-
   const handleExportConsolidated = async () => {
     if (!tenantId || !selectedSeasonId) return;
     setIsExportingConsolidated(true);
@@ -1108,7 +1233,9 @@ export default function Module3DivisionPlanning() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2]${previaPdf ? " previa-pdf" : ""}`}>
+      {selectedSeasonId && divisionIds.length > 0 && <RelatorioDivisoes dados={dadosRelatorio} />}
+      <div className="tela-app">
 
       {/* ─── HEADER ────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
@@ -1363,9 +1490,7 @@ export default function Module3DivisionPlanning() {
 
                 // Indicadores a exibir: foco do M1 (filtrado para os que M3 consegue calcular)
                 // ou fallback padrão quando M1 não tem prioridades configuradas.
-                const focusKeys = macroM1Extras.activeMacroKeys.length > 0
-                  ? macroM1Extras.activeMacroKeys.filter(k => k in M3_INDICATOR_LABELS)
-                  : ["receitaBruta", "margemBruta", "sellThrough", "gmroi"];
+                const focusKeys = focusKeysM4;
 
                 const cols = focusKeys.length <= 4 ? "grid-cols-4"
                   : focusKeys.length <= 6 ? "grid-cols-6"
@@ -1594,12 +1719,22 @@ export default function Module3DivisionPlanning() {
               )}
             </button>
             <button
-              onClick={handleExportPDF}
-              disabled={isExportingPDF}
+              onClick={() => imprimirPdf(nomeArquivoDivisoes(empresaRelatorio, temporadaRelatorio))}
+              disabled={!selectedSeasonId || divisionIds.length === 0}
+              title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
               className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
             >
-              <FileDown className="w-4 h-4" />
-              {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+              <Printer className="w-4 h-4" />
+              Baixar PDF
+            </button>
+            <button
+              onClick={() => baixarExcelDivisoes(dadosRelatorio)}
+              disabled={!selectedSeasonId || divisionIds.length === 0}
+              title="Planilha .xlsx com metas, participação, indicadores, pirâmide de preço, matriz de risco, volume e cenários"
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              Baixar Excel
             </button>
             <button
               onClick={handleExportConsolidated}
@@ -1775,50 +1910,10 @@ export default function Module3DivisionPlanning() {
       )}
 
       {/* ── PRODUCT TOUR ─────────────────────────────────────────────────── */}
-      {tour.isOpen && (
+      {/* Tour espera a escolha de temporada: antes abria por cima da janela de ano. */}
+      {tour.isOpen && !showSeasonPickerPopup && (
         <ProductTour steps={MODULE3_TOUR} onClose={tour.dismiss} />
       )}
-
-      {/* ── PDF: Comparação de Cenários (fora da tela, capturado pelo html2canvas) ── */}
-      <div
-        id="module3-scenarios-pdf"
-        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
-      >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
-          Planejamento por Divisão — {selectedTemporada?.nome ?? selectedSeasonId}
-        </p>
-        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
-          Comparação de Cenários
-        </p>
-        {scenarios.length === 0 ? (
-          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
-            {scenarios.map(sc => (
-              <div key={sc.id} style={{ flex: '1 1 220px', minWidth: '200px', maxWidth: '260px', background: 'white', borderRadius: '12px', padding: '16px', borderTop: `4px solid ${sc.isActive ? '#7598CF' : '#28071C'}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
-                  {sc.isActive && (
-                    <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>
-                  )}
-                </div>
-                {[
-                  { label: 'Indicador', plan: 'Plano', ref: 'vs Referência', isHeader: true },
-                  { label: 'Receita Total', plan: fmtCurrency(sc.consolidated.totalRevenue), ref: state.consolidated ? `${((sc.consolidated.totalRevenue / (state.consolidated.totalRevenue || 1) - 1) * 100).toFixed(1)}%` : '—' },
-                  { label: 'Margem Média', plan: `${sc.consolidated.avgMargin.toFixed(1)}%`, ref: state.consolidated ? `${(sc.consolidated.avgMargin - state.consolidated.avgMargin).toFixed(1)} p.p.` : '—' },
-                  { label: 'Criado em', plan: new Date(sc.createdAt).toLocaleDateString('pt-BR'), ref: '' },
-                ].map((row, i) => (
-                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '6px 0', borderBottom: '1px solid #F2F2F2', fontSize: row.isHeader ? '9px' : '11px', fontWeight: row.isHeader ? 700 : 400, color: row.isHeader ? 'rgba(40,7,28,0.4)' : '#28071C', textTransform: row.isHeader ? 'uppercase' : 'none', letterSpacing: row.isHeader ? '0.05em' : 0 }}>
-                    <span>{row.label}</span>
-                    <span style={{ textAlign: 'center', fontWeight: row.isHeader ? 700 : 600 }}>{row.plan}</span>
-                    <span style={{ textAlign: 'right', color: row.isHeader ? 'rgba(40,7,28,0.4)' : 'rgba(40,7,28,0.6)' }}>{row.ref}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* ─── MODAL: Seleção de Temporada em 2 passos (ano → temporada) ─────── */}
       {showSeasonPickerPopup && (
@@ -2126,6 +2221,7 @@ export default function Module3DivisionPlanning() {
         </div>
       )}
 
+      </div>
     </div>
   );
 }

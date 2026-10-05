@@ -272,7 +272,15 @@ export async function computeConsolidatedRows(
           }
         // Sem plano salvo na Pirâmide de Preço para esta categoria — divide
         // igualmente entre as 3 faixas em vez de zerar a categoria inteira.
-        : { p1: 1 / 3, p2: 1 / 3, p3: 1 / 3 }
+        // Sem pirâmide da categoria: segue a da divisão no M4 (antes: terços
+        // iguais, e as peças das categorias não fechavam com o M5).
+        : block?.priceRange && (block.priceRange.entryPercent ?? 0) + (block.priceRange.middlePercent ?? 0) + (block.priceRange.premiumPercent ?? 0) > 0
+          ? (() => {
+              const pr = block.priceRange
+              const t = (pr.entryPercent ?? 0) + (pr.middlePercent ?? 0) + (pr.premiumPercent ?? 0)
+              return { p1: (pr.entryPercent ?? 0) / t, p2: (pr.middlePercent ?? 0) / t, p3: (pr.premiumPercent ?? 0) / t }
+            })()
+          : { p1: 1 / 3, p2: 1 / 3, p3: 1 / 3 }
 
       // ── Níveis 3/4: participação de subcategoria/linha dentro da categoria
       //    (estimada) ──────────────────────────────────────────────────────

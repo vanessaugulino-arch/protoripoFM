@@ -2,6 +2,7 @@
  * Hook para gerenciar lógica do Módulo 3 - Planejamento por Divisão
  */
 
+import { alinharVolumesAReceita } from "../engine/divisionVolumes";
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Module3State,
@@ -70,6 +71,11 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * divisão (distribuição de products.risk_level, mesma fonte usada no painel
  * de Giro por Perfil de Risco do M5) — substitui o default genérico quando disponível.
  */
+/** Faixa de preço "min-max" ±12% em torno de um preço central. */
+function faixa(centro: number): string {
+  return `${Math.round(centro * 0.88)}-${Math.round(centro * 1.12)}`;
+}
+
 export function initializeDivisions(
   divisionIds: string[],
   macroTargets?: MacroTarget,
@@ -106,15 +112,19 @@ export function initializeDivisions(
       participation,
       indicators: {
         avgPrice,
-        mkd:         15,
+        // Markdown parte da meta do M1; 15 só sobra se o M1 não tiver MKD.
+        mkd:         macroTargets?.mkd ?? 15,
         margin:      macroTargets?.margin      ?? 48,
         sellThrough: macroTargets?.sellThrough ?? 75,
         gmroi:       macroTargets?.gmroi       ?? 2.35,
       },
+      // Faixas padrão em torno do PMV do M1 (P1 ~0,7×, P2 ~1×, P3 ~1,5×).
+      // Antes eram fixas (119-169 / 179-259 / 269-389) e a pirâmide não batia
+      // com o PMV da própria divisão.
       priceRange: {
-        entry: "119-169",
-        middle: "179-259",
-        premium: "269-389",
+        entry:   faixa(avgPrice * 0.7),
+        middle:  faixa(avgPrice),
+        premium: faixa(avgPrice * 1.5),
         entryPercent: 30,
         middlePercent: 50,
         premiumPercent: 20,
@@ -127,6 +137,9 @@ export function initializeDivisions(
       },
       volumeCoverage: {
         coverage,
+        // Ponto de partida: produzir o que se espera vender. Editável no M4;
+        // antes ficava vazio e o M5 recebia volume-teto 0.
+        productionVolume: unitsExpectedSold,
         initialStock: Math.round(unitsExpectedSold * (5 / 6)),
         replenishments: Math.round(unitsExpectedSold * (5 / 12)),
         unitsExpectedSold,
@@ -211,12 +224,17 @@ export function useModule3(options: UseModule3Options) {
     prevMacroCtxRef.current = curr;
 
     if (!prev || prev.seasonId !== curr.seasonId) {
-      // Temporada mudou (ou primeira carga) — re-init já feito pelo efeito de temporada;
-      // só atualiza o consolidado.
-      setState(prevState => ({
-        ...prevState,
-        consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
-      }));
+      // Temporada mudou (ou primeira carga) — re-init já feito pelo efeito de
+      // temporada, mas a receita da temporada pode ter chegado depois dele:
+      // alinha as peças à receita atual antes de consolidar.
+      setState(prevState => {
+        const divisions = alinharVolumesAReceita(prevState.divisions, options.macroTargets.revenue);
+        return {
+          ...prevState,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+        };
+      });
       return;
     }
 
@@ -227,10 +245,13 @@ export function useModule3(options: UseModule3Options) {
 
     setState(prevState => {
       if (Object.keys(deltas).length === 0) {
-        // Apenas receita mudou — recalcula consolidado sem alterar divisões
+        // Apenas receita mudou — taxas ficam, peças acompanham a receita
+        // (antes ficavam as da receita anterior e o M5 recebia volume errado).
+        const divisions = alinharVolumesAReceita(prevState.divisions, options.macroTargets.revenue);
         return {
           ...prevState,
-          consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
         };
       }
 

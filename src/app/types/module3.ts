@@ -147,6 +147,7 @@ export interface MacroTarget {
   sellThrough: number;              // Meta de sell-through %
   gmroi: number;                    // Meta de GMROI
   pmv?: number;                     // PMV real do M1 — usado só como ponto de partida do preço médio por divisão
+  mkd?: number;                     // MKD % do M1 — ponto de partida do markdown por divisão (antes era 15% fixo)
 }
 
 // ─── Consolidado da Temporada (Dashboard) ───────────────────────────────────

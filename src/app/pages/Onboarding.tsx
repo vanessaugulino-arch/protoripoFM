@@ -1780,7 +1780,8 @@ export default function Onboarding() {
               <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2">
                 <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
                 <p className="text-amber-700 text-xs leading-relaxed">
-                  Os convidados receberão e-mail com link de acesso.
+                  Cada convidado ganha acesso ao criar a conta com o e-mail informado
+                  (ou na hora, se já usa o Price). Avise a pessoa: o sistema ainda não envia e-mail.
                   Gerencie a equipe depois em <strong>Configurações → Usuários</strong>.
                 </p>
               </div>
@@ -1867,7 +1868,7 @@ export default function Onboarding() {
                     </div>
                   </div>
                   <p className="text-[10px] text-[#28071C]/35 mt-1.5 italic">
-                    Salvo em <code className="bg-[#28071C]/6 px-1 rounded">season_default_rules</code> — usado para gerar temporadas automaticamente ao criar um plano.
+                    Fica salvo como padrão da marca e gera as temporadas automaticamente a cada novo plano.
                   </p>
                 </ReviewBlock>
               </div>
@@ -1932,7 +1933,6 @@ export default function Onboarding() {
                         <div>
                           <p className="text-white text-[11px] font-semibold leading-snug">{m.mod}</p>
                           <p className="text-white/45 text-[10px]">{m.fonte}</p>
-                          <p className="text-[#7598CF]/50 text-[9px] font-mono">{m.table}</p>
                         </div>
                       </div>
                     ))}
@@ -2045,9 +2045,11 @@ function ReviewBlock({
         <p className="text-[#28071C] text-xs font-bold flex-1 leading-snug">{title}</p>
         <StatusIcon className={`w-3.5 h-3.5 flex-shrink-0 ${iconColor}`} />
       </div>
-      {(warnMsg || infoMsg) && (
+      {/* Alerta só quando falta algo; antes aparecia mesmo com o item preenchido
+          ("Nenhum segmento selecionado" ao lado dos segmentos escolhidos). */}
+      {(status === 'warn' ? warnMsg : status === 'info' ? infoMsg : undefined) && (
         <p className={`text-[11px] mt-0.5 leading-snug ${msgColor}`}>
-          {warnMsg ?? infoMsg}
+          {status === 'warn' ? warnMsg : infoMsg}
         </p>
       )}
       {children}

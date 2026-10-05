@@ -1,8 +1,8 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { Fragment, useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
-  Check, X, AlertTriangle, CheckCircle2, Info, Clock, FileDown, HelpCircle,
+  Check, X, AlertTriangle, CheckCircle2, Info, Clock, Printer, HelpCircle,
   SendHorizonal, ArrowRight, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { ProductTour, type TourStep } from "../components/ProductTour";
@@ -44,7 +44,10 @@ const CHANNEL_PLANNING_TOUR: TourStep[] = [
     content: "Quando estiver satisfeito com um cenário, salve-o. Crie quantos quiser. Depois compare lado a lado e aplique o vencedor — só então o plano por canal fica registrado formalmente.",
   },
 ];
-import { exportToPDF } from "../../utils/exportPDF";
+import { supabase } from "../../lib/supabase";
+import { RelatorioCanais, baixarExcelCanais, consolidadoCenarioCanal, type DadosCanais, type FormatoCanal } from "../../reports/canaisRelatorio";
+import { emPreviaPdf, imprimirPdf } from "../../reports/RelatorioA4";
+import { nomeArquivo } from "../../reports/xlsxReport";
 import type { SalesChannelId } from "../types/onboarding";
 import { useOnboardingProfile } from "../../hooks/useOnboardingProfile";
 import { getAppliedDivisionParticipationForYear, type DivisionParticipationBySeason } from "../../services/supabase/divisionScenarioService";
@@ -78,8 +81,7 @@ import {
   applyRevenue,
   buildChannel,
   initChannelData,
-  computeConsolidatedFromRaw,
-} from "../../engine/channelDefaultScenario";
+  computeConsolidatedFromRaw, giroFromEdit } from "../../engine/channelDefaultScenario";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -179,6 +181,16 @@ export default function ChannelPlanning() {
   const [user, setUser] = useState<UserData | null>(null);
   const [tenantId, setTenantId] = useState<string>("");
   const [, setCyclesReady] = useState(0); // força re-render após initPlanCycles resolver
+
+  // Nome da empresa para capa e cabeçalho do relatório — do banco, não da
+  // sessão (que pode não ter o nome, ex.: suporte que trocou de cliente).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "");
+  useEffect(() => {
+    if (!tenantId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name); });
+  }, [tenantId]);
   const tour = useTour("channel-planning");
 
   useEffect(() => {
@@ -486,6 +498,10 @@ export default function ChannelPlanning() {
 
     setChannelData(prev => {
       let updated: ChannelData = { ...prev[ch], [field]: value };
+      // GMROI e cobertura são consequência do giro: editar um deles move o giro.
+      if (field === "gmroi" || field === "cobertura") {
+        updated = { ...prev[ch], giro: giroFromEdit(prev[ch], field, value) };
+      }
 
       if (indicatorField) {
         // Passa pelo mesmo motor de clusters do M1/M3 — Margem/MKD/PMV/Custo
@@ -515,7 +531,7 @@ export default function ChannelPlanning() {
         };
       }
 
-      return { ...prev, [ch]: DRIVER_FIELDS.has(field) ? applyRevenue(updated, updated.receita) : updated };
+      return { ...prev, [ch]: (DRIVER_FIELDS.has(field) || field === "gmroi" || field === "cobertura") ? applyRevenue(updated, updated.receita) : updated };
     });
   };
 
@@ -572,8 +588,6 @@ export default function ChannelPlanning() {
     showToast("Exportação iniciada.");
   };
 
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
-
   // ── Approval flow state ───────────────────────────────────────────────────
   const [showPostApplyModal, setShowPostApplyModal]           = useState(false);
   const [showSubmitApprovalDialog, setShowSubmitApprovalDialog] = useState(false);
@@ -585,16 +599,6 @@ export default function ChannelPlanning() {
   const [showIncomingApproval, setShowIncomingApproval]      = useState(false);
   const [activeIncoming, setActiveIncoming]                  = useState<PlanApprovalRequest | null>(null);
   const [isResolvingApproval, setIsResolvingApproval]        = useState(false);
-
-  const handleExportPDF = async () => {
-    setIsExportingPDF(true);
-    await exportToPDF({
-      elementId: "channel-scenarios-pdf",
-      fileName:  `cenarios_canais_${selectedYear}`,
-      title:     `Comparação de Cenários — Planejamento por Canal ${selectedYear}`,
-    });
-    setIsExportingPDF(false);
-  };
 
   const handleApplyMetas = async () => {
     if (!tenantId) return;
@@ -701,44 +705,13 @@ export default function ChannelPlanning() {
     const summary: ScenarioSummary[] = sel.map(sc => {
       const chs    = visibleChannels;
       const chData = (sc.channel_data as unknown as Record<string, Record<string, number>>);
-      const sum    = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
-      // Média ponderada por receita — usada apenas para ticketMedio (sem base absoluta de transações)
-      const totalR          = sum('receita');
-      const wAvg = (key: string) =>
-        totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
-
-      // Absolutos acumulados
-      const totalEstMedio   = sum('estoqueMedioRS');
-      const totalLucroBruto = sum('margemBrutaRS');
-      const totalOrcamento  = sum('orcamento');
-      const totalMkd        = sum('markdown');
-      const totalProd       = sum('producao');
-
       return {
         name: sc.name,
         savedAt: sc.saved_at,
         channels: Object.fromEntries(chs.map(ch => [ch, chData[ch] ?? {}])),
-        consolidated: {
-          receita:       totalR,
-          // Margem derivada dos absolutos
-          margemBrutaRS: totalLucroBruto,
-          margemBruta:   totalR > 0 ? (totalLucroBruto / totalR) * 100 : 0,
-          // PMV e CustoMédio derivados dos absolutos
-          pmv:           totalProd > 0 ? totalR / totalProd : 0,
-          custoMedio:    totalProd > 0 ? totalOrcamento / totalProd : 0,
-          // TicketMédio sem base absoluta — média ponderada
-          ticketMedio:   wAvg('ticketMedio'),
-          // Giro, Cobertura e GMROI derivados dos absolutos
-          giro:          totalEstMedio > 0 ? totalR / totalEstMedio : 0,
-          cobertura:     totalR > 0 ? (totalEstMedio / totalR) * 365 : 0,
-          gmroi:         totalEstMedio > 0 ? totalLucroBruto / totalEstMedio : 0,
-          // Somas diretas
-          orcamento:     totalOrcamento,
-          mkdPct:        totalR > 0 ? (totalMkd / totalR) * 100 : 0,
-          markdown:      totalMkd,
-          producao:      totalProd,
-          totalPecas:    sum('totalPecas'),
-        },
+        // Mesma conta usada no relatório (PDF/Excel): absolutos somados,
+        // taxas derivadas deles; só o ticket médio é média ponderada.
+        consolidated: consolidadoCenarioCanal(chData, chs),
       };
     });
     setCompareResults(summary as never);
@@ -1022,8 +995,75 @@ export default function ChannelPlanning() {
     return COMPUTED_TOOLTIP[key];
   };
 
+  // ─── Relatório (PDF/Excel) — mesmos números da tela ──────────────────────
+  const empresaRelatorio = nomeEmpresa || "Empresa";
+  const cenarioCarregado = savedScenarios.find(sc => sc.id === loadedScenarioId) ?? null;
+  const dadosRelatorio: DadosCanais = {
+    empresa: empresaRelatorio,
+    ano: selectedYear,
+    anoReferencia: referenceYear ?? null,
+    receitaMeta: macroReceita,
+    temPlanoMacro: macroValues != null,
+    cenarioCarregado: cenarioCarregado?.name ?? null,
+    canais: visibleChannels.map(ch => ({
+      id: ch,
+      nome: CHANNEL_LABELS[ch],
+      participacao: percents[ch],
+      receitaDistribuida: Math.round(macroReceita * percents[ch] / 100),
+    })),
+    totalParticipacao: totalPercent,
+    indicadores: kpiFields.map(field => {
+      const consVal = consolidatedKpi(field.key);
+      const consHist = getHistConsolidatedValue(field.key);
+      return {
+        chave: field.key,
+        rotulo: field.label,
+        formato: field.format as FormatoCanal,
+        foco: field.macroKey != null && macroKeyOrder.has(field.macroKey),
+        driver: field.isDriver,
+        valores: Object.fromEntries(visibleChannels.map(ch => [ch, channelData[ch][field.key] as number])),
+        consolidado: consVal,
+        metaM1: isConsolidatedImpacted(field.key) ? getMacroTarget(field.key) : null,
+        anoAnterior: Object.fromEntries(visibleChannels.map(ch => [
+          ch, getHistFieldValue(histChannelProfiles.find(p => p.canalId === ch), field.key),
+        ])),
+        anoAnteriorConsolidado: consHist,
+        variacaoAnoAnteriorPct: consHist != null && consHist !== 0 ? ((consVal - consHist) / consHist) * 100 : null,
+      };
+    }),
+    verificacaoMacro: hasMacroCheck && totalPercent === 100,
+    desvios: impactedMacro.map(item => ({
+      rotulo: item.label, taxa: item.isRate, meta: item.planned, proposto: item.projected, diferenca: item.gap,
+    })),
+    anoAnterior: histReference ? {
+      receita: histReference.totalReceita,
+      pmv: histReference.avgPmv,
+      custo: histReference.avgCost,
+      variacaoReceitaPct: consolidated.receita > 0
+        ? ((consolidated.receita - histReference.totalReceita) / histReference.totalReceita) * 100
+        : null,
+    } : null,
+    divisoes: divisionParticipationByYear.flatMap(season =>
+      Object.entries(season.participations).map(([divId, pct]) => ({
+        temporada: season.seasonName,
+        divisao: tenantDivisions.find(d => d.id === divId)?.label ?? divId,
+        participacao: pct,
+        receitaEstimada: macroReceita * (pct / 100),
+      })),
+    ),
+    cenarios: savedScenarios.map(sc => ({
+      nome: sc.name,
+      salvoEm: sc.saved_at,
+      aplicado: !!sc.is_applied,
+      consolidado: consolidadoCenarioCanal(sc.channel_data as unknown as Record<string, Record<string, number>>, visibleChannels),
+    })),
+  };
+  const previaPdf = emPreviaPdf();
+
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2]${previaPdf ? " previa-pdf" : ""}`}>
+      <RelatorioCanais dados={dadosRelatorio} />
+      <div className="tela-app">
 
       {/* ── TOAST ────────────────────────────────────────────────────────────── */}
       {toast && (
@@ -1298,7 +1338,7 @@ export default function ChannelPlanning() {
                 const rowH = (consImpacted || rowHasHist) ? "min-h-[2.5rem] h-auto py-1.5" : "h-10";
 
                 return (
-                  <>
+                  <Fragment key={field.key ?? idx}>
                     {/* Divider after last macro-focus row */}
                     {isLastFocus && (
                       <div key={`div-${field.key}`} className="col-span-full my-0.5">
@@ -1413,7 +1453,7 @@ export default function ChannelPlanning() {
                         </div>
                       );
                     })()}
-                  </>
+                  </Fragment>
                 );
               })}
             </div>
@@ -1471,9 +1511,15 @@ export default function ChannelPlanning() {
                 <GitCompare className="w-4 h-4" />Comparar
                 {savedScenarios.length >= 2 && <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{savedScenarios.length}</span>}
               </button>
-              <button onClick={handleExportPDF} disabled={isExportingPDF}
+              <button onClick={() => imprimirPdf(nomeArquivo("metas_por_canal", empresaRelatorio, selectedYear))}
+                title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
-                <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+                <Printer className="w-4 h-4" />Baixar PDF
+              </button>
+              <button onClick={() => baixarExcelCanais(dadosRelatorio)}
+                title="Planilha .xlsx com distribuição, indicadores por canal, desvios e cenários"
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed">
+                <Download className="w-4 h-4" />Baixar Excel
               </button>
             </div>
             {/* ── Botão direito: depende do número de desvios macro ── */}
@@ -1879,69 +1925,6 @@ export default function ChannelPlanning() {
         </div>
       )}
 
-      {/* ── PDF hidden element — scenario comparison cards ────────────────── */}
-      <div
-        id="channel-scenarios-pdf"
-        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
-      >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
-          Planejamento por Canal {selectedYear}
-        </p>
-        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
-          Comparação de Cenários — Consolidado Ponderado
-        </p>
-        {savedScenarios.length === 0 ? (
-          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
-            {savedScenarios.map(sc => {
-              const chData = sc.channel_data as Record<string, Record<string, number>>;
-              const chs = visibleChannels;
-              const totalR = chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0), 0);
-              const wAvg = (key: string) =>
-                totalR > 0 ? chs.reduce((s, ch) => s + (chData[ch]?.receita ?? 0) * (chData[ch]?.[key] ?? 0), 0) / totalR : 0;
-              const sum = (key: string) => chs.reduce((s, ch) => s + (chData[ch]?.[key] ?? 0), 0);
-              const cons = {
-                receita:    totalR,
-                margemBruta: +wAvg('margemBruta').toFixed(1),
-                orcamento:  sum('orcamento'),
-                pmv:        +wAvg('pmv').toFixed(0),
-                giro:       +wAvg('giro').toFixed(2),
-                cobertura:  +wAvg('cobertura').toFixed(0),
-                mkdPct:     +wAvg('mkdPct').toFixed(1),
-                producao:   sum('producao'),
-              };
-              const PDF_ROWS: { label: string; val: string }[] = [
-                { label: 'Receita Total (R$)',  val: `R$ ${Math.round(cons.receita).toLocaleString('pt-BR')}` },
-                { label: 'Margem Bruta (%)',    val: `${cons.margemBruta}%` },
-                { label: 'PMV (R$)',            val: `R$ ${Math.round(cons.pmv).toLocaleString('pt-BR')}` },
-                { label: 'Orçamento (R$)',      val: `R$ ${Math.round(cons.orcamento).toLocaleString('pt-BR')}` },
-                { label: 'Giro',               val: `${cons.giro}x` },
-                { label: 'Cobertura (dias)',    val: `${Math.round(cons.cobertura)} dias` },
-                { label: 'Markdown (%)',        val: `${cons.mkdPct}%` },
-                { label: 'Produção (peças)',    val: Math.round(cons.producao).toLocaleString('pt-BR') },
-              ];
-              const isActive = sc.is_applied;
-              return (
-                <div key={sc.id} style={{ flex: '1 1 200px', minWidth: '180px', maxWidth: '240px', background: 'white', borderRadius: '12px', padding: '14px', borderTop: `4px solid ${isActive ? '#7598CF' : '#28071C'}` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
-                    {isActive && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>}
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px', padding: '4px 0', fontSize: '9px', fontWeight: 700, color: 'rgba(40,7,28,0.4)', textTransform: 'uppercase' as const, letterSpacing: '0.05em', borderBottom: '1px solid #F2F2F2' }}>
-                    <span>Indicador</span><span style={{ textAlign: 'right' }}>Valor</span>
-                  </div>
-                  {PDF_ROWS.map((row, i) => (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: '10px', color: '#28071C' }}>
-                      <span style={{ opacity: 0.6 }}>{row.label}</span>
-                      <span style={{ textAlign: 'right', fontWeight: 600 }}>{row.val}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
       </div>
     </div>
   );

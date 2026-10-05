@@ -58,6 +58,20 @@ export default function AdminDashboard() {
     }
   }, [navigate]);
 
+  // Cadastro/edição em Gestão de Clientes atualiza o aviso e o seletor do topo
+  // (antes ficavam em "Nenhum cliente cadastrado" até recarregar a página).
+  const recarregarEmpresas = () => {
+    listTenants()
+      .then((tenants) => {
+        setAllTenants(tenants);
+        if (!activeTenantId && tenants.length > 0) {
+          setActiveTenantId(tenants[0].id);
+          setActiveTenantName(tenants[0].name);
+        }
+      })
+      .catch(console.error);
+  };
+
   const handleLogout = async () => {
     try { await signOut(); } catch { /* ignora */ }
     sessionStorage.removeItem("currentUser");
@@ -82,7 +96,7 @@ export default function AdminDashboard() {
     title: string;
     description: string;
     icon: React.ComponentType<{ className?: string }>;
-    Component: React.ComponentType<{ tenantId: string; tenantName: string; isSupport: boolean }>;
+    Component: React.ComponentType<{ tenantId: string; tenantName: string; isSupport: boolean; onClientsChanged?: () => void }>;
     onlySupportRole?: boolean;
   }
 
@@ -249,6 +263,7 @@ export default function AdminDashboard() {
                       tenantId={activeTenantId}
                       tenantName={activeTenantName}
                       isSupport={isSupport}
+                      onClientsChanged={recarregarEmpresas}
                     />
                   </div>
                 )}

@@ -1,5 +1,6 @@
 // src/app/pages/Planning.tsx — v5 (3-column layout)
-import { useEffect, useState, useMemo, useRef } from "react";
+import { historicalYearFromSummary, notaEstimado, type IndicadorHistorico } from '../../engine/historicalYear'
+import { Fragment, useEffect, useState, useMemo, useRef } from "react";
 import { supabase } from '../../lib/supabase';
 import { useNavigate, useLocation } from "react-router";
 import { usePlanningEngine } from '../../hooks/usePlanningEngine'
@@ -8,7 +9,7 @@ import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
   Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
-  ToggleLeft, ToggleRight, FileDown, HelpCircle, ArrowRight,
+  ToggleLeft, ToggleRight, Printer, HelpCircle, ArrowRight,
 } from "lucide-react";
 import {
   getPendingApprovalsForUser,
@@ -26,7 +27,9 @@ import { applyCollectionPlanScenario } from '../../services/supabase/collectionP
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
-import { exportToPDF } from '../../utils/exportPDF';
+import { RelatorioPlanejamentoMacro, baixarExcelPlanejamentoMacro, FORMATO_INDICADOR_M1, type DadosPlanejamentoMacro } from '../../reports/planejamentoMacroRelatorio';
+import { emPreviaPdf, imprimirPdf } from '../../reports/RelatorioA4';
+import { nomeArquivo } from '../../reports/xlsxReport';
 import { isOnboardingComplete } from '../types/onboarding'
 import { useOnboardingProfile } from '../../hooks/useOnboardingProfile'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
@@ -81,20 +84,38 @@ interface HistoricalData {
   orcamento: number; estoqueMedioRS: number; estoqueMedioPecas: number;
   giro: number; cobertura: number; markdown: number; producao: number; gmroi: number;
   ticketMedio: number;
+  /** Indicadores sem dado real no ano (engine/historicalYear). */
+  estimados?: IndicadorHistorico[];
+  /** Custo médio por peça; ausente no exemplo (usa CUSTO_MEDIO_DEFAULT). */
+  custoMedio?: number;
 }
 
 // Fallback (demo) — substituído por dados reais do Supabase após login
+// Montado pela mesma função dos dados reais, para os indicadores do exemplo
+// fecharem entre si (antes o estoque em R$ não batia com o estoque em peças e
+// o Giro em peças do plano aparecia −45% sem nenhuma mudança).
 const HIST_FALLBACK: HistoricalData[] = [
-  { year: "2023", receita: 2450000, margemBruta: 40.5, pmv: 145, orcamento: 1050000,
-    estoqueMedioRS: 720000, estoqueMedioPecas: 4965, giro: 3.85, cobertura: 78,
-    markdown: 165000, producao: 16890, gmroi: 1.55, ticketMedio: 290 },
-  { year: "2024", receita: 2700000, margemBruta: 42.0, pmv: 158, orcamento: 1100000,
-    estoqueMedioRS: 695000, estoqueMedioPecas: 4398, giro: 4.05, cobertura: 75,
-    markdown: 148000, producao: 17850, gmroi: 1.70, ticketMedio: 315 },
-  { year: "2025", receita: 2850000, margemBruta: 42.3, pmv: 155, orcamento: 1140000,
-    estoqueMedioRS: 680000, estoqueMedioPecas: 4387, giro: 4.19, cobertura: 72,
-    markdown: 142500, producao: 18387, gmroi: 1.77, ticketMedio: 320 },
-]
+  { year: "2023", receita: 2450000, producao: 16890, pmv: 145, markdown: 165000, ticket_medio: 290, estoque_medio_pecas: 4965, margem_bruta: 40.5 },
+  { year: "2024", receita: 2700000, producao: 17850, pmv: 158, markdown: 148000, ticket_medio: 315, estoque_medio_pecas: 4398, margem_bruta: 42.0 },
+  { year: "2025", receita: 2850000, producao: 18387, pmv: 155, markdown: 142500, ticket_medio: 320, estoque_medio_pecas: 4387, margem_bruta: 42.3 },
+].map(r => ({ ...historicalYearFromSummary(r), estimados: [] }))
+
+/**
+ * GMROI na convenção do motor (planningEngine): lucro bruto sobre a receita
+ * LÍQUIDA das devoluções estimadas (5%), dividido pelo estoque médio. Assim o
+ * GMROI da base bate com o do plano e com o do M2 (margem × giro).
+ */
+function gmroiDoMotor(h: HistoricalData): number {
+  if (!(h.estoqueMedioRS > 0)) return h.gmroi
+  return +((h.receita * 0.95 * (h.margemBruta / 100)) / h.estoqueMedioRS).toFixed(2)
+}
+
+/** Acrescenta à ajuda do campo o aviso de valor estimado, quando for o caso. */
+function comNotaEstimado(texto: string, ano: HistoricalData | undefined, campo: string): string {
+  if (!ano?.estimados?.length) return texto
+  const nota = notaEstimado({ estimados: ano.estimados }, campo as IndicadorHistorico)
+  return nota ? `${texto} (${nota})` : texto
+}
 
 const CUSTO_MEDIO_DEFAULT = 85 // fallback: custo estimado por peça
 
@@ -208,6 +229,16 @@ export default function Planning() {
 
   const [user,               setUser]               = useState<UserData | null>(null)
   const [tenantId,           setTenantId]           = useState<string>("")
+
+  // Nome da empresa para capa e cabeçalho do relatório — do banco, não da
+  // sessão (que pode não ter o nome, ex.: suporte que trocou de cliente).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "")
+  useEffect(() => {
+    if (!tenantId) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name) })
+  }, [tenantId])
   const [isAccordionOpen,    setIsAccordionOpen]    = useState(false)
   const [selectedHistorical, setSelectedHistorical] = useState("2025")
 
@@ -285,7 +316,7 @@ export default function Planning() {
     const devolucoes     = Math.round(histRef.receita * 0.05)   // 5% de devoluções estimadas
     const receitaLiquida = histRef.receita - devolucoes
     const pecasVendidas  = Math.round(receitaLiquida / histRef.pmv)
-    const custoMedio     = CUSTO_MEDIO_DEFAULT
+    const custoMedio     = histRef.custoMedio ?? CUSTO_MEDIO_DEFAULT
     return {
       receitaBruta:      histRef.receita,
       devolucoes,
@@ -293,13 +324,15 @@ export default function Planning() {
       margemBruta:       histRef.margemBruta,
       pmv:               histRef.pmv,
       pecasVendidas,
-      giro:              histRef.giro,
+      // Mesma conta do motor (planningEngine: giro = receita líquida ÷ estoque
+      // médio). Antes vinha sobre a receita bruta e o plano já nascia +5% vs a base.
+      giro:              histRef.estoqueMedioRS > 0 ? +(receitaLiquida / histRef.estoqueMedioRS).toFixed(2) : histRef.giro,
       cobertura:         histRef.cobertura,
       orcamento:         histRef.orcamento,
       producaoPecas:     histRef.producao,
       mkdPct:            +((histRef.markdown / histRef.receita) * 100).toFixed(1),
       custoMedio,
-      gmroi:             histRef.gmroi,
+      gmroi:             gmroiDoMotor(histRef),
       ticketMedio:       histRef.ticketMedio,
       estoqueMediao:     histRef.estoqueMedioRS,
       estoqueMedioPecas: histRef.estoqueMedioPecas,
@@ -380,38 +413,10 @@ export default function Planning() {
       .then(({ data, error }: { data: unknown; error: unknown }) => {
         const rows = Array.isArray(data) ? data : []
         if (error || rows.length === 0) return
-        const MARGEM_BRUTA = 40.0 // % — estimativa padrão quando custo não disponível
+        // Dado real quando existe; o que faltar vem marcado em `estimados`
+        // e a ajuda do campo avisa (engine/historicalYear).
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const built: HistoricalData[] = rows.map((row: any) => {
-          const receita           = Number(row.receita)
-          const pmv               = Number(row.pmv)
-          const markdown          = Number(row.markdown)
-          const producao          = Number(row.producao)
-          const ticketMedio       = Math.round(Number(row.ticket_medio))
-          const estoqueMedioPecas = Number(row.estoque_medio_pecas)
-          // Estoque médio RS estimado via preço unitário médio de venda
-          const estoqueMedioRS  = Math.round(estoqueMedioPecas * pmv)
-          const giro            = estoqueMedioRS > 0
-            ? +( receita / estoqueMedioRS ).toFixed(2)
-            : 4.0
-          const cobertura       = giro > 0 ? Math.round(365 / giro) : 90
-          const gmroi           = +( (MARGEM_BRUTA / 100) * giro ).toFixed(2)
-          return {
-            year:              row.year,
-            receita,
-            margemBruta:       MARGEM_BRUTA,
-            pmv,
-            orcamento:         Math.round(receita * 0.40),
-            estoqueMedioRS,
-            estoqueMedioPecas,
-            giro,
-            cobertura,
-            markdown,
-            producao,
-            gmroi,
-            ticketMedio,
-          }
-        })
+        const built: HistoricalData[] = rows.map((row: any) => historicalYearFromSummary(row))
         setHistoricalDatabase(built)
         setHistIsReal(true)
         // Garante que o ano selecionado existe nos dados reais
@@ -481,7 +486,7 @@ export default function Planning() {
   // Col 2 + Col 3 rows — order follows activeDefs, then the rest
   const { allPlanRows, refRows, planSplitAt, refSplitAt } = useMemo(() => {
     const histMkdPct = +((histSel.markdown / histSel.receita) * 100).toFixed(1)
-    const histCustoMedio = CUSTO_MEDIO_DEFAULT
+    const histCustoMedio = histSel.custoMedio ?? CUSTO_MEDIO_DEFAULT
 
     // Receita líquida histórica estimada (5% devoluções)
     const histSelRL         = histSel.receita * 0.95
@@ -496,7 +501,7 @@ export default function Planning() {
       { key: "receitaBruta",      label: "Receita (R$)",            plan: v.receitaBruta,      ref: histSel.receita              },
       { key: "margemBruta",       label: "Margem Bruta (%)",        plan: v.margemBruta,       ref: histSel.margemBruta          },
       { key: "mkdPct",            label: "Markdown (%)",            plan: v.mkdPct,            ref: histMkdPct                   },
-      { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: histSel.gmroi                },
+      { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: gmroiDoMotor(histSel)        },
       { key: "pmv",               label: "PMV (R$)",                plan: v.pmv,               ref: histSel.pmv                  },
       { key: "orcamento",         label: "Orçamento (R$)",          plan: v.orcamento,         ref: histSel.orcamento            },
       { key: "giroUnidades",      label: "Giro (peças)",            plan: v.giroUnidades,      ref: histSelGiroUnid              },
@@ -509,17 +514,17 @@ export default function Planning() {
       { key: "custoMedio",        label: "Custo Médio (R$)",        plan: v.custoMedio,        ref: histCustoMedio               },
       { key: "mkdRS",             label: "Markdown (R$)",               plan: v.mkdRS,             ref: histSel.markdown             },
       { key: "pecasVendidas",     label: "Total de Peças Vendidas",     plan: v.pecasVendidas,     ref: histSelPecasVend             },
-      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", plan: v.idadeMediaEstoque, ref: Math.round(365 / histSel.giro) },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", plan: v.idadeMediaEstoque, ref: (histSelGiroUnid ? Math.round(365 / histSelGiroUnid) : Math.round(365 / histSel.giro)) },
     ]
 
     const refBase = [
       { key: "receitaBruta",      label: "Receita (R$)",            value: histSel.receita,              fmt: "currency"   },
       { key: "margemBruta",       label: "Margem Bruta (%)",        value: histSel.margemBruta,          fmt: "percent"    },
       { key: "mkdPct",            label: "Markdown (%)",            value: histMkdPct,                   fmt: "percent"    },
-      { key: "gmroi",             label: "GMROI",                   value: histSel.gmroi,                fmt: "multiplier" },
+      { key: "gmroi",             label: "GMROI",                   value: gmroiDoMotor(histSel),        fmt: "multiplier" },
       { key: "pmv",               label: "PMV (R$)",                value: histSel.pmv,                  fmt: "currency"   },
       { key: "orcamento",         label: "Orçamento (R$)",          value: histSel.orcamento,            fmt: "currency"   },
-      { key: "giroUnidades",      label: "Giro (peças)",            value: histSel.giro,                 fmt: "multiplier" },
+      { key: "giroUnidades",      label: "Giro (peças)",            value: histSelGiroUnid ?? 0,         fmt: "multiplier" },
       { key: "giro",              label: "Giro (R$)",               value: histSelGiroRS ?? 0,           fmt: "multiplier" },
       { key: "cobertura",         label: "Cobertura (dias)",        value: histSel.cobertura,            fmt: "days"       },
       { key: "producaoPecas",     label: "Produção (peças)",        value: histSel.producao,             fmt: "number"     },
@@ -529,7 +534,7 @@ export default function Planning() {
       { key: "custoMedio",        label: "Custo Médio (R$)",        value: histCustoMedio,               fmt: "currency"   },
       { key: "mkdRS",             label: "Markdown (R$)",               value: histSel.markdown,             fmt: "currency"   },
       { key: "pecasVendidas",     label: "Total de Peças Vendidas",     value: histSelPecasVend,             fmt: "number"     },
-      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", value: Math.round(365 / histSel.giro), fmt: "days"    },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", value: (histSelGiroUnid ? Math.round(365 / histSelGiroUnid) : Math.round(365 / histSel.giro)), fmt: "days"    },
     ]
 
     const activeKeys = activeDefs.map(d => d.key)
@@ -593,18 +598,6 @@ export default function Planning() {
     if (tenantId) {
       runCascadeFromM1(tenantId, year, user?.email).catch(() => { /* falhas ficam registradas em plan_cascade_runs, não aqui */ })
     }
-  }
-
-  const [isExportingPDF, setIsExportingPDF] = useState(false)
-
-  const handleExportPDF = async () => {
-    setIsExportingPDF(true)
-    await exportToPDF({
-      elementId: "planning-scenarios-pdf",
-      fileName:  `cenarios_planejamento_${year}`,
-      title:     `Comparação de Cenários — Planejamento Estratégico ${year}`,
-    })
-    setIsExportingPDF(false)
   }
 
   const handleExportScenarios = () => {
@@ -736,8 +729,51 @@ export default function Planning() {
     return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
+  // ─── Relatório (PDF/Excel) — mesmos números da tela ──────────────────────
+  const CAMPO_ESTIMADO: Record<string, IndicadorHistorico> = {
+    margemBruta: "margemBruta", orcamento: "orcamento", custoMedio: "custoMedio", estoqueMediao: "estoqueMedioRS",
+    giro: "giro", cobertura: "cobertura", gmroi: "gmroi", ticketMedio: "ticketMedio",
+  }
+  const empresaRelatorio = nomeEmpresa || "Empresa"
+  const dadosRelatorio: DadosPlanejamentoMacro = {
+    empresa: empresaRelatorio,
+    ano: year,
+    anoReferencia: selectedHistorical,
+    dadosReais: histIsReal,
+    foco: focusDisplayLabel,
+    cenarioAtivo: activeScenario?.name ?? null,
+    temProjecao: !!projection,
+    linhas: allPlanRows.map((row, i) => {
+      const campo = CAMPO_ESTIMADO[row.key]
+      return {
+        chave: row.key,
+        rotulo: row.label,
+        formato: FORMATO_INDICADOR_M1[row.key] ?? "brl",
+        plano: row.plan ?? null,
+        projecao: projection?.[row.key] ?? null,
+        referencia: row.ref ?? null,
+        // Mesma conta da coluna "vs Ref." (calcVar); sem referência fica "—"
+        // em vez do "+0,0%" que a tela mostra.
+        variacaoPct: row.plan != null && row.ref ? calcVar(row.plan, row.ref) : null,
+        selecionado: i < planSplitAt,
+        notaReferencia: campo && histSel.estimados?.length ? notaEstimado({ estimados: histSel.estimados }, campo) : null,
+      }
+    }),
+    cenarios: scenarios.map(sc => ({
+      nome: sc.name,
+      ativo: activeScenario?.name === sc.name,
+      valores: Object.fromEntries(allPlanRows.map(row => [
+        row.key,
+        (sc.state?.values?.[row.key as import("@/engine/planningEngine").FieldKey] ?? null) as number | null,
+      ])),
+    })),
+  }
+  const previaPdf = emPreviaPdf()
+
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2]${previaPdf ? " previa-pdf" : ""}`}>
+      <RelatorioPlanejamentoMacro dados={dadosRelatorio} />
+      <div className="tela-app">
 
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
@@ -1039,7 +1075,7 @@ export default function Planning() {
                               value={f.getValue(v)}
                               state={f.getState(s) as import("@/engine/planningEngine").FieldState}
                               format={f.format}
-                              helpText={f.getHelp(referenceYear, histRef, baseline)}
+                              helpText={comNotaEstimado(f.getHelp(referenceYear, histRef, baseline), histRef, f.key)}
                               onEdit={isReceita ? setFieldAsBase : setField}
                               onUnlock={unlock}
                               highlightCalc={!!f.isCalc}
@@ -1073,7 +1109,7 @@ export default function Planning() {
                       value={f.getValue(v)}
                       state="calculated"
                       format={f.format}
-                      helpText={f.getHelp(referenceYear, histRef, baseline)}
+                      helpText={comNotaEstimado(f.getHelp(referenceYear, histRef, baseline), histRef, f.key)}
                       onEdit={setField}
                       onUnlock={unlock}
                     />
@@ -1120,7 +1156,7 @@ export default function Planning() {
                   const vRef = calcVar(row.plan, row.ref)
                   const isFirstOther = planSplitAt > 0 && i === planSplitAt
                   return (
-                    <>
+                    <Fragment key={row.key}>
                       {isFirstOther && (
                         <div key={`sep-${i}`} className="flex items-center gap-2 pt-2 pb-0.5 px-1">
                           <div className="flex-1 h-px bg-[#28071C]/8" />
@@ -1145,7 +1181,7 @@ export default function Planning() {
                           </>}
                         </div>
                       </div>
-                    </>
+                    </Fragment>
                   )
                 })}
               </div>
@@ -1205,6 +1241,11 @@ export default function Planning() {
                       📊 dados reais
                     </span>
                   )}
+                  {!histLoading && !histIsReal && (
+                    <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                      exemplo
+                    </span>
+                  )}
                 </div>
               </div>
               <select
@@ -1218,6 +1259,13 @@ export default function Planning() {
               </select>
             </div>
 
+            {!histLoading && !histIsReal && (
+              <div className="mx-4 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] leading-relaxed text-amber-800">
+                <strong>Sem histórico de vendas importado.</strong> Estes números são um exemplo
+                para explorar a ferramenta, não são da marca. Importe as vendas em
+                Configurações → Importar dados para comparar com o seu ano real.
+              </div>
+            )}
             <div className="p-4">
               <div className="space-y-0">
                 {refRows.map((item, i) => {
@@ -1228,7 +1276,7 @@ export default function Planning() {
                   const isFirstOther = refSplitAt > 0 && i === refSplitAt
 
                   return (
-                    <>
+                    <Fragment key={item.key}>
                       {isFirstOther && (
                         <div key={`sep-${i}`} className="flex items-center gap-2 pt-3 pb-1">
                           <div className="flex-1 h-px bg-[#28071C]/8" />
@@ -1250,7 +1298,7 @@ export default function Planning() {
                         </div>
                         <span className={`text-sm font-medium font-mono ${i < refSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtRef(item.value, item.fmt)}</span>
                       </div>
-                    </>
+                    </Fragment>
                   )
                 })}
               </div>
@@ -1300,15 +1348,24 @@ export default function Planning() {
                 )}
               </button>
 
-              {/* Exportar PDF */}
+              {/* Baixar PDF (relatório A4 pela impressão do navegador) */}
               <button
-                onClick={handleExportPDF}
-                disabled={isExportingPDF}
-                title="Exportar visualização atual como PDF"
+                onClick={() => imprimirPdf(nomeArquivo("planejamento_estrategico", empresaRelatorio, year))}
+                title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
               >
-                <FileDown className="w-4 h-4" />
-                {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+                <Printer className="w-4 h-4" />
+                Baixar PDF
+              </button>
+
+              {/* Baixar Excel */}
+              <button
+                onClick={() => baixarExcelPlanejamentoMacro(dadosRelatorio)}
+                title="Planilha .xlsx com o cenário consolidado e a comparação de cenários"
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Baixar Excel
               </button>
             </div>
 
@@ -1418,7 +1475,7 @@ export default function Planning() {
                     <tr key={i} className="border-t border-[#28071C]/5 hover:bg-[#7598CF]/4 transition-colors">
                       <td className="py-2.5 pr-4 text-[#28071C]/60">{row.label}</td>
                       {scenarios.map(sc => {
-                        const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
+                        const val = sc.state?.values?.[row.key as import("@/engine/planningEngine").FieldKey] ?? null
                         return (
                           <td key={sc.name} className={`py-2.5 px-3 text-right font-mono font-semibold ${activeScenario?.name === sc.name ? "text-[#7598CF]" : "text-[#28071C]"}`}>
                             {fmtPlan(row.label, val as number | null)}
@@ -1433,48 +1490,6 @@ export default function Planning() {
           </div>
         </div>
       )}
-
-      {/* ── PDF: Comparação de Cenários (capturado pelo html2canvas) ─────────── */}
-      <div
-        id="planning-scenarios-pdf"
-        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
-      >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
-          Planejamento Estratégico {year}
-        </p>
-        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
-          Comparação de Cenários
-        </p>
-        {scenarios.length === 0 ? (
-          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
-            {scenarios.map(sc => (
-              <div key={sc.name} style={{ flex: '1 1 200px', minWidth: '180px', maxWidth: '240px', background: 'white', borderRadius: '12px', padding: '14px', borderTop: `4px solid ${activeScenario?.name === sc.name ? '#7598CF' : '#28071C'}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
-                  {activeScenario?.name === sc.name && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '4px 0', fontSize: '9px', fontWeight: 700, color: 'rgba(40,7,28,0.4)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #F2F2F2' }}>
-                  <span>Indicador</span><span style={{ textAlign: 'center' }}>Plano</span><span style={{ textAlign: 'right' }}>vs Referência</span>
-                </div>
-                {allPlanRows.slice(0, 8).map((row, i) => {
-                  const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
-                  const refVal = row.ref ?? null
-                  const delta = (val != null && refVal != null && refVal !== 0) ? (((val as number) - (refVal as number)) / Math.abs(refVal as number) * 100).toFixed(1) : null
-                  return (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: '10px', color: '#28071C' }}>
-                      <span style={{ opacity: 0.6 }}>{row.label}</span>
-                      <span style={{ textAlign: 'center', fontWeight: 600 }}>{fmtPlan(row.label, val as number | null)}</span>
-                      <span style={{ textAlign: 'right', opacity: 0.5 }}>{delta != null ? `${+delta > 0 ? '+' : ''}${delta}%` : '—'}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* ── POST-APPLY MODAL ─────────────────────────────────────────────────── */}
       {showPostApplyModal && (
@@ -1596,6 +1611,7 @@ export default function Planning() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

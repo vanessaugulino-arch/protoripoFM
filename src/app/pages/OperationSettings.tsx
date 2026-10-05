@@ -693,7 +693,11 @@ export default function OperationSettings() {
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
     if (stored) {
-      const u = JSON.parse(stored);
+      // Suporte TFO opera na empresa escolhida (activeTenantId). Antes esta tela
+      // — inclusive a importação de dados — usava a empresa da própria usuária
+      // (a do sistema), e o que o suporte importava não ia para a cliente.
+      const raw = JSON.parse(stored);
+      const u = { ...raw, tenant_id: sessionStorage.getItem("activeTenantId") ?? raw.tenant_id };
       setUser(u);
       const effectiveProfile =
         u.system_role === "support" || u.system_role === "client_admin"
