@@ -240,6 +240,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
   let margin = 48;
   let gmroi = 3.5;
   let pmv: number | undefined;
+  let mkd: number | undefined;
 
   if (plannedYears.length > 0) {
     // Tenta o ano fiscal da temporada primeiro; se não houver, usa o mais recente
@@ -260,6 +261,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
         margin        = (values.margemBruta  as number) ?? 48;
         gmroi         = (values.gmroi        as number) ?? 3.5;
         pmv           = (values.pmv          as number | null) ?? undefined;
+        mkd           = (values.mkdPct       as number | null) ?? undefined;
         break;
       }
     }
@@ -276,6 +278,7 @@ function deriveSeasonMacroTarget(temporada: Temporada): MacroTarget {
     sellThrough: 75,
     gmroi,
     pmv,
+    mkd,
   };
 }
 

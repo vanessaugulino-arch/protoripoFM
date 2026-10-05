@@ -98,6 +98,7 @@ export async function computeDefaultDivisionScenario(
     sellThrough: 75,
     gmroi:       (m1Values?.gmroi as number) ?? 3.5,
     pmv:         (m1Values?.pmv as number | null) ?? undefined,
+    mkd:         (m1Values?.mkdPct as number | null) ?? undefined,
   }
 
   // Participação real: prefere a sugerida pela Sazonalidade (curva mensal real

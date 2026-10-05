@@ -106,7 +106,8 @@ export function initializeDivisions(
       participation,
       indicators: {
         avgPrice,
-        mkd:         15,
+        // Markdown parte da meta do M1; 15 só sobra se o M1 não tiver MKD.
+        mkd:         macroTargets?.mkd ?? 15,
         margin:      macroTargets?.margin      ?? 48,
         sellThrough: macroTargets?.sellThrough ?? 75,
         gmroi:       macroTargets?.gmroi       ?? 2.35,
