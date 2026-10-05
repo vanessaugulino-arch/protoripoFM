@@ -398,7 +398,16 @@ export default function CollectionPlan() {
   const handleAddEntry = (divId: string) => {
     const draft = getDraft(divId);
     const pieces = Number(draft.pieces);
-    if (!draft.name.trim() || !draft.month || !pieces || pieces <= 0) return;
+    if (!draft.name.trim() || !draft.month || !pieces || pieces <= 0) {
+      alert("Preencha nome, mês e quantidade de peças (maior que zero).");
+      return;
+    }
+    const nome = draft.name.trim().toLowerCase();
+    const repetida = (divisionsPlan[divId]?.entries ?? []).some(e => e.name.trim().toLowerCase() === nome && e.month === draft.month);
+    if (repetida) {
+      alert(`Já existe "${draft.name.trim()}" em ${draft.month} nesta divisão. Ajuste as peças da entrada existente ou use outro nome.`);
+      return;
+    }
     const entry: CollectionPlanEntry = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       name: draft.name.trim(),

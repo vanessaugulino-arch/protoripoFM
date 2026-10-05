@@ -12,11 +12,13 @@ interface Props {
   tenantId: string;
   tenantName: string;
   isSupport: boolean;
+  /** Avisa o painel quando a lista de clientes muda. */
+  onClientsChanged?: () => void;
 }
 
 const EMPTY_FORM = { name: "", cnpj: "", plan: "Beta", status: "active" };
 
-export default function Admin_Clients({ isSupport }: Props) {
+export default function Admin_Clients({ isSupport, onClientsChanged }: Props) {
   const [clients, setClients] = useState<TenantRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -70,6 +72,7 @@ export default function Admin_Clients({ isSupport }: Props) {
       }
       setFormData(EMPTY_FORM);
       await loadClients();
+      onClientsChanged?.();
     } catch (err: any) {
       showToast("Erro: " + err.message);
     } finally {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { Fragment, useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router";
 import {
   ArrowLeft, LogOut, User, Save, GitCompare, Download, Lock,
@@ -1301,7 +1301,7 @@ export default function ChannelPlanning() {
                 const rowH = (consImpacted || rowHasHist) ? "min-h-[2.5rem] h-auto py-1.5" : "h-10";
 
                 return (
-                  <>
+                  <Fragment key={field.key ?? idx}>
                     {/* Divider after last macro-focus row */}
                     {isLastFocus && (
                       <div key={`div-${field.key}`} className="col-span-full my-0.5">
@@ -1416,7 +1416,7 @@ export default function ChannelPlanning() {
                         </div>
                       );
                     })()}
-                  </>
+                  </Fragment>
                 );
               })}
             </div>

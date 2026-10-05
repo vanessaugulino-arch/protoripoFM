@@ -1,6 +1,6 @@
 // src/app/pages/Planning.tsx — v5 (3-column layout)
 import { historicalYearFromSummary, notaEstimado, type IndicadorHistorico } from '../../engine/historicalYear'
-import { useEffect, useState, useMemo, useRef } from "react";
+import { Fragment, useEffect, useState, useMemo, useRef } from "react";
 import { supabase } from '../../lib/supabase';
 import { useNavigate, useLocation } from "react-router";
 import { usePlanningEngine } from '../../hooks/usePlanningEngine'
@@ -1113,7 +1113,7 @@ export default function Planning() {
                   const vRef = calcVar(row.plan, row.ref)
                   const isFirstOther = planSplitAt > 0 && i === planSplitAt
                   return (
-                    <>
+                    <Fragment key={row.key}>
                       {isFirstOther && (
                         <div key={`sep-${i}`} className="flex items-center gap-2 pt-2 pb-0.5 px-1">
                           <div className="flex-1 h-px bg-[#28071C]/8" />
@@ -1138,7 +1138,7 @@ export default function Planning() {
                           </>}
                         </div>
                       </div>
-                    </>
+                    </Fragment>
                   )
                 })}
               </div>
@@ -1233,7 +1233,7 @@ export default function Planning() {
                   const isFirstOther = refSplitAt > 0 && i === refSplitAt
 
                   return (
-                    <>
+                    <Fragment key={item.key}>
                       {isFirstOther && (
                         <div key={`sep-${i}`} className="flex items-center gap-2 pt-3 pb-1">
                           <div className="flex-1 h-px bg-[#28071C]/8" />
@@ -1255,7 +1255,7 @@ export default function Planning() {
                         </div>
                         <span className={`text-sm font-medium font-mono ${i < refSplitAt ? "text-[#28071C]" : "text-[#28071C]/50"}`}>{fmtRef(item.value, item.fmt)}</span>
                       </div>
-                    </>
+                    </Fragment>
                   )
                 })}
               </div>

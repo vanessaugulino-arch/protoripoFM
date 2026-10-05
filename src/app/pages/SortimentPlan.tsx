@@ -1340,7 +1340,7 @@ export default function SortimentPlan() {
   return (
     <div className="min-h-screen w-full bg-[#F2F2F2]">
 
-      {tour.isOpen && (
+      {tour.isOpen && !showSeasonPicker && !showM5PlanPicker && (
         <ProductTour steps={SORTIMENT_TOUR} onClose={tour.dismiss} />
       )}
 

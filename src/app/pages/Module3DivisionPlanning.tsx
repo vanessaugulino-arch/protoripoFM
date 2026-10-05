@@ -1783,7 +1783,8 @@ export default function Module3DivisionPlanning() {
       )}
 
       {/* ── PRODUCT TOUR ─────────────────────────────────────────────────── */}
-      {tour.isOpen && (
+      {/* Tour espera a escolha de temporada: antes abria por cima da janela de ano. */}
+      {tour.isOpen && !showSeasonPickerPopup && (
         <ProductTour steps={MODULE3_TOUR} onClose={tour.dismiss} />
       )}
 
