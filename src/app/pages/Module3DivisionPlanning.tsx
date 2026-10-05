@@ -986,7 +986,8 @@ export default function Module3DivisionPlanning() {
     if (!tenantId || !user) return;
     setIsSubmittingApproval(true);
     try {
-      const scenarioForApproval = scenarios.find(s => s.isActive) ?? scenarios[scenarios.length - 1] ?? null;
+      // Mesmo critério de Aplicar metas: o cenário salvo mais recente é o que está na tela.
+      const scenarioForApproval = [...scenarios].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0] ?? null;
       await createApprovalRequest({
         tenantId,
         year:               selectedTemporada?.anoFiscal ?? new Date().getFullYear(),
