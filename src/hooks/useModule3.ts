@@ -2,6 +2,7 @@
  * Hook para gerenciar lógica do Módulo 3 - Planejamento por Divisão
  */
 
+import { alinharVolumesAReceita } from "../engine/divisionVolumes";
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Module3State,
@@ -128,6 +129,9 @@ export function initializeDivisions(
       },
       volumeCoverage: {
         coverage,
+        // Ponto de partida: produzir o que se espera vender. Editável no M4;
+        // antes ficava vazio e o M5 recebia volume-teto 0.
+        productionVolume: unitsExpectedSold,
         initialStock: Math.round(unitsExpectedSold * (5 / 6)),
         replenishments: Math.round(unitsExpectedSold * (5 / 12)),
         unitsExpectedSold,
@@ -212,12 +216,17 @@ export function useModule3(options: UseModule3Options) {
     prevMacroCtxRef.current = curr;
 
     if (!prev || prev.seasonId !== curr.seasonId) {
-      // Temporada mudou (ou primeira carga) — re-init já feito pelo efeito de temporada;
-      // só atualiza o consolidado.
-      setState(prevState => ({
-        ...prevState,
-        consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
-      }));
+      // Temporada mudou (ou primeira carga) — re-init já feito pelo efeito de
+      // temporada, mas a receita da temporada pode ter chegado depois dele:
+      // alinha as peças à receita atual antes de consolidar.
+      setState(prevState => {
+        const divisions = alinharVolumesAReceita(prevState.divisions, options.macroTargets.revenue);
+        return {
+          ...prevState,
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+        };
+      });
       return;
     }
 
@@ -228,10 +237,13 @@ export function useModule3(options: UseModule3Options) {
 
     setState(prevState => {
       if (Object.keys(deltas).length === 0) {
-        // Apenas receita mudou — recalcula consolidado sem alterar divisões
+        // Apenas receita mudou — taxas ficam, peças acompanham a receita
+        // (antes ficavam as da receita anterior e o M5 recebia volume errado).
+        const divisions = alinharVolumesAReceita(prevState.divisions, options.macroTargets.revenue);
         return {
           ...prevState,
-          consolidated: recalcConsolidated(prevState.divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
+          divisions,
+          consolidated: recalcConsolidated(divisions, options.macroTargets, options.seasonId, options.referenceSeasonId),
         };
       }
 
