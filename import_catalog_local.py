@@ -17,6 +17,7 @@ Requisitos: Python 3.8+ e openpyxl  (pip install openpyxl)
 """
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -27,18 +28,25 @@ XLSX_PATH = "tabela_estoque_mensal.xlsx"
 TENANT_ID = "510da940-e4b4-4750-9b46-fe432bf77065"
 SB_URL = "https://tlbfvuqzvpolfrjwiofx.supabase.co"
 
-# Chave anônima — lida do .env do projeto
-def read_anon_key() -> str:
+def read_service_key() -> str:
+    """Chave de serviço: variável de ambiente ou .env local (nunca commitar).
+    Mesmo nome usado em scripts/import_data_tfo.py. A chave pública (anon)
+    não serve: importação grava direto em vendas/produtos e o banco só deve
+    aceitar isso de quem tem a chave de serviço."""
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+    if key:
+        return key
     try:
         with open(".env", "r", encoding="utf-8") as fh:
             for line in fh:
-                if line.startswith("VITE_SUPABASE_ANON_KEY="):
+                if line.startswith("SUPABASE_SERVICE_KEY="):
                     return line.split("=", 1)[1].strip()
     except FileNotFoundError:
         pass
-    sys.exit("ERRO: não encontrei VITE_SUPABASE_ANON_KEY no arquivo .env")
+    sys.exit("ERRO: defina SUPABASE_SERVICE_KEY (ambiente ou .env). "
+             "Pegue em Supabase > Project Settings > API > service_role.")
 
-SB_KEY = read_anon_key()
+SB_KEY = read_service_key()
 BATCH = 300
 
 
