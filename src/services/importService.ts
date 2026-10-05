@@ -11,6 +11,7 @@
 //   hierarchy → products (update)   (enriquece hierarquia via join por SKU)
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { normalizeProductRole } from "../engine/productRole";
 import { supabase } from "../lib/supabase";
 import { enrichProductColors } from "./supabase/colorBankService";
 import { getRegraDefaultDb } from "./supabase/seasonService";
@@ -381,11 +382,11 @@ export const IMPORT_CONFIG: Record<ImportDataType, ImportTypeConfig> = {
         key: "risk_level",
         label: "Nível de Risco",
         description:
-          "Sustentador de Margem = estrutura básica com variações de cor ou detalhe. Motor de Giro = moda/tendência de temporada, alto volume. Ícone de Marca = statement da marca, alta exposição editorial. Qualquer perfil pode estar em P1/P2/P3.",
+          "Básico = peça de linha, sem variação de temporada. Sustentador de Margem = estrutura básica com variações de cor ou detalhe. Motor de Giro = moda/tendência de temporada, alto volume. Ícone de Marca = statement da marca, alta exposição editorial. Qualquer perfil pode estar em P1/P2/P3.",
         required: false,
         valueType: "enum",
         sampleValue: "Sustentador de Margem",
-        enumValues: ["Sustentador de Margem", "Motor de Giro", "Ícone de Marca"],
+        enumValues: ["Básico", "Motor de Giro", "Sustentador de Margem", "Ícone de Marca"],
       },
       {
         key: "price_tier",
@@ -1392,19 +1393,10 @@ async function syncFromCatalogImport(tenantId: string): Promise<void> {
 
 /**
  * Normaliza o nível de risco para os códigos aceitos pela constraint
- * products_risk_level_check (basico | motor_giro | sustentador | icone).
- * Aceita tanto os códigos internos quanto os rótulos de exibição e variações
- * comuns de ERP; qualquer valor não reconhecido vira null (a coluna aceita NULL).
+ * products_risk_level_check. Regra única em engine/productRole.ts.
  */
 function normRiskLevel(v: string): string | null {
-  const s = (v ?? "").trim().toLowerCase();
-  if (!s) return null;
-  if (["basico", "motor_giro", "sustentador", "icone"].includes(s)) return s;
-  if (s.includes("bás") || s.includes("bas")) return "basico";
-  if (s.includes("giro") || s.includes("motor")) return "motor_giro";
-  if (s.includes("sustent") || s.includes("margem")) return "sustentador";
-  if (s.includes("ícone") || s.includes("icone") || s.includes("marca")) return "icone";
-  return null; // taxonomia desviante → não grava (evita violar a constraint)
+  return normalizeProductRole(v);
 }
 
 /**

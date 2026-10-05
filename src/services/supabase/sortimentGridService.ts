@@ -15,20 +15,16 @@ import { normalizeDivision } from './historicalProfileService'
 import { getHierarchyRevenueByPath } from './consolidatedHierarchyService'
 import { loadPyramidPlan } from './pricePyramidService'
 import type { PriceTierId } from '../../app/types/pricePyramid'
+import { PRODUCT_ROLES, PRODUCT_ROLE_LABELS, type ProductRoleId } from '../../engine/productRole'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = supabase as any
 
-export type RiskLevelId = 'basico' | 'motor_giro' | 'sustentador' | 'icone'
-
-export const RISK_LEVELS: RiskLevelId[] = ['basico', 'motor_giro', 'sustentador', 'icone']
-
-export const RISK_LEVEL_LABELS: Record<RiskLevelId, string> = {
-  basico:      'Básico',
-  motor_giro:  'Motor de Giro',
-  sustentador: 'Sustentador de Margem',
-  icone:       'Ícone de Marca',
-}
+// Papéis de produto: fonte única em engine/productRole.ts. Nomes antigos
+// mantidos para não mexer nas telas que já importam daqui.
+export type RiskLevelId = ProductRoleId
+export const RISK_LEVELS: RiskLevelId[] = [...PRODUCT_ROLES]
+export const RISK_LEVEL_LABELS: Record<RiskLevelId, string> = PRODUCT_ROLE_LABELS
 
 export const PRICE_TIER_LABELS: Record<PriceTierId, string> = { p1: 'P1', p2: 'P2', p3: 'P3' }
 
