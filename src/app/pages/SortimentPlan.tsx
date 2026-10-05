@@ -926,7 +926,11 @@ export default function SortimentPlan() {
   useEffect(() => {
     const u = sessionStorage.getItem("currentUser");
     if (u) {
-      const parsed = JSON.parse(u);
+      // Suporte TFO opera na empresa escolhida (activeTenantId), não na própria
+      // (empresa do sistema). Antes a tela lia sempre a da usuária logada:
+      // "Nenhuma temporada planejada" para quem atende cliente, e o cache de
+      // ciclos ficava carregado com a empresa errada para as outras telas.
+      const parsed = { ...JSON.parse(u), tenant_id: sessionStorage.getItem("activeTenantId") ?? JSON.parse(u).tenant_id };
       setUser(parsed);
       if (parsed.tenant_id) {
         // Cache de ciclos só é populado no login/PlanningSetup — sem isto, um
@@ -971,9 +975,20 @@ export default function SortimentPlan() {
       listAllCollectionPlans(tid, seasonId),
     ]).then(([saved, m3Rows, m5Plans]) => {
       setCollectionPlansForSeason(m5Plans);
+      // Receita da temporada = consolidado do M4 aplicado (já recortado nos
+      // meses da temporada). Antes vinha a receita ANUAL do M1 × participação.
+      const m4Aplicado = m3Rows.find(r => r.is_applied) ?? null;
+      const receitaTemporada = Number((m4Aplicado?.consolidated as Record<string, unknown> | undefined)?.totalRevenue ?? 0);
       if (saved && saved.divisions.length > 0) {
-        // Plano de trabalho existente — usa ele diretamente
-        setDivisions(saved.divisions as unknown as Division[]);
+        // Plano de trabalho existente — usa ele, mas receita e participação
+        // seguem o M4 aplicado (não são editáveis aqui e ficavam velhas).
+        const salvas = saved.divisions as unknown as Division[];
+        setDivisions(receitaTemporada > 0
+          ? salvas.map(d => {
+              const part = (m4Aplicado?.divisions as Record<string, { participation?: number }> | undefined)?.[d.id]?.participation ?? d.participationPct;
+              return { ...d, participationPct: part, revenueTarget: Math.round(receitaTemporada * part / 100) };
+            })
+          : salvas);
         setSourceCollectionPlanId(saved.sourceCollectionPlanId);
         setM3InitPending(null);
       } else {
@@ -1030,11 +1045,16 @@ export default function SortimentPlan() {
     const anoFiscal = season?.anoFiscal;
     if (!anoFiscal) return;
 
+    // Receita da temporada: consolidado do M4 aplicado; sem ele, rateio do M1
+    // pelos meses da temporada (nunca a receita anual inteira).
     const macro = getPlanCycle(anoFiscal);
     const vals = (macro as any)?.versions?.[0]?.values ?? {};
-    const macroRec = (vals["receitaBruta"] as number) ?? 0;
+    const receitaAnual = (vals["receitaBruta"] as number) ?? 0;
+    const receitaM4 = Number((m3InitPending.consolidated as Record<string, unknown> | undefined)?.totalRevenue ?? 0);
+    const meses = expandSeasonMonths(season.mesInicio, season.mesFim, anoFiscal).length || 12;
+    const receitaTemporada = receitaM4 > 0 ? receitaM4 : receitaAnual * meses / 12;
 
-    const builtDivs = buildDivisionsFromM3(m3InitPending, macroRec);
+    const builtDivs = buildDivisionsFromM3(m3InitPending, receitaTemporada);
     if (builtDivs.length > 0) {
       setDivisions(builtDivs);
       setActiveDivId(builtDivs[0].id);
@@ -1138,9 +1158,16 @@ export default function SortimentPlan() {
   // ── KPIs do topbar ───────────────────────────────────────────────────────────
   const topbarKpis = useMemo(() => {
     const vals      = macroPlan?.versions[0]?.values ?? {};
-    const macroRec  = (vals["receitaBruta"] as number | null) ?? null;
+    const anualRec  = (vals["receitaBruta"] as number | null) ?? null;
     const macroMgm  = (vals["margemBruta"]  as number | null) ?? null;
-    const macroOrcamento = (vals["orcamento"] as number | null) ?? null;
+    const anualOrcamento = (vals["orcamento"] as number | null) ?? null;
+    // A tela é de uma temporada: receita e orçamento do topo são os da
+    // temporada (soma das divisões, que vem do M4), não os do ano inteiro.
+    // Taxas (margem, PMV) valem iguais para a temporada.
+    const receitaDivisoes = divisions.reduce((s, d) => s + (d.revenueTarget || 0), 0);
+    const fatorTemporada  = anualRec && anualRec > 0 && receitaDivisoes > 0 ? receitaDivisoes / anualRec : 1;
+    const macroRec        = anualRec != null ? anualRec * fatorTemporada : null;
+    const macroOrcamento  = anualOrcamento != null ? anualOrcamento * fatorTemporada : null;
     const macroPmv       = (vals["pmv"]       as number | null) ?? null;
 
     // Peças + receita já planejadas nas coleções cadastradas

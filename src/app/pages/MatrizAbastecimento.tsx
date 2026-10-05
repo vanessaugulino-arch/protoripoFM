@@ -28,7 +28,11 @@ import { supabase } from "../../lib/supabase";
 
 interface UserData { tenant_id: string; email?: string }
 function getUser(): UserData | null {
-  try { return JSON.parse(sessionStorage.getItem("currentUser") ?? "null"); } catch { return null; }
+  try {
+    const u = JSON.parse(sessionStorage.getItem("currentUser") ?? "null");
+    // Suporte TFO opera na empresa escolhida, não na própria (empresa do sistema).
+    return u ? { ...u, tenant_id: sessionStorage.getItem("activeTenantId") ?? u.tenant_id } : null;
+  } catch { return null; }
 }
 
 interface HierDistinct {
