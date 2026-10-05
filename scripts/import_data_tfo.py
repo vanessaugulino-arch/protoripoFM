@@ -23,7 +23,8 @@ from supabase import create_client, Client
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://tlbfvuqzvpolfrjwiofx.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 EXCEL_PATH   = os.environ.get("EXCEL_PATH", "base icloud import.xlsx")
-TENANT_ID    = "510da940-e4b4-4750-9b46-fe432bf77065"
+# Empresa e banco de destino: defina no ambiente ou no .env para importar na base única (Supabase da TFO).
+TENANT_ID    = os.environ.get("MIND_TENANT_ID", "510da940-e4b4-4750-9b46-fe432bf77065")
 BATCH_SIZE   = 200
 
 # Janelas de entrega fictícias por coleção (para data_ultima_entrada)

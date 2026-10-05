@@ -17,8 +17,9 @@ from xml.etree import ElementTree as ET
 
 # ── Configuração ───────────────────────────────────────────────────────────────
 XLSX_PATH     = "Vendas_novo.xlsx"          # ajuste o caminho se necessário
-TENANT_ID     = "510da940-e4b4-4750-9b46-fe432bf77065"
-SB_URL        = "https://tlbfvuqzvpolfrjwiofx.supabase.co"
+# Empresa e banco de destino: defina no ambiente ou no .env para importar na base única (Supabase da TFO).
+TENANT_ID     = os.environ.get("MIND_TENANT_ID", "510da940-e4b4-4750-9b46-fe432bf77065")
+SB_URL        = os.environ.get("SUPABASE_URL", "https://tlbfvuqzvpolfrjwiofx.supabase.co")
 
 def read_service_key() -> str:
     """Chave de serviço: variável de ambiente ou .env local (nunca commitar).
