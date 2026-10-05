@@ -652,6 +652,7 @@ export default function SortimentPlan() {
   // ── Cenários (carregados do Supabase quando a temporada é selecionada) ────────
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [showSeasonPicker,  setShowSeasonPicker]  = useState(false);
+  const [showExportMenu,    setShowExportMenu]    = useState(false);
   const [showScenarioPanel, setShowScenarioPanel] = useState(false);
   const [showSaveModal,     setShowSaveModal]     = useState(false);
   const [showCompareModal,  setShowCompareModal]  = useState(false);
@@ -1432,7 +1433,7 @@ export default function SortimentPlan() {
               id="tour-sort-scenarios"
               onClick={() => setShowSaveModal(true)}
               title="Salvar simulação atual como cenário"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all whitespace-nowrap"
             >
               <Bookmark className="w-3.5 h-3.5" />
               Salvar Simulação
@@ -1440,43 +1441,45 @@ export default function SortimentPlan() {
             <button
               onClick={() => setShowScenarioPanel(true)}
               title="Ver e comparar cenários salvos"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all whitespace-nowrap"
             >
               <GitCompare className="w-3.5 h-3.5" />
               Cenários{scenarios.length > 0 && <span className="bg-[#F6F3AA]/30 text-[#F6F3AA] text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-0.5">{scenarios.length}</span>}
             </button>
-            <button
-              onClick={exportPDF}
-              title="Exportar esta tela em PDF"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Exportar PDF
-            </button>
-            <button
-              onClick={exportCollectionsCsv}
-              title="Exportar CSV com cada coleção/drop, sua data de entrada e % de receita por divisão"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Coleções por Mês (CSV)
-            </button>
-            <button
-              onClick={exportCascadeCsv}
-              title="Exportar CSV com a cascata categoria/subcategoria/linha × faixa de preço e risco, por divisão"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Cascata (CSV)
-            </button>
-            <button
-              onClick={exportCascadeByMonthCsv}
-              title="Exportar CSV com a cascata categoria/subcategoria/linha × faixa, distribuída pelos meses reais das collections/drops de cada divisão"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Cascata por Mês (CSV)
-            </button>
+            {/* Exportações num menu só: eram quatro botões e o cabeçalho quebrava em
+                pilhas de três linhas. */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(v => !v)}
+                title="Exportar PDF ou planilhas desta tela"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Exportar
+              </button>
+              {showExportMenu && (
+                <div
+                  className="absolute right-0 mt-2 w-64 rounded-xl bg-white shadow-xl border border-[#28071C]/10 py-1 z-50"
+                  onMouseLeave={() => setShowExportMenu(false)}
+                >
+                  {[
+                    { label: "PDF desta tela", hint: "Visão atual da divisão", run: exportPDF },
+                    { label: "Coleções por mês (CSV)", hint: "Coleção/drop, entrada e % de receita", run: exportCollectionsCsv },
+                    { label: "Cascata (CSV)", hint: "Categoria → linha × faixa e risco", run: exportCascadeCsv },
+                    { label: "Cascata por mês (CSV)", hint: "Cascata distribuída pelos meses de entrada", run: exportCascadeByMonthCsv },
+                  ].map(opt => (
+                    <button
+                      key={opt.label}
+                      onClick={() => { setShowExportMenu(false); opt.run(); }}
+                      className="w-full text-left px-3 py-2 hover:bg-[#28071C]/5"
+                    >
+                      <span className="block text-xs font-semibold text-[#28071C]">{opt.label}</span>
+                      <span className="block text-[10px] text-[#28071C]/50">{opt.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="w-px h-6 bg-white/20" />
             <div className="flex items-center gap-2 text-[#F6F3AA]">
               <User className="w-5 h-5" />
@@ -1500,7 +1503,7 @@ export default function SortimentPlan() {
         </div>
 
         {/* ── KPI strip — segunda linha do header ──────────────────────────── */}
-        <div id="tour-sort-kpis" className="max-w-[1600px] mx-auto px-6 pb-2.5 flex items-center gap-1.5 overflow-x-auto print:hidden">
+        <div id="tour-sort-kpis" className="max-w-[1600px] mx-auto px-6 pb-2.5 flex flex-wrap items-center gap-1.5 print:hidden">
           {/* Foco estratégico badge */}
           {topbarKpis.focus && (
             <span className="flex-shrink-0 text-[10px] font-bold uppercase tracking-widest bg-white/10 text-[#F6F3AA] px-2.5 py-1 rounded-full">
@@ -2395,7 +2398,7 @@ export default function SortimentPlan() {
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#7598CF]/40 text-[#7598CF] rounded-xl text-sm hover:bg-[#7598CF]/8 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <SendHorizonal className="w-4 h-4" />
-                {m3RequestPending ? "Ajuste pendente no M3" : "Solicitar ajuste ao M3"}
+                {m3RequestPending ? "Ajuste pendente no M4" : "Solicitar ajuste ao M4"}
               </button>
             </div>
             <button
