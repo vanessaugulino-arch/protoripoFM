@@ -98,6 +98,16 @@ const HIST_FALLBACK: HistoricalData[] = [
   { year: "2025", receita: 2850000, producao: 18387, pmv: 155, markdown: 142500, ticket_medio: 320, estoque_medio_pecas: 4387, margem_bruta: 42.3 },
 ].map(r => ({ ...historicalYearFromSummary(r), estimados: [] }))
 
+/**
+ * GMROI na convenção do motor (planningEngine): lucro bruto sobre a receita
+ * LÍQUIDA das devoluções estimadas (5%), dividido pelo estoque médio. Assim o
+ * GMROI da base bate com o do plano e com o do M2 (margem × giro).
+ */
+function gmroiDoMotor(h: HistoricalData): number {
+  if (!(h.estoqueMedioRS > 0)) return h.gmroi
+  return +((h.receita * 0.95 * (h.margemBruta / 100)) / h.estoqueMedioRS).toFixed(2)
+}
+
 /** Acrescenta à ajuda do campo o aviso de valor estimado, quando for o caso. */
 function comNotaEstimado(texto: string, ano: HistoricalData | undefined, campo: string): string {
   if (!ano?.estimados?.length) return texto
@@ -310,7 +320,7 @@ export default function Planning() {
       producaoPecas:     histRef.producao,
       mkdPct:            +((histRef.markdown / histRef.receita) * 100).toFixed(1),
       custoMedio,
-      gmroi:             histRef.gmroi,
+      gmroi:             gmroiDoMotor(histRef),
       ticketMedio:       histRef.ticketMedio,
       estoqueMediao:     histRef.estoqueMedioRS,
       estoqueMedioPecas: histRef.estoqueMedioPecas,
@@ -479,7 +489,7 @@ export default function Planning() {
       { key: "receitaBruta",      label: "Receita (R$)",            plan: v.receitaBruta,      ref: histSel.receita              },
       { key: "margemBruta",       label: "Margem Bruta (%)",        plan: v.margemBruta,       ref: histSel.margemBruta          },
       { key: "mkdPct",            label: "Markdown (%)",            plan: v.mkdPct,            ref: histMkdPct                   },
-      { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: histSel.gmroi                },
+      { key: "gmroi",             label: "GMROI",                   plan: v.gmroi,             ref: gmroiDoMotor(histSel)        },
       { key: "pmv",               label: "PMV (R$)",                plan: v.pmv,               ref: histSel.pmv                  },
       { key: "orcamento",         label: "Orçamento (R$)",          plan: v.orcamento,         ref: histSel.orcamento            },
       { key: "giroUnidades",      label: "Giro (peças)",            plan: v.giroUnidades,      ref: histSelGiroUnid              },
@@ -499,7 +509,7 @@ export default function Planning() {
       { key: "receitaBruta",      label: "Receita (R$)",            value: histSel.receita,              fmt: "currency"   },
       { key: "margemBruta",       label: "Margem Bruta (%)",        value: histSel.margemBruta,          fmt: "percent"    },
       { key: "mkdPct",            label: "Markdown (%)",            value: histMkdPct,                   fmt: "percent"    },
-      { key: "gmroi",             label: "GMROI",                   value: histSel.gmroi,                fmt: "multiplier" },
+      { key: "gmroi",             label: "GMROI",                   value: gmroiDoMotor(histSel),        fmt: "multiplier" },
       { key: "pmv",               label: "PMV (R$)",                value: histSel.pmv,                  fmt: "currency"   },
       { key: "orcamento",         label: "Orçamento (R$)",          value: histSel.orcamento,            fmt: "currency"   },
       { key: "giroUnidades",      label: "Giro (peças)",            value: histSelGiroUnid ?? 0,         fmt: "multiplier" },
