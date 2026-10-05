@@ -71,6 +71,11 @@ function buildInitialConsolidated(macroTargets: MacroTarget): SeasonConsolidated
  * divisão (distribuição de products.risk_level, mesma fonte usada no painel
  * de Giro por Perfil de Risco do M5) — substitui o default genérico quando disponível.
  */
+/** Faixa de preço "min-max" ±12% em torno de um preço central. */
+function faixa(centro: number): string {
+  return `${Math.round(centro * 0.88)}-${Math.round(centro * 1.12)}`;
+}
+
 export function initializeDivisions(
   divisionIds: string[],
   macroTargets?: MacroTarget,
@@ -113,10 +118,13 @@ export function initializeDivisions(
         sellThrough: macroTargets?.sellThrough ?? 75,
         gmroi:       macroTargets?.gmroi       ?? 2.35,
       },
+      // Faixas padrão em torno do PMV do M1 (P1 ~0,7×, P2 ~1×, P3 ~1,5×).
+      // Antes eram fixas (119-169 / 179-259 / 269-389) e a pirâmide não batia
+      // com o PMV da própria divisão.
       priceRange: {
-        entry: "119-169",
-        middle: "179-259",
-        premium: "269-389",
+        entry:   faixa(avgPrice * 0.7),
+        middle:  faixa(avgPrice),
+        premium: faixa(avgPrice * 1.5),
         entryPercent: 30,
         middlePercent: 50,
         premiumPercent: 20,
