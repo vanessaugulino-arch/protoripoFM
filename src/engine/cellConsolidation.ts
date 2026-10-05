@@ -46,7 +46,23 @@ export interface ConsolidatedMacro {
   orcamento:     number
 }
 
-const r2 = (n: number) => Math.round(n * 100) / 100
+/**
+ * Arredonda como o Postgres faz com numeric: meio para longe do zero, sobre o
+ * valor decimal (não sobre o binário). Math.round(n * 100) / 100 errava um
+ * centavo quando o valor caía em meio centavo, porque 1167065.715 vira
+ * 1167065.7149999998 em ponto flutuante. toPrecision(15) remove esse ruído
+ * (15 dígitos significativos são exatos em double) e o deslocamento por
+ * notação exponencial evita multiplicar de novo.
+ */
+export function roundHalfAwayFromZero(n: number, casas: number): number {
+  if (!Number.isFinite(n) || n === 0) return n === 0 ? 0 : n
+  const abs = Number(Math.abs(n).toPrecision(15))
+  const r = Number(`${Math.round(Number(`${abs}e${casas}`))}e-${casas}`)
+  return n < 0 ? -r : r
+}
+
+const r2 = (n: number) => roundHalfAwayFromZero(n, 2)
+const r0 = (n: number) => roundHalfAwayFromZero(n, 0)
 
 /** Célula zerada — útil como acumulador. */
 export function emptyCell(labels: Partial<Pick<MacroCell, 'month' | 'fiscalYear' | 'dimension'>> = {}): MacroCell {
@@ -88,13 +104,13 @@ export function consolidateCells(cells: MacroCell[]): ConsolidatedMacro | null {
 
   return {
     receitaBruta:  r2(sReceita),
-    pecasVendidas: Math.round(sPecas),
+    pecasVendidas: r0(sPecas),
     pmv:           sPecas   > 0 ? r2(sReceita / sPecas)                    : 0,
     margemBruta:   sReceita > 0 ? r2((sLucro / sReceita) * 100)           : 0,
     custoMedio:    sPecas   > 0 ? r2((sReceita - sLucro - sMkd) / sPecas) : 0,
     estoqueMediao: r2(sEstoque),
     giro:          sEstoque > 0 ? r2(sReceita / sEstoque)                 : 0,
-    cobertura:     sReceita > 0 ? Math.round((sEstoque / sReceita) * 365) : 0,
+    cobertura:     sReceita > 0 ? r0((sEstoque / sReceita) * 365)       : 0,
     gmroi:         sEstoque > 0 ? r2(sLucro / sEstoque)                   : 0,
     mkdRS:         r2(sMkd),
     mkdPct:        sReceita > 0 ? r2((sMkd / sReceita) * 100)             : 0,
