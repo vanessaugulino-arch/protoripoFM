@@ -17,7 +17,7 @@ import { getChannelSeasonality, getSalesMonthlyAggregates, getHistoricalYears, d
 import { ReferenceYearSelector } from "../components/ReferenceYearSelector";
 import { expandSeasonMonths } from "../../engine/seasonMonths";
 import {
-  ArrowLeft, LogOut, User, Save, GitCompare, Check, FileDown, CheckCheck,
+  ArrowLeft, LogOut, User, Save, GitCompare, Check, Download, Printer, CheckCheck,
   X, HelpCircle, ArrowRight, SendHorizonal, CheckCircle, Loader2, Info,
 } from "lucide-react";
 import {
@@ -33,7 +33,8 @@ import type { Temporada } from "../../services/temporadaService";
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
-import { exportToPDF } from "../../utils/exportPDF";
+import { RelatorioSazonalidade, baixarExcelSazonalidade, nomeArquivoSazonalidade, type DadosSazonalidade } from "../../reports/sazonalidadeRelatorio";
+import { emPreviaPdf, imprimirPdf } from "../../reports/RelatorioA4";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip,
   Legend, ResponsiveContainer, ReferenceLine, ComposedChart,
@@ -350,7 +351,6 @@ export default function CycleValidation() {
   const [compareIds, setCompareIds]               = useState<[string, string] | null>(null);
   const [savingName, setSavingName]               = useState("");
   const [showSaveForm, setShowSaveForm]           = useState(false);
-  const [isExportingPDF, setIsExportingPDF]       = useState(false);
 
   // Approval
   const [showPostApplyModal, setShowPostApplyModal]             = useState(false);
@@ -358,6 +358,15 @@ export default function CycleValidation() {
   const [approvalJustification, setApprovalJustification]       = useState("");
   const [isSubmittingApproval, setIsSubmittingApproval]         = useState(false);
   const [alreadyPending, setAlreadyPending]                     = useState(false);
+
+  // Nome da empresa para capa e cabeçalho do relatório — do banco (tenants),
+  // não da sessão (suporte que trocou de cliente pode não ter o nome lá).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "");
+  useEffect(() => {
+    if (!tenantId) return;
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name); });
+  }, [tenantId]);
 
   // ── Initial load ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -857,11 +866,6 @@ export default function CycleValidation() {
     setCompareModal(true);
   };
 
-  const handleExportPDF = async () => {
-    setIsExportingPDF(true);
-    await exportToPDF({ elementId: "cycle-scenarios-pdf", fileName: "cenarios_validacao_ciclo", title: "Cenários — Sazonalidade" });
-    setIsExportingPDF(false);
-  };
 
   const handleApplyMetas = async () => {
     if (appliedScenarioId) return;
@@ -924,9 +928,62 @@ export default function CycleValidation() {
 
   if (!user) return null;
 
+  // ── Relatório (PDF/Excel) — mesmos números da tela ─────────────────────────
+  const empresaRelatorio = nomeEmpresa || "Empresa";
+  const dadosRelatorio: DadosSazonalidade = {
+    empresa: empresaRelatorio,
+    ano: selectedFiscalYear,
+    anoReferencia: referenceYear ?? null,
+    metaReceita: macroMeta.metaReceita,
+    totalReceita: totalPlanned,
+    totalEntrada: totalEntradaGeral,
+    totalCustoEntrada: totalCustoGeral,
+    coberturaMedia: avgCoverage,
+    estoqueColecaoPassada: estoqueColeçãoPassada,
+    custoMedio: avgCost,
+    meses: consolidatedMonths.map(m => ({ nome: m, curto: SHORT_MONTH[m] || m.slice(0, 3) })),
+    canais: canalCalcResults.map(c => ({
+      id: c.canalId,
+      nome: c.canalName,
+      pmv: c.pmv,
+      totalReceita: c.totalReceita,
+      totalEntrada: c.totalEntrada,
+      totalCustoEntrada: c.totalCustoEntrada,
+      meses: c.months.map(m => ({
+        mes: m.month, mesCurto: m.shortMonth, receita: m.receita, anoAnterior: m.prevReceita,
+        pecasVender: m.pecasVender, coberturaMeta: m.coberturaTarget, estoqueInicio: m.estoqueInicio,
+        entrada: m.entrada, estoqueFim: m.estoqueFim, coberturaReal: m.coberturaReal, custoEntrada: m.custoEntrada,
+      })),
+    })),
+    cenarios: scenarios.map(s => ({
+      nome: s.name,
+      aplicado: s.id === appliedScenarioId,
+      salvoEm: s.timestamp,
+      receita: s.totalPlanned,
+      coberturaMedia: Math.round(s.avgCoverage),
+      receitaPorCanal: Object.entries(s.plannedRevenue)
+        .map(([cid, months]) => ({
+          canal: TODOS_CANAIS.find(c => c.id === cid)?.name ?? cid,
+          receita: Object.values(months).reduce((a, b) => a + b, 0),
+        }))
+        .filter(c => c.receita !== 0),
+    })),
+    divisoesEstimadas: divisionParticipationByYear.flatMap(season =>
+      Object.entries(season.participations).map(([divId, pct]) => ({
+        temporada: season.seasonName,
+        divisao: tenantDivisions.find(d => d.id === divId)?.label ?? divId,
+        participacao: pct,
+        receitaEstimada: macroMeta.metaReceita * (pct / 100),
+      })),
+    ),
+  };
+  const previaPdf = emPreviaPdf();
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2]${previaPdf ? " previa-pdf" : ""}`}>
+      <RelatorioSazonalidade dados={dadosRelatorio} />
+      <div className="tela-app">
       {tour.isOpen && <ProductTour steps={CYCLE_VALIDATION_TOUR} onClose={tour.dismiss} />}
 
       {/* ── Topbar ── */}
@@ -1700,9 +1757,17 @@ export default function CycleValidation() {
               <GitCompare className="w-4 h-4" />Comparar
               {scenarios.length >= 2 && <span className="bg-[#7598CF] text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{scenarios.length}</span>}
             </button>
-            <button onClick={handleExportPDF} disabled={isExportingPDF}
+            <button onClick={() => imprimirPdf(nomeArquivoSazonalidade(empresaRelatorio, selectedFiscalYear))}
+              disabled={activeCanals.length === 0}
+              title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
               className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
-              <FileDown className="w-4 h-4" />{isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+              <Printer className="w-4 h-4" />Baixar PDF
+            </button>
+            <button onClick={() => baixarExcelSazonalidade(dadosRelatorio)}
+              disabled={activeCanals.length === 0}
+              title="Planilha .xlsx com resumo, canais, curva mensal, entrada, motor por canal e cenários"
+              className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors">
+              <Download className="w-4 h-4" />Baixar Excel
             </button>
           </div>
           {impactedMacroCV.length === 0 ? (
@@ -1806,42 +1871,6 @@ export default function CycleValidation() {
         </div>
       )}
 
-      {/* ── PDF capture ── */}
-      <div id="cycle-scenarios-pdf" style={{ position:"fixed", left:"-9999px", top:0, zIndex:-1, width:"1120px", padding:"28px", background:"#F2F2F2", fontFamily:"system-ui, sans-serif" }}>
-        <p style={{ fontSize:"13px", fontWeight:700, color:"#28071C", marginBottom:"4px" }}>Sazonalidade</p>
-        <p style={{ fontSize:"11px", color:"#28071C", opacity:0.4, marginBottom:"20px" }}>Comparação de Cenários</p>
-        {scenarios.length === 0 ? (
-          <p style={{ fontSize:"12px", color:"#28071C", opacity:0.5 }}>Nenhum cenário salvo.</p>
-        ) : (
-          <div style={{ display:"flex", flexWrap:"wrap", gap:"14px" }}>
-            {scenarios.map(s => {
-              const isApplied = s.id === appliedScenarioId;
-              const delta     = macroMeta.metaReceita ? s.totalPlanned - macroMeta.metaReceita : 0;
-              const deltaPct  = macroMeta.metaReceita ? ((delta / macroMeta.metaReceita) * 100).toFixed(1) : "—";
-              return (
-                <div key={s.id} style={{ flex:"1 1 220px", minWidth:"200px", maxWidth:"260px", background:"white", borderRadius:"12px", padding:"16px", borderTop:`4px solid ${isApplied ? "#7598CF" : "#28071C"}` }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"12px" }}>
-                    <span style={{ fontSize:"13px", fontWeight:700, color:"#28071C" }}>{s.name}</span>
-                    {isApplied && <span style={{ fontSize:"9px", background:"#7598CF", color:"white", borderRadius:"999px", padding:"2px 6px", fontWeight:700 }}>APLICADO</span>}
-                  </div>
-                  {[
-                    { label:"Receita Total",   val: fmtR(s.totalPlanned) },
-                    { label:"Cobertura Média", val: `${Math.round(s.avgCoverage)} dias` },
-                    { label:"vs Meta",         val: macroMeta.metaReceita ? `${delta >= 0 ? "+" : ""}${deltaPct}%` : "—" },
-                    { label:"Salvo em",        val: s.timestamp },
-                  ].map((row, i) => (
-                    <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px", padding:"5px 0", borderBottom:"1px solid #F2F2F2", fontSize:"11px", color:"#28071C" }}>
-                      <span style={{ opacity:0.5 }}>{row.label}</span>
-                      <span style={{ textAlign:"right", fontWeight:600 }}>{row.val}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
       {/* ── Post-apply modal ── */}
       {showPostApplyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -1903,6 +1932,7 @@ export default function CycleValidation() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

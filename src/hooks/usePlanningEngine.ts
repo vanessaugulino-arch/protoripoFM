@@ -35,6 +35,12 @@ function serializeState(state: PlanningState): SavedScenario['state'] {
   return { ...state, touched: Array.from(state.touched) }
 }
 
+// planning_scenarios guarda também os cenários do M3 (sazonalidade, com
+// plannedRevenue) no mesmo ciclo. Só é cenário do M1 o que tem indicadores.
+function ehCenarioM1(sc: { state?: { values?: unknown } | null }): boolean {
+  return !!sc.state && typeof sc.state.values === 'object' && sc.state.values !== null
+}
+
 function deserializeState(
   saved: SavedScenario['state'],
   baseline: Partial<PlanningValues>
@@ -60,7 +66,7 @@ export function usePlanningEngine(
   const loadLocal = (): SavedScenario[] => {
     try {
       const raw = sessionStorage.getItem(storageKey)
-      return raw ? JSON.parse(raw) : []
+      return raw ? (JSON.parse(raw) as SavedScenario[]).filter(ehCenarioM1) : []
     } catch { return [] }
   }
 
@@ -115,7 +121,7 @@ export function usePlanningEngine(
           version: r.version,
           savedAt: r.created_at,
           state: r.values as SavedScenario['state'],
-        }))
+        })).filter(ehCenarioM1)
 
         setSyncError(null)
         setScenarios(hydrated)

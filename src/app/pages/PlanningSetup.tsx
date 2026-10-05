@@ -365,6 +365,15 @@ export default function PlanningSetup() {
       })),
     ]
 
+    // Relê o ciclo do banco antes de gravar: no modo "novo ciclo" o
+    // existingCycle não é carregado, e gravar versions: [] apagava as versões
+    // já aprovadas do ano (o M2 a M6 leem a receita delas).
+    const tenantParaLer = sessionStorage.getItem("activeTenantId") ?? user?.tenant_id ?? ""
+    if (tenantParaLer) {
+      try { await initPlanCycles(tenantParaLer) } catch { /* segue com o cache */ }
+    }
+    const cicloAtual = getPlanCycle(year) ?? existingCycle
+
     const cycle: AnnualPlanCycle = {
       year,
       mode: isReview ? "review" : "new",
@@ -374,7 +383,7 @@ export default function PlanningSetup() {
         : {}),
       fieldPriorities,
       indicatorPriorities: [],
-      versions: existingCycle?.versions ?? [],
+      versions: cicloAtual?.versions ?? [],
       createdAt: new Date().toISOString(),
       lastModifiedAt: new Date().toISOString(),
     }

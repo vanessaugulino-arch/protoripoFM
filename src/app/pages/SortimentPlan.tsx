@@ -105,7 +105,6 @@ import {
 import {
   getConsolidated,
   computeAndSaveConsolidated,
-  exportConsolidatedCsv,
   getCategoryHistoricalIndicators,
   type ConsolidatedDbRow,
 } from "../../services/supabase/consolidatedHierarchyService";
@@ -146,6 +145,19 @@ import {
   STRATEGIC_FOCUS_COLORS,
 } from "../types/planCycle";
 import type { AnnualPlanCycle } from "../types/planCycle";
+import { emPreviaPdf, imprimirPdf } from "../../reports/RelatorioA4";
+import {
+  RelatorioSortimento,
+  baixarExcelSortimento,
+  calcularCategoriasDivisao,
+  linhasCascata,
+  linhasCascataPorMes,
+  linhasColecoesPorMes,
+  nomeArquivoSortimento,
+  CATEGORY_ROOT_PATH,
+  type CategoriaSortimento,
+  type DadosSortimento,
+} from "../../reports/sortimentoRelatorio";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -350,10 +362,9 @@ function monthLabel(ym: string) {
   return `${months[m]}/${ym.slice(2, 4)}`;
 }
 
-// Sentinel parent_path para tratar CATEGORIAS como irmãs entre si (mesma
-// tabela/mecânica genérica de sortiment_hierarchy_adjustments usada para
-// subcategoria dentro de categoria e linha dentro de subcategoria).
-const CATEGORY_ROOT_PATH = "__categorias__";
+// CATEGORY_ROOT_PATH (parent_path sentinela para tratar CATEGORIAS como irmãs
+// entre si em sortiment_hierarchy_adjustments) vem de reports/sortimentoRelatorio,
+// que usa a mesma conta para o relatório de todas as divisões.
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 
@@ -718,101 +729,6 @@ export default function SortimentPlan() {
     if (user?.tenant_id) {
       deletePlanScenario(user.tenant_id, id).catch(() => { /* silent */ });
     }
-  };
-
-  const exportPDF = () => window.print();
-
-  // Exportação mensal estruturada — antes o único "export" do M6 era
-  // window.print() (uma imagem da tela, não dado estruturado). Usa a única
-  // granularidade mensal que o M6 realmente tem: as datas de entrada das
-  // collections/drops de cada divisão — o modelo de grade categoria×faixa não
-  // tem (e nunca teve) dimensão de mês.
-  const exportCollectionsCsv = () => {
-    const header = ["Divisão", "Coleção/Drop", "Tipo", "Data de Entrada", "Mês", "% Receita da Divisão", "Receita Estimada (R$)"];
-    const lines: string[] = [];
-    for (const div of divisions) {
-      for (const col of div.collections) {
-        const revenue = colRevenue(div, col);
-        const entryRows = col.entries.length > 0 ? col.entries : [{ date: "", label: "" }];
-        for (const entry of entryRows) {
-          const monthName = entry.date ? MONTHS[new Date(`${entry.date}T00:00:00`).getMonth()] : "";
-          lines.push([
-            div.name,
-            col.name,
-            col.type === "colecao" ? "Coleção" : "Drop",
-            entry.date || "",
-            monthName,
-            col.revenuePct.toFixed(1),
-            revenue.toFixed(2),
-          ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
-        }
-      }
-    }
-    const csv = [header.map(h => `"${h}"`).join(";"), ...lines].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `sortimento_colecoes_por_mes_${seasonId ?? ""}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
-  const exportCascadeCsv = () => {
-    if (!user?.tenant_id || !seasonId) return;
-    exportConsolidatedCsv(user.tenant_id, seasonId).catch(() => {});
-  };
-
-  // Cascata por mês — fecha o gap "M6 não tem dimensão de mês na própria
-  // grade": a grade categoria×subcategoria×linha×faixa em si (e a tabela que
-  // a alimenta, division_hierarchy_consolidated) segue sem coluna de mês —
-  // mudar isso multiplicaria o número de linhas por 12 pra um dado que já é
-  // estimado. Em vez disso, deriva o mês combinando dois dados reais que já
-  // existem: a receita já calculada por categoria/faixa (consolidatedRows) e
-  // a distribuição real por mês das collections/drops de cada divisão (a
-  // mesma que já embasa "Coleções por Mês"). Pressupõe que o mix de
-  // categoria/faixa não muda mês a mês dentro da divisão — mesmo nível de
-  // aproximação já usado em todo o resto da cascata do M6.
-  const exportCascadeByMonthCsv = () => {
-    const header = ["Divisão", "Categoria", "Subcategoria", "Linha", "Faixa de Preço", "Mês", "Receita Estimada (R$)"];
-    const lines: string[] = [];
-    for (const div of divisions) {
-      const monthShare: Record<string, number> = {}; // "YYYY-MM" -> % da receita da divisão
-      for (const col of div.collections) {
-        if (col.entries.length === 0) continue;
-        const perEntryPct = col.revenuePct / col.entries.length;
-        for (const entry of col.entries) {
-          if (!entry.date) continue;
-          const ym = entry.date.slice(0, 7);
-          monthShare[ym] = (monthShare[ym] ?? 0) + perEntryPct;
-        }
-      }
-      const months = Object.entries(monthShare);
-      const divRows = consolidatedRows.filter(r => r.divisionId === div.id);
-      for (const row of divRows) {
-        const targets = months.length > 0 ? months : [["(sem mês definido)", 100]] as [string, number][];
-        for (const [ym, pct] of targets) {
-          const monthRevenue = row.revenueEstimate * (pct / 100);
-          if (monthRevenue <= 0) continue;
-          lines.push([
-            div.name, row.category, row.subcategory, row.linha, row.priceTier.toUpperCase(),
-            ym, monthRevenue.toFixed(2),
-          ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
-        }
-      }
-    }
-    const csv = [header.map(h => `"${h}"`).join(";"), ...lines].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `sortimento_cascata_por_mes_${seasonId ?? ""}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
   };
 
   // ── Solicitar ajuste ao Módulo 4 (Sortimento → Divisão) ─────────────────────
@@ -1215,6 +1131,136 @@ export default function SortimentPlan() {
     };
   }, [divisions, macroPlan]);
 
+  // ── Relatório (PDF A4 + Excel) — todas as divisões ─────────────────────────
+  // A tela mostra uma divisão por vez; o relatório cobre todas. A divisão
+  // ativa usa o estado ao vivo da tela; as outras são calculadas sob demanda
+  // com os mesmos serviços (somente leitura) e a mesma conta
+  // (calcularCategoriasDivisao).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "");
+  useEffect(() => {
+    if (!user?.tenant_id) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from("tenants").select("name").eq("id", user.tenant_id).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name); });
+  }, [user?.tenant_id]);
+
+  /** Categorias por divisão carregadas para o relatório (id da divisão → linhas). */
+  const [categoriasRelatorio, setCategoriasRelatorio] = useState<Map<string, CategoriaSortimento[]>>(new Map());
+  const [carregandoRelatorio, setCarregandoRelatorio] = useState(false);
+  const [imprimirPendente, setImprimirPendente] = useState(false);
+  const [excelPendente, setExcelPendente] = useState(false);
+  const previaPdf = emPreviaPdf();
+
+  const carregarCategoriasRelatorio = async () => {
+    if (!seasonId || !user?.tenant_id) return;
+    const tid = user.tenant_id;
+    const entradas = await Promise.all(divisions.map(async d => {
+      const cascata = consolidatedRows.filter(r => r.divisionId === d.id);
+      // Mesma ordem e mesma receita por categoria que o cascadeTree da tela.
+      const porCategoria = new Map<string, number>();
+      for (const r of cascata) porCategoria.set(r.category, (porCategoria.get(r.category) ?? 0) + r.revenueEstimate);
+      const receitas = new Map([...porCategoria.entries()].sort((x, y) => y[1] - x[1]));
+      if (receitas.size === 0) return [d.id, [] as CategoriaSortimento[]] as const;
+      const [grids, ajustes, indicadores] = await Promise.all([
+        computeCategoryGrids(tid, seasonId, d.id, receitas, d.pricePyramid),
+        getHierarchyAdjustments(tid, seasonId, d.id),
+        getCategoryIndicators(tid, seasonId, d.id),
+      ]);
+      return [d.id, calcularCategoriasDivisao({ divisao: d, grids, cascata, ajustesHierarquia: ajustes, indicadores })] as const;
+    }));
+    setCategoriasRelatorio(new Map(entradas));
+  };
+
+  // Na pré-visualização (?pdf=1) o relatório precisa das outras divisões já.
+  useEffect(() => {
+    if (!previaPdf || !seasonId || !user?.tenant_id || consolidatedRows.length === 0) return;
+    carregarCategoriasRelatorio().catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previaPdf, seasonId, user?.tenant_id, consolidatedRows, divisions.length]);
+
+  /** Divisão ativa: estado ao vivo da tela (inclui edições ainda na tela). */
+  const categoriasDivisaoAtiva = useMemo(
+    () => activeDivision
+      ? calcularCategoriasDivisao({
+          divisao: activeDivision,
+          grids: categoryGrids,
+          cascata: cascadeForActiveDivision,
+          ajustesHierarquia: hierarchyOverrides,
+          indicadores: categoryIndicatorOverrides,
+        })
+      : [],
+    [activeDivision, categoryGrids, cascadeForActiveDivision, hierarchyOverrides, categoryIndicatorOverrides],
+  );
+
+  const temporadaAtual = temporadas.find(t => t.id === seasonId) ?? null;
+  // Memo: o relatório fica montado (escondido) na página; sem isto a cascata
+  // por mês seria recalculada a cada tecla digitada na tela.
+  const dadosRelatorio = useMemo<DadosSortimento | null>(() => seasonId ? {
+    empresa: nomeEmpresa || "Empresa",
+    temporada: temporadaAtual?.nome ?? "Temporada",
+    anoFiscal: temporadaAtual?.anoFiscal ?? null,
+    kpis: {
+      receitaTemporada: topbarKpis.macroRec,
+      margemAlvoPct: topbarKpis.macroMgm,
+      orcamento: topbarKpis.macroOrcamento,
+      sellThroughPct: topbarKpis.sellThrough,
+      pmv: topbarKpis.macroPmv ?? (topbarKpis.allocPieces > 0 ? topbarKpis.allocRevenue / topbarKpis.allocPieces : null),
+      pecasPlanejadas: topbarKpis.allocPieces,
+      pecasOrcamentoAlvo: topbarKpis.orcamentoPecasAlvo,
+      pecasRestantes: topbarKpis.orcamentoPecasRestantes,
+    },
+    divisoes: divisions.map(d => ({
+      id: d.id,
+      nome: d.name,
+      receitaAlvo: d.revenueTarget,
+      participacaoPct: d.participationPct,
+      margemAlvoPct: d.targetMarginPct,
+      mkdAlvoPct: d.targetMkdPct,
+      pmv: pmvDaPiramide([d.avgPriceP1, d.avgPriceP2, d.avgPriceP3], [d.pricePyramid.p1, d.pricePyramid.p2, d.pricePyramid.p3]),
+      piramide: d.pricePyramid,
+      precos: { p1: d.avgPriceP1, p2: d.avgPriceP2, p3: d.avgPriceP3 },
+      categorias: d.id === activeDivId && !gridsLoading
+        ? categoriasDivisaoAtiva
+        : categoriasRelatorio.get(d.id) ?? null,
+    })),
+    colecoesPorMes: linhasColecoesPorMes(divisions),
+    cascata: linhasCascata(divisions, consolidatedRows),
+    cascataPorMes: linhasCascataPorMes(divisions, consolidatedRows),
+  } : null, [
+    seasonId, nomeEmpresa, temporadaAtual, topbarKpis, divisions, activeDivId, gridsLoading,
+    categoriasDivisaoAtiva, categoriasRelatorio, consolidatedRows,
+  ]);
+
+  // Imprime depois que o relatório re-renderizou com as divisões carregadas.
+  useEffect(() => {
+    if (!imprimirPendente || !dadosRelatorio) return;
+    setImprimirPendente(false);
+    imprimirPdf(nomeArquivoSortimento(dadosRelatorio));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imprimirPendente]);
+
+  const exportarPdf = async () => {
+    if (!dadosRelatorio || carregandoRelatorio) return;
+    setCarregandoRelatorio(true);
+    try { await carregarCategoriasRelatorio(); } catch { /* segue com o que já tem */ }
+    setCarregandoRelatorio(false);
+    setImprimirPendente(true);
+  };
+
+  const exportarExcel = async () => {
+    if (!dadosRelatorio || carregandoRelatorio) return;
+    setCarregandoRelatorio(true);
+    try { await carregarCategoriasRelatorio(); } catch { /* segue com o que já tem */ }
+    setCarregandoRelatorio(false);
+    setExcelPendente(true);
+  };
+  useEffect(() => {
+    if (!excelPendente || !dadosRelatorio) return;
+    setExcelPendente(false);
+    baixarExcelSortimento(dadosRelatorio);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [excelPendente]);
+
   // ── Update helpers ───────────────────────────────────────────────────────────
 
   const updateCollection = (
@@ -1365,7 +1411,9 @@ export default function SortimentPlan() {
   // ─── RENDER ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2] print:bg-white${previaPdf ? " previa-pdf" : ""}`}>
+      {dadosRelatorio && <RelatorioSortimento dados={dadosRelatorio} />}
+      <div className="tela-app">
 
       {tour.isOpen && !showSeasonPicker && !showM5PlanPicker && (
         <ProductTour steps={SORTIMENT_TOUR} onClose={tour.dismiss} />
@@ -1463,15 +1511,14 @@ export default function SortimentPlan() {
                   onMouseLeave={() => setShowExportMenu(false)}
                 >
                   {[
-                    { label: "PDF desta tela", hint: "Visão atual da divisão", run: exportPDF },
-                    { label: "Coleções por mês (CSV)", hint: "Coleção/drop, entrada e % de receita", run: exportCollectionsCsv },
-                    { label: "Cascata (CSV)", hint: "Categoria → linha × faixa e risco", run: exportCascadeCsv },
-                    { label: "Cascata por mês (CSV)", hint: "Cascata distribuída pelos meses de entrada", run: exportCascadeByMonthCsv },
+                    { label: "Relatório PDF", hint: "A4 com todas as divisões — escolha “Salvar como PDF”", run: exportarPdf },
+                    { label: "Excel (.xlsx)", hint: "Categorias, coleções por mês, cascata e cascata por mês", run: exportarExcel },
                   ].map(opt => (
                     <button
                       key={opt.label}
                       onClick={() => { setShowExportMenu(false); opt.run(); }}
-                      className="w-full text-left px-3 py-2 hover:bg-[#28071C]/5"
+                      disabled={!dadosRelatorio || carregandoRelatorio}
+                      className="w-full text-left px-3 py-2 hover:bg-[#28071C]/5 disabled:opacity-40 disabled:cursor-wait"
                     >
                       <span className="block text-xs font-semibold text-[#28071C]">{opt.label}</span>
                       <span className="block text-[10px] text-[#28071C]/50">{opt.hint}</span>
@@ -2385,11 +2432,13 @@ export default function SortimentPlan() {
                 )}
               </button>
               <button
-                onClick={exportPDF}
-                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 transition-colors"
+                onClick={exportarPdf}
+                disabled={!dadosRelatorio || carregandoRelatorio}
+                title="Relatório em A4 com todas as divisões — escolha “Salvar como PDF” na janela de impressão"
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-40 disabled:cursor-wait transition-colors"
               >
                 <FileDown className="w-4 h-4" />
-                Exportar PDF
+                {carregandoRelatorio ? "Preparando relatório…" : "Relatório PDF"}
               </button>
               <button
                 onClick={() => setShowRequestM3Modal(true)}
@@ -3045,6 +3094,7 @@ export default function SortimentPlan() {
         );
       })()}
 
+      </div>
     </div>
   );
 }

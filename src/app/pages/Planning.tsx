@@ -9,7 +9,7 @@ import {
   ArrowLeft, LogOut, User, Save, Download, CheckCircle,
   ArrowUp, ArrowDown, ChevronDown, Lock, TrendingUp, TrendingDown,
   Minus, Star, RotateCcw, Settings, GitCompare, CheckCheck, X, Info,
-  ToggleLeft, ToggleRight, FileDown, HelpCircle, ArrowRight,
+  ToggleLeft, ToggleRight, Printer, HelpCircle, ArrowRight,
 } from "lucide-react";
 import {
   getPendingApprovalsForUser,
@@ -27,7 +27,9 @@ import { applyCollectionPlanScenario } from '../../services/supabase/collectionP
 import { ProductTour, type TourStep } from "../components/ProductTour";
 import { PlanObservationCard } from "../components/PlanObservationCard";
 import { useTour } from "../hooks/useTour";
-import { exportToPDF } from '../../utils/exportPDF';
+import { RelatorioPlanejamentoMacro, baixarExcelPlanejamentoMacro, FORMATO_INDICADOR_M1, type DadosPlanejamentoMacro } from '../../reports/planejamentoMacroRelatorio';
+import { emPreviaPdf, imprimirPdf } from '../../reports/RelatorioA4';
+import { nomeArquivo } from '../../reports/xlsxReport';
 import { isOnboardingComplete } from '../types/onboarding'
 import { useOnboardingProfile } from '../../hooks/useOnboardingProfile'
 import { getActiveIndicators, INDICATOR_META } from '../utils/indicatorRules'
@@ -227,6 +229,16 @@ export default function Planning() {
 
   const [user,               setUser]               = useState<UserData | null>(null)
   const [tenantId,           setTenantId]           = useState<string>("")
+
+  // Nome da empresa para capa e cabeçalho do relatório — do banco, não da
+  // sessão (que pode não ter o nome, ex.: suporte que trocou de cliente).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "")
+  useEffect(() => {
+    if (!tenantId) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name) })
+  }, [tenantId])
   const [isAccordionOpen,    setIsAccordionOpen]    = useState(false)
   const [selectedHistorical, setSelectedHistorical] = useState("2025")
 
@@ -588,18 +600,6 @@ export default function Planning() {
     }
   }
 
-  const [isExportingPDF, setIsExportingPDF] = useState(false)
-
-  const handleExportPDF = async () => {
-    setIsExportingPDF(true)
-    await exportToPDF({
-      elementId: "planning-scenarios-pdf",
-      fileName:  `cenarios_planejamento_${year}`,
-      title:     `Comparação de Cenários — Planejamento Estratégico ${year}`,
-    })
-    setIsExportingPDF(false)
-  }
-
   const handleExportScenarios = () => {
     if (scenarios.length === 0) {
       alert("Nenhum cenário salvo para exportar. Salve ao menos um cenário primeiro.")
@@ -729,8 +729,51 @@ export default function Planning() {
     return val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
+  // ─── Relatório (PDF/Excel) — mesmos números da tela ──────────────────────
+  const CAMPO_ESTIMADO: Record<string, IndicadorHistorico> = {
+    margemBruta: "margemBruta", orcamento: "orcamento", custoMedio: "custoMedio", estoqueMediao: "estoqueMedioRS",
+    giro: "giro", cobertura: "cobertura", gmroi: "gmroi", ticketMedio: "ticketMedio",
+  }
+  const empresaRelatorio = nomeEmpresa || "Empresa"
+  const dadosRelatorio: DadosPlanejamentoMacro = {
+    empresa: empresaRelatorio,
+    ano: year,
+    anoReferencia: selectedHistorical,
+    dadosReais: histIsReal,
+    foco: focusDisplayLabel,
+    cenarioAtivo: activeScenario?.name ?? null,
+    temProjecao: !!projection,
+    linhas: allPlanRows.map((row, i) => {
+      const campo = CAMPO_ESTIMADO[row.key]
+      return {
+        chave: row.key,
+        rotulo: row.label,
+        formato: FORMATO_INDICADOR_M1[row.key] ?? "brl",
+        plano: row.plan ?? null,
+        projecao: projection?.[row.key] ?? null,
+        referencia: row.ref ?? null,
+        // Mesma conta da coluna "vs Ref." (calcVar); sem referência fica "—"
+        // em vez do "+0,0%" que a tela mostra.
+        variacaoPct: row.plan != null && row.ref ? calcVar(row.plan, row.ref) : null,
+        selecionado: i < planSplitAt,
+        notaReferencia: campo && histSel.estimados?.length ? notaEstimado({ estimados: histSel.estimados }, campo) : null,
+      }
+    }),
+    cenarios: scenarios.map(sc => ({
+      nome: sc.name,
+      ativo: activeScenario?.name === sc.name,
+      valores: Object.fromEntries(allPlanRows.map(row => [
+        row.key,
+        (sc.state?.values?.[row.key as import("@/engine/planningEngine").FieldKey] ?? null) as number | null,
+      ])),
+    })),
+  }
+  const previaPdf = emPreviaPdf()
+
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2]">
+    <div className={`min-h-screen w-full bg-[#F2F2F2]${previaPdf ? " previa-pdf" : ""}`}>
+      <RelatorioPlanejamentoMacro dados={dadosRelatorio} />
+      <div className="tela-app">
 
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg">
@@ -1305,15 +1348,24 @@ export default function Planning() {
                 )}
               </button>
 
-              {/* Exportar PDF */}
+              {/* Baixar PDF (relatório A4 pela impressão do navegador) */}
               <button
-                onClick={handleExportPDF}
-                disabled={isExportingPDF}
-                title="Exportar visualização atual como PDF"
+                onClick={() => imprimirPdf(nomeArquivo("planejamento_estrategico", empresaRelatorio, year))}
+                title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
                 className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
               >
-                <FileDown className="w-4 h-4" />
-                {isExportingPDF ? "Gerando PDF…" : "Exportar PDF"}
+                <Printer className="w-4 h-4" />
+                Baixar PDF
+              </button>
+
+              {/* Baixar Excel */}
+              <button
+                onClick={() => baixarExcelPlanejamentoMacro(dadosRelatorio)}
+                title="Planilha .xlsx com o cenário consolidado e a comparação de cenários"
+                className="flex items-center gap-2 px-5 py-2.5 border border-[#28071C]/15 text-[#28071C]/60 rounded-xl text-sm hover:bg-white/60 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Baixar Excel
               </button>
             </div>
 
@@ -1423,7 +1475,7 @@ export default function Planning() {
                     <tr key={i} className="border-t border-[#28071C]/5 hover:bg-[#7598CF]/4 transition-colors">
                       <td className="py-2.5 pr-4 text-[#28071C]/60">{row.label}</td>
                       {scenarios.map(sc => {
-                        const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
+                        const val = sc.state?.values?.[row.key as import("@/engine/planningEngine").FieldKey] ?? null
                         return (
                           <td key={sc.name} className={`py-2.5 px-3 text-right font-mono font-semibold ${activeScenario?.name === sc.name ? "text-[#7598CF]" : "text-[#28071C]"}`}>
                             {fmtPlan(row.label, val as number | null)}
@@ -1438,48 +1490,6 @@ export default function Planning() {
           </div>
         </div>
       )}
-
-      {/* ── PDF: Comparação de Cenários (capturado pelo html2canvas) ─────────── */}
-      <div
-        id="planning-scenarios-pdf"
-        style={{ position: 'fixed', left: '-9999px', top: 0, zIndex: -1, width: '1120px', padding: '28px', background: '#F2F2F2', fontFamily: 'system-ui, sans-serif' }}
-      >
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#28071C', marginBottom: '4px' }}>
-          Planejamento Estratégico {year}
-        </p>
-        <p style={{ fontSize: '11px', color: '#28071C', opacity: 0.4, marginBottom: '20px' }}>
-          Comparação de Cenários
-        </p>
-        {scenarios.length === 0 ? (
-          <p style={{ fontSize: '12px', color: '#28071C', opacity: 0.5 }}>Nenhum cenário salvo.</p>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
-            {scenarios.map(sc => (
-              <div key={sc.name} style={{ flex: '1 1 200px', minWidth: '180px', maxWidth: '240px', background: 'white', borderRadius: '12px', padding: '14px', borderTop: `4px solid ${activeScenario?.name === sc.name ? '#7598CF' : '#28071C'}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#28071C' }}>{sc.name}</span>
-                  {activeScenario?.name === sc.name && <span style={{ fontSize: '9px', background: '#7598CF', color: 'white', borderRadius: '999px', padding: '2px 6px', fontWeight: 700 }}>ATIVO</span>}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '4px 0', fontSize: '9px', fontWeight: 700, color: 'rgba(40,7,28,0.4)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #F2F2F2' }}>
-                  <span>Indicador</span><span style={{ textAlign: 'center' }}>Plano</span><span style={{ textAlign: 'right' }}>vs Referência</span>
-                </div>
-                {allPlanRows.slice(0, 8).map((row, i) => {
-                  const val = sc.state.values[row.key as import("@/engine/planningEngine").FieldKey] ?? null
-                  const refVal = row.ref ?? null
-                  const delta = (val != null && refVal != null && refVal !== 0) ? (((val as number) - (refVal as number)) / Math.abs(refVal as number) * 100).toFixed(1) : null
-                  return (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '5px 0', borderBottom: '1px solid #F2F2F2', fontSize: '10px', color: '#28071C' }}>
-                      <span style={{ opacity: 0.6 }}>{row.label}</span>
-                      <span style={{ textAlign: 'center', fontWeight: 600 }}>{fmtPlan(row.label, val as number | null)}</span>
-                      <span style={{ textAlign: 'right', opacity: 0.5 }}>{delta != null ? `${+delta > 0 ? '+' : ''}${delta}%` : '—'}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* ── POST-APPLY MODAL ─────────────────────────────────────────────────── */}
       {showPostApplyModal && (
@@ -1601,6 +1611,7 @@ export default function Planning() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
