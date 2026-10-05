@@ -107,6 +107,9 @@ export interface SalesMonthlyAggregate {
   discountSum: number
   priceSaleQtySum: number
   receiptCount: number
+  /** Receita das vendas com produto de custo conhecido: denominador certo da
+   *  margem. null = banco sem a coluna (anterior à 0043 da base única). */
+  revenueNetMatched: number | null
 }
 
 export async function getSalesMonthlyAggregates(tenantId: string): Promise<SalesMonthlyAggregate[]> {
@@ -129,6 +132,7 @@ export async function getSalesMonthlyAggregates(tenantId: string): Promise<Sales
     discountSum:        Number(r.discount_sum) || 0,
     priceSaleQtySum:    Number(r.price_sale_qty_sum) || 0,
     receiptCount:       Number(r.receipt_count) || 0,
+    revenueNetMatched:  r.revenue_net_matched == null ? null : Number(r.revenue_net_matched) || 0,
   }))
 }
 
@@ -175,7 +179,7 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
   // ─── Acumuladores por canal M2 ─────────────────────────────────────────────
   type CanalAcc = {
     receita: number; pecas: number;
-    sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number
+    sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number; wMargin: number
     sumDiscount: number; sumPriceSaleQty: number; receiptCount: number
   }
   const canalAcc = new Map<string, CanalAcc>()
@@ -183,7 +187,7 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
   // ─── Acumuladores por divisão ─────────────────────────────────────────────
   type DivAcc = {
     label: string; receita: number; pecas: number;
-    sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number
+    sumPmvW: number; sumCostW: number; sumMarginW: number; wTotal: number; wMargin: number
     sumDiscount: number; sumPriceSaleQty: number; receiptCount: number
   }
   const divAcc = new Map<string, DivAcc>()
@@ -203,7 +207,7 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
     // ── Canal M2 ──────────────────────────────────────────────────────────────
     if (m2) {
       const acc = canalAcc.get(m2) ?? {
-        receita: 0, pecas: 0, sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0,
+        receita: 0, pecas: 0, sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0, wMargin: 0,
         sumDiscount: 0, sumPriceSaleQty: 0, receiptCount: 0,
       }
       acc.receita         += receita
@@ -212,6 +216,8 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
       acc.sumCostW        += row.costWeightedSum
       acc.sumMarginW      += row.marginWeightedSum
       acc.wTotal          += receita
+      // Margem divide só pela receita que tem custo; venda sem custo não é margem zero.
+      acc.wMargin         += row.revenueNetMatched ?? receita
       acc.sumDiscount     += row.discountSum
       acc.sumPriceSaleQty += row.priceSaleQtySum
       acc.receiptCount    += row.receiptCount
@@ -223,7 +229,7 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
       const divId = normalizeDivision(row.division)
       const acc   = divAcc.get(divId) ?? {
         label: row.division, receita: 0, pecas: 0,
-        sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0,
+        sumPmvW: 0, sumCostW: 0, sumMarginW: 0, wTotal: 0, wMargin: 0,
         sumDiscount: 0, sumPriceSaleQty: 0, receiptCount: 0,
       }
       acc.receita         += receita
@@ -232,6 +238,8 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
       acc.sumCostW        += row.costWeightedSum
       acc.sumMarginW      += row.marginWeightedSum
       acc.wTotal          += receita
+      // Margem divide só pela receita que tem custo; venda sem custo não é margem zero.
+      acc.wMargin         += row.revenueNetMatched ?? receita
       acc.sumDiscount     += row.discountSum
       acc.sumPriceSaleQty += row.priceSaleQtySum
       acc.receiptCount    += row.receiptCount
@@ -247,8 +255,8 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
     pctReceita:    Math.round((acc.receita / totalReceita) * 1000) / 10,
     pctPecas:      totalPecas > 0 ? Math.round((acc.pecas / totalPecas) * 1000) / 10 : 0,
     avgPmv:        acc.wTotal > 0 ? Math.round(acc.sumPmvW  / acc.wTotal) : 0,
-    avgCost:       acc.wTotal > 0 ? Math.round(acc.sumCostW / acc.wTotal) : 0,
-    avgMargin:     acc.wTotal > 0 ? Math.round((acc.sumMarginW / acc.wTotal) * 10) / 10 : 0,
+    avgCost:       acc.wMargin > 0 ? Math.round(acc.sumCostW / acc.wMargin) : 0,
+    avgMargin:     acc.wMargin > 0 ? Math.round((acc.sumMarginW / acc.wMargin) * 10) / 10 : 0,
     avgMkdPct:     acc.sumPriceSaleQty > 0 ? Math.round((acc.sumDiscount / acc.sumPriceSaleQty) * 1000) / 10 : null,
     markdownTotal: acc.sumDiscount,
     ticketMedio:   acc.receiptCount > 0 ? Math.round((acc.receita / acc.receiptCount) * 100) / 100 : null,
@@ -263,8 +271,8 @@ export async function getHistoricalProfiles(tenantId: string, referenceYear?: nu
     pctReceita:    Math.round((acc.receita / totalReceita) * 1000) / 10,
     pctPecas:      totalPecas > 0 ? Math.round((acc.pecas / totalPecas) * 1000) / 10 : 0,
     avgPmv:        acc.wTotal > 0 ? Math.round(acc.sumPmvW    / acc.wTotal) : 0,
-    avgCost:       acc.wTotal > 0 ? Math.round(acc.sumCostW   / acc.wTotal) : 0,
-    avgMargin:     acc.wTotal > 0 ? Math.round((acc.sumMarginW / acc.wTotal) * 10) / 10 : 0,
+    avgCost:       acc.wMargin > 0 ? Math.round(acc.sumCostW   / acc.wMargin) : 0,
+    avgMargin:     acc.wMargin > 0 ? Math.round((acc.sumMarginW / acc.wMargin) * 10) / 10 : 0,
     avgMkdPct:     acc.sumPriceSaleQty > 0 ? Math.round((acc.sumDiscount / acc.sumPriceSaleQty) * 1000) / 10 : null,
     ticketMedio:   acc.receiptCount > 0 ? Math.round((acc.receita / acc.receiptCount) * 100) / 100 : null,
     totalReceita:  acc.receita,
