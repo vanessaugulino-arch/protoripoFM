@@ -1,4 +1,5 @@
 // src/app/pages/Planning.tsx — v5 (3-column layout)
+import { historicalYearFromSummary, notaEstimado, type IndicadorHistorico } from '../../engine/historicalYear'
 import { useEffect, useState, useMemo, useRef } from "react";
 import { supabase } from '../../lib/supabase';
 import { useNavigate, useLocation } from "react-router";
@@ -81,6 +82,8 @@ interface HistoricalData {
   orcamento: number; estoqueMedioRS: number; estoqueMedioPecas: number;
   giro: number; cobertura: number; markdown: number; producao: number; gmroi: number;
   ticketMedio: number;
+  /** Indicadores sem dado real no ano (engine/historicalYear). */
+  estimados?: IndicadorHistorico[];
 }
 
 // Fallback (demo) — substituído por dados reais do Supabase após login
@@ -95,6 +98,13 @@ const HIST_FALLBACK: HistoricalData[] = [
     estoqueMedioRS: 680000, estoqueMedioPecas: 4387, giro: 4.19, cobertura: 72,
     markdown: 142500, producao: 18387, gmroi: 1.77, ticketMedio: 320 },
 ]
+
+/** Acrescenta à ajuda do campo o aviso de valor estimado, quando for o caso. */
+function comNotaEstimado(texto: string, ano: HistoricalData | undefined, campo: string): string {
+  if (!ano?.estimados?.length) return texto
+  const nota = notaEstimado({ ...ano, estimados: ano.estimados, receitaComCustoPct: null }, campo as IndicadorHistorico)
+  return nota ? `${texto} (${nota})` : texto
+}
 
 const CUSTO_MEDIO_DEFAULT = 85 // fallback: custo estimado por peça
 
@@ -380,38 +390,10 @@ export default function Planning() {
       .then(({ data, error }: { data: unknown; error: unknown }) => {
         const rows = Array.isArray(data) ? data : []
         if (error || rows.length === 0) return
-        const MARGEM_BRUTA = 40.0 // % — estimativa padrão quando custo não disponível
+        // Dado real quando existe; o que faltar vem marcado em `estimados`
+        // e a ajuda do campo avisa (engine/historicalYear).
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const built: HistoricalData[] = rows.map((row: any) => {
-          const receita           = Number(row.receita)
-          const pmv               = Number(row.pmv)
-          const markdown          = Number(row.markdown)
-          const producao          = Number(row.producao)
-          const ticketMedio       = Math.round(Number(row.ticket_medio))
-          const estoqueMedioPecas = Number(row.estoque_medio_pecas)
-          // Estoque médio RS estimado via preço unitário médio de venda
-          const estoqueMedioRS  = Math.round(estoqueMedioPecas * pmv)
-          const giro            = estoqueMedioRS > 0
-            ? +( receita / estoqueMedioRS ).toFixed(2)
-            : 4.0
-          const cobertura       = giro > 0 ? Math.round(365 / giro) : 90
-          const gmroi           = +( (MARGEM_BRUTA / 100) * giro ).toFixed(2)
-          return {
-            year:              row.year,
-            receita,
-            margemBruta:       MARGEM_BRUTA,
-            pmv,
-            orcamento:         Math.round(receita * 0.40),
-            estoqueMedioRS,
-            estoqueMedioPecas,
-            giro,
-            cobertura,
-            markdown,
-            producao,
-            gmroi,
-            ticketMedio,
-          }
-        })
+        const built: HistoricalData[] = rows.map((row: any) => historicalYearFromSummary(row))
         setHistoricalDatabase(built)
         setHistIsReal(true)
         // Garante que o ano selecionado existe nos dados reais
@@ -1039,7 +1021,7 @@ export default function Planning() {
                               value={f.getValue(v)}
                               state={f.getState(s) as import("@/engine/planningEngine").FieldState}
                               format={f.format}
-                              helpText={f.getHelp(referenceYear, histRef, baseline)}
+                              helpText={comNotaEstimado(f.getHelp(referenceYear, histRef, baseline), histRef, f.key)}
                               onEdit={isReceita ? setFieldAsBase : setField}
                               onUnlock={unlock}
                               highlightCalc={!!f.isCalc}
@@ -1073,7 +1055,7 @@ export default function Planning() {
                       value={f.getValue(v)}
                       state="calculated"
                       format={f.format}
-                      helpText={f.getHelp(referenceYear, histRef, baseline)}
+                      helpText={comNotaEstimado(f.getHelp(referenceYear, histRef, baseline), histRef, f.key)}
                       onEdit={setField}
                       onUnlock={unlock}
                     />

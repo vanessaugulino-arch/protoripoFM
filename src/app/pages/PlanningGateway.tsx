@@ -1,3 +1,4 @@
+import { historicalYearFromSummary, PADROES_SEM_DADO, type HistoricalSummaryRow } from '../../engine/historicalYear'
 import { useEffect, useState, useMemo, useRef } from "react"
 import { useNavigate } from "react-router"
 import { supabase } from "../../lib/supabase"
@@ -60,8 +61,8 @@ function AccTooltip({ text }: { text: string }) {
   )
 }
 
-// Estimativa de margem bruta quando custo não está disponível no banco
-const MARGEM_EST = 40.0
+// Margem usada só quando nenhuma venda tem produto com custo (ver engine/historicalYear)
+const MARGEM_EST = PADROES_SEM_DADO.margemBruta
 
 function delta(actual: number, ref: number, higherIsBetter = true) {
   const pct = ((actual - ref) / Math.abs(ref)) * 100
@@ -84,8 +85,8 @@ export default function PlanningGateway() {
   const progressLabel = formatYearProgress(cycleState)
 
   // ── Dados históricos reais do Supabase (substituem constantes mock) ──────────
-  interface RawHistRow { receita: number; pmv: number; estoque_medio_pecas: number }
-  interface HistMetrics { receita: number; margemBruta: number; pmv: number; orcamento: number; giro: number; gmroi: number }
+  type RawHistRow = HistoricalSummaryRow
+  interface HistMetrics { receita: number; margemBruta: number; pmv: number; orcamento: number; giro: number; gmroi: number; margemEstimada: boolean }
   const [histData, setHistData] = useState<{
     cy: RawHistRow | null
     py: RawHistRow | null
@@ -121,11 +122,7 @@ export default function PlanningGateway() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const find = (yr: number) => (data as any[]).find(r => Number(r.year) === yr) ?? null
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mapRow = (r: any): RawHistRow | null => r ? {
-          receita:              Number(r.receita),
-          pmv:                  Number(r.pmv),
-          estoque_medio_pecas:  Number(r.estoque_medio_pecas),
-        } : null
+        const mapRow = (r: any): RawHistRow | null => r ?? null
         setHistData({
           cy:     mapRow(find(cycleState.currentCalendarYear)),
           py:     mapRow(find(cycleState.currentCalendarYear - 1)),
@@ -155,17 +152,18 @@ export default function PlanningGateway() {
 
   const buildMetrics = (row: RawHistRow | null): HistMetrics | null => {
     if (!row) return null
-    const { receita, pmv, estoque_medio_pecas } = row
-    const estRS  = estoque_medio_pecas * pmv
-    const giro   = estRS > 0 ? +( receita / estRS ).toFixed(2) : 0
-    const gmroi  = +( (MARGEM_EST / 100) * giro ).toFixed(2)
+    // Mesma conta do M1 (engine/historicalYear): dado real quando existe.
+    // Sem estoque, giro e GMROI ficam 0 e a tela mostra "—".
+    const ano = historicalYearFromSummary(row)
+    const semEstoque = ano.estimados.includes('giro')
     return {
-      receita,
-      margemBruta: MARGEM_EST,
-      pmv,
-      orcamento:   Math.round(receita * 0.40),
-      giro,
-      gmroi,
+      receita:        ano.receita,
+      margemBruta:    ano.margemBruta,
+      pmv:            ano.pmv,
+      orcamento:      ano.orcamento,
+      giro:           semEstoque ? 0 : ano.giro,
+      gmroi:          semEstoque ? 0 : ano.gmroi,
+      margemEstimada: ano.estimados.includes('margemBruta'),
     }
   }
 
@@ -274,7 +272,7 @@ export default function PlanningGateway() {
       label: "Margem Bruta",
       tooltip: "Percentual que sobra da receita após o custo dos produtos. Mede a eficiência do mix e da precificação. Estimativa: custo não disponível nas vendas importadas.",
       ref: `${refProrated.margemBruta.toFixed(1)}%`,
-      acc: accCY ? `${accCY.margemBruta.toFixed(1)}% *` : "—",
+      acc: accCY ? `${accCY.margemBruta.toFixed(1)}%${accCY.margemEstimada ? " *" : ""}` : "—",
       ...deltaSafe(accCY?.margemBruta, histPY?.margemBruta),
       unit: "pp",
     },
@@ -292,7 +290,7 @@ export default function PlanningGateway() {
       label: "Orçamento Previsto",
       tooltip: "Estimativa de investimento previsto (40% da receita — aproximação quando custo não está disponível).",
       ref: fmtSafe(refProrated.orcamento, fmtBRL),
-      acc: accCY ? `${fmtBRL(accCY.orcamento)} *` : "—",
+      acc: accCY ? `${fmtBRL(accCY.orcamento)}${accCY.margemEstimada ? " *" : ""}` : "—",
       ...deltaSafe(accCY?.orcamento, refProrated.orcamento),
       unit: "%",
     },
@@ -635,7 +633,9 @@ export default function PlanningGateway() {
                   <p className="text-[9px] text-[#28071C]/30">
                     Referência = {cycleState.monthsElapsed}/12 do fechamento anual {cycleState.currentCalendarYear - 1} (histórico real importado).
                     Projeção = ACC extrapolado para 12 meses com base na performance atual.
-                    * Margem e Orçamento estimados (40% da receita) — importe custo de produtos para cálculo preciso.
+                    {(accCY?.margemEstimada || histPY?.margemEstimada) && (
+                      <>* Margem e Orçamento estimados ({MARGEM_EST}% de margem): nenhuma venda do ano tem produto com custo cadastrado. Importe o custo dos produtos para o cálculo real.</>
+                    )}
                   </p>
                 </div>
 
