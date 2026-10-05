@@ -157,6 +157,11 @@ export default function FinalPlan() {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [openNotes, setOpenNotes] = useState<Set<string>>(new Set());
 
+  // Sinaliza que o cache de ciclos (getPlanCycle) foi carregado. Sem isso,
+  // abrindo a tela direto, os useMemo abaixo liam o cache vazio e o ano não
+  // mudava (já era o planejado), então mostrava "Nenhum plano macro salvo".
+  const [cyclesReady, setCyclesReady] = useState(0);
+
   // ─── Bootstrap ────────────────────────────────────────────────────────────
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
@@ -167,6 +172,7 @@ export default function FinalPlan() {
     setTenantId(tid);
     if (tid) {
       initPlanCycles(tid).then(() => {
+        setCyclesReady(v => v + 1);
         const years = getPlannedYears();
         setPlannedYears(years);
         if (years.length > 0) setSelectedYear(Math.max(...years));
@@ -206,7 +212,7 @@ export default function FinalPlan() {
     // Sem prioridades definidas (plano legado): prioriza os 2 que têm base
     // real por categoria hoje, em vez de Giro/GMROI (que sempre dão "—").
     return matched.length > 0 ? matched.slice(0, 2) : ["mkdPct", "producaoPecas"];
-  }, [selectedYear]);
+  }, [selectedYear, cyclesReady]);
 
   // ─── KPIs do topo: as prioridades do M1, na ordem, até 6 ──────────────────
   const kpiKeys = useMemo((): string[] => {
@@ -218,13 +224,13 @@ export default function FinalPlan() {
       .filter(k => k in KPI_DEFS);
     // Plano legado, sem prioridades salvas: mantém o conjunto que a tela já mostrava.
     return (ativos.length > 0 ? ativos : ["receitaBruta", "margemBruta", "mkdPct", "gmroi", "producaoPecas"]).slice(0, MAX_KPIS);
-  }, [selectedYear]);
+  }, [selectedYear, cyclesReady]);
 
   /** Valores salvos no M1 — cobrem o que o macro oficial não carrega (ticket médio). */
   const m1Values = useMemo((): Record<string, number | null> => {
     const cycle = getPlanCycle(selectedYear);
     return (cycle?.versions?.[0]?.values ?? {}) as Record<string, number | null>;
-  }, [selectedYear]);
+  }, [selectedYear, cyclesReady]);
 
   // ─── Estrutura Divisão→Categoria→Subcategoria (M6, agregada entre temporadas do ano) ──
   useEffect(() => {
