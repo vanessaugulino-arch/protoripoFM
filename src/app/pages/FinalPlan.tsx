@@ -16,6 +16,10 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArrowLeft, Download, Printer, ChevronDown, ChevronRight, StickyNote } from "lucide-react";
 import { ObservationNote } from "../components/ObservationNote";
+import { supabase } from "../../lib/supabase";
+import { RelatorioPlanoFinal, baixarExcelPlanoFinal, type DadosPlanoFinal } from "../../reports/planoFinalRelatorio";
+import { emPreviaPdf, imprimirPdf } from "../../reports/RelatorioA4";
+import { nomeArquivo } from "../../reports/xlsxReport";
 import { getPlannedYears, initPlanCycles, getPlanCycle, type PlanFieldPriority } from "../types/planCycle";
 import { getOfficialPlan, type OfficialPlan } from "../../services/supabase/officialPlanService";
 import { getAppliedChannelScenario, type ChannelScenario } from "../../services/supabase/channelScenarioService";
@@ -162,6 +166,16 @@ export default function FinalPlan() {
   // mudava (já era o planejado), então mostrava "Nenhum plano macro salvo".
   const [cyclesReady, setCyclesReady] = useState(0);
 
+  // Nome da empresa para capa e cabeçalho do relatório — do banco, não da
+  // sessão (que pode não ter o nome, ex.: suporte que trocou de cliente).
+  const [nomeEmpresa, setNomeEmpresa] = useState<string>(() => sessionStorage.getItem("activeTenantName") ?? "");
+  useEffect(() => {
+    if (!tenantId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any).from("tenants").select("name").eq("id", tenantId).maybeSingle()
+      .then(({ data }: { data: { name?: string } | null }) => { if (data?.name) setNomeEmpresa(data.name); });
+  }, [tenantId]);
+
   // ─── Bootstrap ────────────────────────────────────────────────────────────
   useEffect(() => {
     const stored = sessionStorage.getItem("currentUser");
@@ -246,7 +260,18 @@ export default function FinalPlan() {
         const notesMap = new Map<string, Map<string, CategoryNote[]>>();
         const overridesMap = new Map<string, Map<string, { avgPrice: number; mkdPct: number }>>();
         divIds.forEach((id, i) => { notesMap.set(id, notesByDiv[i]); overridesMap.set(id, overridesByDiv[i]); });
-        return { rows, notesMap, overridesMap, divIds };
+        // Plano da divisão no M4 aplicado — base de preço/margem/remarcação de
+        // toda categoria que não foi ajustada à mão no Sortimento.
+        const m4 = await getAppliedDivisionScenario(tenantId, season.id).catch(() => undefined);
+        const planoDivisao = new Map<string, { avgPrice: number | null; margin: number | null; mkd: number | null }>();
+        for (const [divId, block] of Object.entries((m4?.divisions ?? {}) as Record<string, DivisionPlanBlock>)) {
+          planoDivisao.set(divId, {
+            avgPrice: block?.indicators?.avgPrice ?? null,
+            margin: block?.indicators?.margin ?? null,
+            mkd: block?.indicators?.mkd ?? null,
+          });
+        }
+        return { rows, notesMap, overridesMap, divIds, planoDivisao };
       }),
     ).then(async perSeason => {
       if (cancelled) return;
@@ -263,6 +288,10 @@ export default function FinalPlan() {
       const byKey = new Map<string, ConsolidatedDbRow[]>();
       const notesByDivCat = new Map<string, CategoryNote | null>();
       const overridesByDivCat = new Map<string, { avgPrice: number; mkdPct: number }>();
+      const planoPorDivisao = new Map<string, { avgPrice: number | null; margin: number | null; mkd: number | null }>();
+      for (const { planoDivisao } of perSeason) {
+        for (const [divId, p] of planoDivisao) if (!planoPorDivisao.has(divId)) planoPorDivisao.set(divId, p);
+      }
       for (const { rows, notesMap, overridesMap } of perSeason) {
         for (const r of rows) {
           const key = `${r.divisionId}::${r.category}::${r.subcategory}`;
@@ -287,9 +316,11 @@ export default function FinalPlan() {
         const totalRevenue = group.reduce((s, r) => s + r.revenueEstimate, 0);
         const hist = histIndicatorsMap.get(divisionId)?.[category];
         const override = overridesByDivCat.get(`${divisionId}::${category}`);
-        // Preço Médio/Remarcação: valor decidido no plano (M6) quando existe;
-        // sem decisão salva, cai pro histórico real como referência.
-        const avgPrice = override?.avgPrice ?? hist?.avgPrice ?? null;
+        // Preço Médio/Remarcação/Margem: ajuste da categoria no Sortimento (M6);
+        // sem ajuste, o planejado para a divisão no M4; sem plano, o histórico.
+        // Antes pulava o M4 e, sem histórico, tudo saía "—".
+        const plano = planoPorDivisao.get(divisionId);
+        const avgPrice = override?.avgPrice ?? plano?.avgPrice ?? hist?.avgPrice ?? null;
         out.push({
           divisionId,
           divisionLabel: realDivisions.find(d => d.id === divisionId)?.label ?? divisionId,
@@ -302,8 +333,8 @@ export default function FinalPlan() {
           pctBasico: weightedAvg(group.map(r => [r.pctBasico, r.revenueEstimate])),
           avgPrice,
           pieces: avgPrice != null && avgPrice > 0 ? totalRevenue / avgPrice : null,
-          mkdPct: override?.mkdPct ?? hist?.mkdPct ?? null,
-          marginPct: hist?.marginPct ?? null,
+          mkdPct: override?.mkdPct ?? plano?.mkd ?? hist?.mkdPct ?? null,
+          marginPct: plano?.margin ?? hist?.marginPct ?? null,
           note: notesByDivCat.get(`${divisionId}::${category}`) ?? null,
         });
       }
@@ -490,94 +521,50 @@ export default function FinalPlan() {
     });
   };
 
-  const buildFinalPlanCsv = (): string => {
-    const lines: string[] = [];
-    const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
-    const row = (vals: (string | number)[]) => lines.push(vals.map(esc).join(";"));
-
-    row([`Plano Final — Ciclo ${selectedYear}`]);
-    row([]);
-    row(["Indicador", "Valor"]);
-    if (macro) {
-      row(["Receita Bruta", macro.receitaBruta.toFixed(2)]);
-      row(["Margem Bruta (%)", macro.margemBruta.toFixed(1)]);
-      row(["Remarcação (%)", macro.mkdPct.toFixed(1)]);
-      row(["GMROI", macro.gmroi.toFixed(2)]);
-      row(["Peças Vendidas (Produção Necessária)", Math.round(macro.pecasVendidas)]);
-    }
-    row([]);
-
-    row(["Necessidade de Entrada — Mês", "Necessidade (pçs)", "Preço Médio", "Valor Financeiro"]);
-    ledger.forEach(m => row([m.label, Math.round(m.pieces), m.avgPrice?.toFixed(2) ?? "", m.value.toFixed(2)]));
-    row(["Total", Math.round(ledgerTotals.pieces), "", ledgerTotals.value.toFixed(2)]);
-    row([]);
-
-    row([
-      "Divisão", "Categoria", "Subcategoria", "Peças", "Faturamento Estimado", "Margem %", "Preço Médio",
-      "Remarcação %", "Produção (peças)",
-      "% Sustentador (+ Básico)", "% Motor de Giro", "% Ícone",
-    ]);
-    structureRows.forEach(r => {
-      const producaoPecas = totalRevenueStructure > 0 && totalPecasVendidas > 0
-        ? (r.revenueEstimate / totalRevenueStructure) * totalPecasVendidas
-        : null;
-      row([
-        r.divisionLabel, r.category, r.subcategory,
-        r.pieces != null ? Math.round(r.pieces) : "",
-        r.revenueEstimate.toFixed(2),
-        r.marginPct?.toFixed(1) ?? "",
-        r.avgPrice?.toFixed(2) ?? "",
-        r.mkdPct?.toFixed(1) ?? "",
-        producaoPecas != null ? Math.round(producaoPecas) : "",
-        ((r.pctSustentadorMargem ?? 0) + (r.pctBasico ?? 0)).toFixed(1),
-        r.pctMotorGiro?.toFixed(1) ?? "",
-        r.pctIconeMarca?.toFixed(1) ?? "",
-      ]);
-    });
-    row([]);
-
-    if (channelScenario) {
-      row(["Canal", "Receita Bruta", "MKD %", "Giro", "Produção (peças)"]);
-      for (const [ch, data] of Object.entries(channelScenario.channel_data ?? {})) {
-        row([
-          CHANNEL_LABELS[ch] ?? ch,
-          (data.receita ?? 0).toFixed(2),
-          (data.mkdPct ?? 0).toFixed(1),
-          (data.giro ?? 0).toFixed(2),
-          Math.round(data.producao ?? 0),
-        ]);
-      }
-      if (macro) {
-        row(["Consolidado", macro.receitaBruta.toFixed(2), macro.mkdPct.toFixed(1), macro.giro.toFixed(2), Math.round(macro.pecasVendidas)]);
-      }
-    }
-
-    return lines.join("\n");
-  };
-
-  const downloadCsv = () => {
-    const csv = buildFinalPlanCsv();
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `plano_final_${selectedYear}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+  // ─── Relatório (PDF/Excel) — mesmos números da tela ──────────────────────
+  const empresaRelatorio = nomeEmpresa || "Empresa";
+  const dadosRelatorio: DadosPlanoFinal | null = macro ? {
+    empresa: empresaRelatorio,
+    ano: selectedYear,
+    macro,
+    kpis: kpiKeys.map(key => {
+      const def = KPI_DEFS[key];
+      const doMacro = def.raw(macro);
+      const doM1 = m1Values[key];
+      const valor = doMacro ?? (typeof doM1 === "number" ? doM1 : null);
+      const anterior = priorMacro ? def.raw(priorMacro) : null;
+      const d = valor != null && anterior != null && doMacro != null ? delta(valor, anterior) : null;
+      return {
+        chave: key,
+        rotulo: def.label,
+        valor,
+        texto: valor != null ? def.fmt(valor) : "—",
+        variacaoPct: d ? d.pct : null,
+        bom: d ? (def.lowerIsBetter ? !d.good : d.good) : null,
+        doM1: doMacro == null && valor != null,
+      };
+    }),
+    canais: Object.entries(channelScenario?.channel_data ?? {}).map(([ch, data]) => {
+      const d = data as Record<string, number>;
+      return { canal: CHANNEL_LABELS[ch] ?? ch, receita: d.receita ?? 0, mkdPct: d.mkdPct ?? 0, giro: d.giro ?? 0, producao: d.producao ?? 0 };
+    }),
+    entrada: ledger,
+    estrutura: groupedStructure.map(g => ({
+      divisionLabel: g.divisionLabel,
+      total: g.total,
+      categories: g.categories.map(c => ({
+        category: c.category, total: c.total, pieces: c.pieces, avgPrice: c.avgPrice, marginPct: c.marginPct, mkdPct: c.mkdPct,
+      })),
+    })),
+  } : null;
+  const previaPdf = emPreviaPdf();
 
   if (isLoading || !user) return null;
 
   return (
-    <div className="min-h-screen w-full bg-[#F2F2F2] print:bg-white">
-      <style>{`
-        @media print {
-          @page { size: A4 landscape; margin: 12mm; }
-          body { background: white; }
-        }
-      `}</style>
+    <div className={`min-h-screen w-full bg-[#F2F2F2] print:bg-white${previaPdf ? " previa-pdf" : ""}`}>
+      {dadosRelatorio && <RelatorioPlanoFinal dados={dadosRelatorio} />}
+      <div className="tela-app">
 
       {/* ─── HEADER ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-gradient-to-r from-[#28071C] to-[#7598CF] px-6 py-4 shadow-lg print:hidden">
@@ -601,16 +588,20 @@ export default function FinalPlan() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={downloadCsv}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
+              onClick={() => dadosRelatorio && baixarExcelPlanoFinal(dadosRelatorio)}
+              disabled={!dadosRelatorio}
+              title="Planilha .xlsx com resumo, canais, necessidade de entrada e estrutura"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 disabled:opacity-40 text-[#F6F3AA] rounded-lg text-xs font-medium transition-all"
             >
               <Download className="w-3.5 h-3.5" /> Baixar Excel
             </button>
             <button
-              onClick={() => window.print()}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F6F3AA] hover:bg-[#F6F3AA]/90 text-[#28071C] rounded-lg text-xs font-semibold transition-all"
+              onClick={() => imprimirPdf(nomeArquivo("plano_final", empresaRelatorio, selectedYear))}
+              disabled={!dadosRelatorio}
+              title="Relatório em A4 — escolha “Salvar como PDF” na janela de impressão"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F6F3AA] hover:bg-[#F6F3AA]/90 disabled:opacity-40 text-[#28071C] rounded-lg text-xs font-semibold transition-all"
             >
-              <Printer className="w-3.5 h-3.5" /> Imprimir
+              <Printer className="w-3.5 h-3.5" /> Baixar PDF
             </button>
           </div>
         </div>
@@ -902,6 +893,7 @@ export default function FinalPlan() {
           </>
         )}
       </main>
+      </div>
     </div>
   );
 }
