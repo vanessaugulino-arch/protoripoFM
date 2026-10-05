@@ -76,15 +76,28 @@ export function midpointPrice(range: string, fallback: number): number {
 }
 
 /**
- * Escala os preços das três faixas pelo mesmo fator para que a média ponderada
- * pela participação de cada faixa seja `pmv`. Mantém a proporção entre faixas.
+ * PMV da pirâmide = receita ÷ peças. As participações P1/P2/P3 são de RECEITA,
+ * então as peças são Σ(receita × participação ÷ preço) e o PMV é a média
+ * harmônica dos preços ponderada pela participação — não a média ponderada
+ * simples, que dá um preço maior e faz a soma de peças não fechar com o M5.
+ */
+export function pmvDaPiramide(precos: [number, number, number], pesos: [number, number, number]): number {
+  let somaPesos = 0, somaPesoSobrePreco = 0
+  for (let i = 0; i < 3; i++) {
+    if (pesos[i] > 0 && precos[i] > 0) { somaPesos += pesos[i]; somaPesoSobrePreco += pesos[i] / precos[i] }
+  }
+  return somaPesoSobrePreco > 0 ? somaPesos / somaPesoSobrePreco : 0
+}
+
+/**
+ * Escala os preços das três faixas pelo mesmo fator para que o PMV da
+ * pirâmide (pmvDaPiramide) seja `pmv`. Mantém a proporção entre faixas.
  * Sem PMV (ou pesos zerados), devolve os preços como vieram.
  */
 export function ajustarPiramideAoPmv(precos: [number, number, number], pesos: [number, number, number], pmv: number): [number, number, number] {
-  const somaPesos = pesos[0] + pesos[1] + pesos[2]
-  const media = somaPesos > 0 ? (precos[0] * pesos[0] + precos[1] * pesos[1] + precos[2] * pesos[2]) / somaPesos : 0
-  if (!(pmv > 0) || !(media > 0)) return precos
-  const k = pmv / media
+  const atual = pmvDaPiramide(precos, pesos)
+  if (!(pmv > 0) || !(atual > 0)) return precos
+  const k = pmv / atual
   return [Math.round(precos[0] * k), Math.round(precos[1] * k), Math.round(precos[2] * k)]
 }
 

@@ -1,15 +1,24 @@
 import { describe, it, expect } from 'vitest'
-import { ajustarPiramideAoPmv, buildDivisionsFromM3 } from '../sortimentDefaultScenario'
+import { ajustarPiramideAoPmv, buildDivisionsFromM3, pmvDaPiramide } from '../sortimentDefaultScenario'
 import { initializeDivisions } from '../../hooks/useModule3'
 
 const pmvPonderado = (d: { avgPriceP1: number; avgPriceP2: number; avgPriceP3: number; pricePyramid: { p1: number; p2: number; p3: number } }) =>
-  (d.avgPriceP1 * d.pricePyramid.p1 + d.avgPriceP2 * d.pricePyramid.p2 + d.avgPriceP3 * d.pricePyramid.p3) / 100
+  pmvDaPiramide([d.avgPriceP1, d.avgPriceP2, d.avgPriceP3], [d.pricePyramid.p1, d.pricePyramid.p2, d.pricePyramid.p3])
 
 describe('pirâmide de preço (M4 → M6)', () => {
   it('ajusta as três faixas para a média bater com o PMV', () => {
     const [a, b, c] = ajustarPiramideAoPmv([144, 219, 329], [30, 50, 20], 155)
-    expect(Math.abs((a * 30 + b * 50 + c * 20) / 100 - 155)).toBeLessThan(1)
+    expect(Math.abs(pmvDaPiramide([a, b, c], [30, 50, 20]) - 155)).toBeLessThan(1)
     expect(a).toBeLessThan(b); expect(b).toBeLessThan(c)
+  })
+
+  it('PMV da pirâmide é receita ÷ peças (média harmônica), e as peças fecham', () => {
+    const receita = 593_750
+    const [a, b, c] = ajustarPiramideAoPmv([102, 155, 233], [30, 50, 20], 155)
+    const pecas = receita * 0.3 / a + receita * 0.5 / b + receita * 0.2 / c
+    expect(Math.abs(pecas - receita / 155)).toBeLessThan(15)   // ~3.831, o volume do M5
+    // a média ponderada simples dos mesmos preços daria acima de 155
+    expect((a * 30 + b * 50 + c * 20) / 100).toBeGreaterThan(160)
   })
 
   it('sem PMV, mantém os preços', () => {

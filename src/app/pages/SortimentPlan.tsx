@@ -101,8 +101,7 @@ import {
   DIVISION_NAMES,
   midpointPrice,
   buildDivisionsFromM3,
-  buildCollectionsFromM5Division,
-} from "../../engine/sortimentDefaultScenario";
+  buildCollectionsFromM5Division, pmvDaPiramide } from "../../engine/sortimentDefaultScenario";
 import {
   getConsolidated,
   computeAndSaveConsolidated,
@@ -487,7 +486,7 @@ export default function SortimentPlan() {
     const tid = user.tenant_id;
     const categoryRevenues = new Map(cascadeTree.map(cat => [cat.category, cat.total]));
     setGridsLoading(true);
-    computeCategoryGrids(tid, seasonId, activeDivId, categoryRevenues)
+    computeCategoryGrids(tid, seasonId, activeDivId, categoryRevenues, divisions.find(d => d.id === activeDivId)?.pricePyramid)
       .then(setCategoryGrids)
       .catch(() => setCategoryGrids([]))
       .finally(() => setGridsLoading(false));
@@ -1731,7 +1730,7 @@ export default function SortimentPlan() {
                   const divMargem  = activeDivision.targetMarginPct;
                   const divOrcamento = divReceita * (1 - divMargem / 100);
                   const p          = activeDivision.pricePyramid;
-                  const divPmv     = (activeDivision.avgPriceP1 * p.p1 + activeDivision.avgPriceP2 * p.p2 + activeDivision.avgPriceP3 * p.p3) / 100;
+                  const divPmv     = pmvDaPiramide([activeDivision.avgPriceP1, activeDivision.avgPriceP2, activeDivision.avgPriceP3], [p.p1, p.p2, p.p3]); // receita ÷ peças
 
                   return (
                     <>

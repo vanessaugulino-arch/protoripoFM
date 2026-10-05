@@ -57,6 +57,9 @@ export async function computeCategoryGrids(
   seasonId: string,
   divisionId: string,
   categoryRevenues: Map<string, number>,
+  /** Pirâmide da divisão (% de receita por faixa) — padrão quando a
+   *  categoria não tem pirâmide própria salva. */
+  piramideDivisao?: { p1: number; p2: number; p3: number },
 ): Promise<CategoryGrid[]> {
   const [weights, pyramid, overrides] = await Promise.all([
     getHierarchyRevenueByPath(tenantId),
@@ -92,7 +95,14 @@ export async function computeCategoryGrids(
           p2: (tiers.p2?.participation ?? 0) / 100,
           p3: (tiers.p3?.participation ?? 0) / 100,
         }
-      : { p1: 1 / 3, p2: 1 / 3, p3: 1 / 3 }
+      : piramideDivisao && piramideDivisao.p1 + piramideDivisao.p2 + piramideDivisao.p3 > 0
+        // Sem pirâmide da categoria: segue a da divisão. Antes dividia em
+        // terços iguais e a soma de peças das categorias não fechava com o M5.
+        ? (() => {
+            const t = piramideDivisao.p1 + piramideDivisao.p2 + piramideDivisao.p3
+            return { p1: piramideDivisao.p1 / t, p2: piramideDivisao.p2 / t, p3: piramideDivisao.p3 / t }
+          })()
+        : { p1: 1 / 3, p2: 1 / 3, p3: 1 / 3 }
 
     const cells: GridCell[] = []
     for (const tier of ['p1', 'p2', 'p3'] as PriceTierId[]) {
