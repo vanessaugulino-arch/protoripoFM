@@ -15,9 +15,10 @@ describe('historicalYearFromSummary', () => {
     expect(a.estimados).toEqual([])
     expect(a.margemBruta).toBe(55)
     expect(a.orcamento).toBe(450_000)        // custo do vendido = 1.000.000 × 45%
-    expect(a.estoqueMedioRS).toBe(250_000)   // a preço de venda, mesma base da receita
-    expect(a.giro).toBe(4)                   // 1.000.000 ÷ 250.000
-    expect(a.cobertura).toBe(91)             // 365 ÷ 4
+    expect(a.custoMedio).toBe(56.25)         // 450.000 ÷ 8.000 peças
+    expect(a.estoqueMedioRS).toBe(110_000)   // a custo, base que o motor usa
+    expect(a.giro).toBe(9.09)                // 1.000.000 ÷ 110.000
+    expect(a.cobertura).toBe(40)             // 365 ÷ 9,09
     expect(a.gmroi).toBe(5)                  // lucro 550.000 ÷ estoque a custo 110.000
     expect(a.receitaComCustoPct).toBe(92)
   })
@@ -26,6 +27,13 @@ describe('historicalYearFromSummary', () => {
     const a = historicalYearFromSummary({ ...base, margem_bruta: 61.3 })
     expect(a.margemBruta).toBe(61.3)
     expect(a.estimados).not.toContain('margemBruta')
+  })
+
+  it('estoque só em peças, custo real: converte pelo custo médio real', () => {
+    const a = historicalYearFromSummary({ ...base, margem_bruta: 55 })
+    expect(a.estoqueMedioRS).toBe(112_500)   // 2.000 × 56,25
+    expect(a.estimados).toContain('estoqueMedioRS')
+    expect(a.estimados).not.toContain('custoMedio')
   })
 
   it('sem custo de produto: margem e orçamento estimados e avisados', () => {
@@ -37,9 +45,10 @@ describe('historicalYearFromSummary', () => {
 
   it('banco antigo (sem as colunas novas) continua funcionando, tudo que falta marcado', () => {
     const a = historicalYearFromSummary(base)
-    expect(a.estoqueMedioRS).toBe(250_000)   // peças × PMV, como antes
-    expect(a.giro).toBe(4)
-    expect(a.estimados).toEqual(expect.arrayContaining(['margemBruta', 'orcamento', 'gmroi']))
+    expect(a.custoMedio).toBe(PADROES_SEM_DADO.custoMedio)
+    expect(a.estoqueMedioRS).toBe(170_000)   // 2.000 peças × R$ 85
+    expect(a.giro).toBe(5.88)
+    expect(a.estimados).toEqual(expect.arrayContaining(['margemBruta', 'orcamento', 'custoMedio', 'estoqueMedioRS', 'gmroi']))
     expect(a.estimados).not.toContain('giro')
     expect(a.receitaComCustoPct).toBeNull()
   })

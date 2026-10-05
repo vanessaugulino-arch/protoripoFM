@@ -28,7 +28,7 @@ export interface HistoricalSummaryRow {
 }
 
 export type IndicadorHistorico =
-  | 'margemBruta' | 'orcamento' | 'estoqueMedioRS' | 'giro' | 'cobertura' | 'gmroi' | 'ticketMedio'
+  | 'margemBruta' | 'orcamento' | 'custoMedio' | 'estoqueMedioRS' | 'giro' | 'cobertura' | 'gmroi' | 'ticketMedio'
 
 export interface HistoricalYear {
   year: string
@@ -36,6 +36,10 @@ export interface HistoricalYear {
   margemBruta: number
   pmv: number
   orcamento: number
+  /** R$ por peça vendida = custo do vendido ÷ peças. */
+  custoMedio: number
+  /** Estoque médio em R$ A CUSTO: o motor (planningEngine) converte em peças
+   *  dividindo pelo custo médio, então os dois precisam da mesma base. */
   estoqueMedioRS: number
   estoqueMedioPecas: number
   giro: number
@@ -53,6 +57,7 @@ export interface HistoricalYear {
 /** Valores usados só quando falta dado. Mantidos iguais aos de antes. */
 export const PADROES_SEM_DADO = {
   margemBruta: 40,   // %
+  custoMedio: 85,    // R$ por peça (mesmo valor que o M1 usava fixo)
   giro: 4,
   cobertura: 90,     // dias
 } as const
@@ -83,26 +88,32 @@ export function historicalYearFromSummary(row: HistoricalSummaryRow): Historical
   const orcamento = Math.round(receita - lucroBruto)
   if (margemReal === null) estimados.push('orcamento')
 
-  // Estoque em R$ a preço de venda (mesma base da receita, para o giro).
-  // Sem valor no estoque, usa peças × PMV, como antes.
-  const estoqueVenda = num(row.estoque_medio_venda)
-  const estoqueMedioRS = estoqueVenda && estoqueVenda > 0
-    ? Math.round(estoqueVenda)
-    : Math.round(estoqueMedioPecas * pmv)
-  if (!(estoqueVenda && estoqueVenda > 0) && !(estoqueMedioPecas > 0)) estimados.push('estoqueMedioRS')
+  // Custo médio por peça vendida: real quando a margem é real.
+  const custoMedio = margemReal !== null && producao > 0
+    ? r2((receita - lucroBruto) / producao)
+    : PADROES_SEM_DADO.custoMedio
+  if (!(margemReal !== null && producao > 0)) estimados.push('custoMedio')
+
+  // Estoque em R$ a custo. Sem valor a custo importado, converte peças pelo
+  // custo médio (estimado se o custo for estimado).
+  const estoqueCusto = num(row.estoque_medio_custo)
+  const temCustoEstoque = !!(estoqueCusto && estoqueCusto > 0)
+  const estoqueMedioRS = temCustoEstoque
+    ? Math.round(estoqueCusto!)
+    : Math.round(estoqueMedioPecas * custoMedio)
+  if (!temCustoEstoque) estimados.push('estoqueMedioRS')
 
   // Giro e cobertura: só com estoque.
   const temEstoque = estoqueMedioRS > 0
   const giro = temEstoque ? r2(receita / estoqueMedioRS) : PADROES_SEM_DADO.giro
-  const cobertura = giro > 0 && temEstoque ? Math.round(365 / giro) : PADROES_SEM_DADO.cobertura
+  const cobertura = temEstoque && giro > 0 ? Math.round(365 / giro) : PADROES_SEM_DADO.cobertura
   if (!temEstoque) estimados.push('giro', 'cobertura')
 
   // GMROI = lucro bruto ÷ estoque médio a custo. Sem estoque a custo, cai na
   // aproximação antiga (margem × giro), marcada como estimada.
-  const estoqueCusto = num(row.estoque_medio_custo)
   let gmroi: number
-  if (estoqueCusto && estoqueCusto > 0 && margemReal !== null) {
-    gmroi = r2(lucroBruto / estoqueCusto)
+  if (temCustoEstoque && margemReal !== null) {
+    gmroi = r2(lucroBruto / estoqueCusto!)
   } else {
     gmroi = r2((margemBruta / 100) * giro)
     estimados.push('gmroi')
@@ -113,7 +124,7 @@ export function historicalYearFromSummary(row: HistoricalSummaryRow): Historical
 
   return {
     year: String(row.year),
-    receita, margemBruta, pmv, orcamento, estoqueMedioRS, estoqueMedioPecas,
+    receita, margemBruta, pmv, orcamento, custoMedio, estoqueMedioRS, estoqueMedioPecas,
     giro, cobertura, markdown, producao, gmroi, ticketMedio,
     estimados,
     receitaComCustoPct: num(row.receita_com_custo_pct),
@@ -121,15 +132,17 @@ export function historicalYearFromSummary(row: HistoricalSummaryRow): Historical
 }
 
 /** Texto curto para a tela explicar de onde veio o número. */
-export function notaEstimado(ano: HistoricalYear, indicador: IndicadorHistorico): string | null {
+export function notaEstimado(ano: Pick<HistoricalYear, 'estimados'>, indicador: IndicadorHistorico): string | null {
   if (!ano.estimados.includes(indicador)) return null
   switch (indicador) {
     case 'margemBruta':
     case 'orcamento':
+    case 'custoMedio':
       return 'estimado: nenhuma venda do ano tem produto com custo cadastrado'
     case 'gmroi':
       return 'estimado: falta custo dos produtos ou valor do estoque a custo'
     case 'estoqueMedioRS':
+      return 'estimado: estoque convertido de peças pelo custo médio (sem valor a custo importado)'
     case 'giro':
     case 'cobertura':
       return 'estimado: sem posição de estoque importada para o ano'

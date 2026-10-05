@@ -84,25 +84,24 @@ interface HistoricalData {
   ticketMedio: number;
   /** Indicadores sem dado real no ano (engine/historicalYear). */
   estimados?: IndicadorHistorico[];
+  /** Custo médio por peça; ausente no exemplo (usa CUSTO_MEDIO_DEFAULT). */
+  custoMedio?: number;
 }
 
 // Fallback (demo) — substituído por dados reais do Supabase após login
+// Montado pela mesma função dos dados reais, para os indicadores do exemplo
+// fecharem entre si (antes o estoque em R$ não batia com o estoque em peças e
+// o Giro em peças do plano aparecia −45% sem nenhuma mudança).
 const HIST_FALLBACK: HistoricalData[] = [
-  { year: "2023", receita: 2450000, margemBruta: 40.5, pmv: 145, orcamento: 1050000,
-    estoqueMedioRS: 720000, estoqueMedioPecas: 4965, giro: 3.85, cobertura: 78,
-    markdown: 165000, producao: 16890, gmroi: 1.55, ticketMedio: 290 },
-  { year: "2024", receita: 2700000, margemBruta: 42.0, pmv: 158, orcamento: 1100000,
-    estoqueMedioRS: 695000, estoqueMedioPecas: 4398, giro: 4.05, cobertura: 75,
-    markdown: 148000, producao: 17850, gmroi: 1.70, ticketMedio: 315 },
-  { year: "2025", receita: 2850000, margemBruta: 42.3, pmv: 155, orcamento: 1140000,
-    estoqueMedioRS: 680000, estoqueMedioPecas: 4387, giro: 4.19, cobertura: 72,
-    markdown: 142500, producao: 18387, gmroi: 1.77, ticketMedio: 320 },
-]
+  { year: "2023", receita: 2450000, producao: 16890, pmv: 145, markdown: 165000, ticket_medio: 290, estoque_medio_pecas: 4965, margem_bruta: 40.5 },
+  { year: "2024", receita: 2700000, producao: 17850, pmv: 158, markdown: 148000, ticket_medio: 315, estoque_medio_pecas: 4398, margem_bruta: 42.0 },
+  { year: "2025", receita: 2850000, producao: 18387, pmv: 155, markdown: 142500, ticket_medio: 320, estoque_medio_pecas: 4387, margem_bruta: 42.3 },
+].map(r => ({ ...historicalYearFromSummary(r), estimados: [] }))
 
 /** Acrescenta à ajuda do campo o aviso de valor estimado, quando for o caso. */
 function comNotaEstimado(texto: string, ano: HistoricalData | undefined, campo: string): string {
   if (!ano?.estimados?.length) return texto
-  const nota = notaEstimado({ ...ano, estimados: ano.estimados, receitaComCustoPct: null }, campo as IndicadorHistorico)
+  const nota = notaEstimado({ estimados: ano.estimados }, campo as IndicadorHistorico)
   return nota ? `${texto} (${nota})` : texto
 }
 
@@ -295,7 +294,7 @@ export default function Planning() {
     const devolucoes     = Math.round(histRef.receita * 0.05)   // 5% de devoluções estimadas
     const receitaLiquida = histRef.receita - devolucoes
     const pecasVendidas  = Math.round(receitaLiquida / histRef.pmv)
-    const custoMedio     = CUSTO_MEDIO_DEFAULT
+    const custoMedio     = histRef.custoMedio ?? CUSTO_MEDIO_DEFAULT
     return {
       receitaBruta:      histRef.receita,
       devolucoes,
@@ -303,7 +302,9 @@ export default function Planning() {
       margemBruta:       histRef.margemBruta,
       pmv:               histRef.pmv,
       pecasVendidas,
-      giro:              histRef.giro,
+      // Mesma conta do motor (planningEngine: giro = receita líquida ÷ estoque
+      // médio). Antes vinha sobre a receita bruta e o plano já nascia +5% vs a base.
+      giro:              histRef.estoqueMedioRS > 0 ? +(receitaLiquida / histRef.estoqueMedioRS).toFixed(2) : histRef.giro,
       cobertura:         histRef.cobertura,
       orcamento:         histRef.orcamento,
       producaoPecas:     histRef.producao,
@@ -463,7 +464,7 @@ export default function Planning() {
   // Col 2 + Col 3 rows — order follows activeDefs, then the rest
   const { allPlanRows, refRows, planSplitAt, refSplitAt } = useMemo(() => {
     const histMkdPct = +((histSel.markdown / histSel.receita) * 100).toFixed(1)
-    const histCustoMedio = CUSTO_MEDIO_DEFAULT
+    const histCustoMedio = histSel.custoMedio ?? CUSTO_MEDIO_DEFAULT
 
     // Receita líquida histórica estimada (5% devoluções)
     const histSelRL         = histSel.receita * 0.95
@@ -491,7 +492,7 @@ export default function Planning() {
       { key: "custoMedio",        label: "Custo Médio (R$)",        plan: v.custoMedio,        ref: histCustoMedio               },
       { key: "mkdRS",             label: "Markdown (R$)",               plan: v.mkdRS,             ref: histSel.markdown             },
       { key: "pecasVendidas",     label: "Total de Peças Vendidas",     plan: v.pecasVendidas,     ref: histSelPecasVend             },
-      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", plan: v.idadeMediaEstoque, ref: Math.round(365 / histSel.giro) },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", plan: v.idadeMediaEstoque, ref: (histSelGiroUnid ? Math.round(365 / histSelGiroUnid) : Math.round(365 / histSel.giro)) },
     ]
 
     const refBase = [
@@ -501,7 +502,7 @@ export default function Planning() {
       { key: "gmroi",             label: "GMROI",                   value: histSel.gmroi,                fmt: "multiplier" },
       { key: "pmv",               label: "PMV (R$)",                value: histSel.pmv,                  fmt: "currency"   },
       { key: "orcamento",         label: "Orçamento (R$)",          value: histSel.orcamento,            fmt: "currency"   },
-      { key: "giroUnidades",      label: "Giro (peças)",            value: histSel.giro,                 fmt: "multiplier" },
+      { key: "giroUnidades",      label: "Giro (peças)",            value: histSelGiroUnid ?? 0,         fmt: "multiplier" },
       { key: "giro",              label: "Giro (R$)",               value: histSelGiroRS ?? 0,           fmt: "multiplier" },
       { key: "cobertura",         label: "Cobertura (dias)",        value: histSel.cobertura,            fmt: "days"       },
       { key: "producaoPecas",     label: "Produção (peças)",        value: histSel.producao,             fmt: "number"     },
@@ -511,7 +512,7 @@ export default function Planning() {
       { key: "custoMedio",        label: "Custo Médio (R$)",        value: histCustoMedio,               fmt: "currency"   },
       { key: "mkdRS",             label: "Markdown (R$)",               value: histSel.markdown,             fmt: "currency"   },
       { key: "pecasVendidas",     label: "Total de Peças Vendidas",     value: histSelPecasVend,             fmt: "number"     },
-      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", value: Math.round(365 / histSel.giro), fmt: "days"    },
+      { key: "idadeMediaEstoque", label: "Idade Média de Estoque (dias)", value: (histSelGiroUnid ? Math.round(365 / histSelGiroUnid) : Math.round(365 / histSel.giro)), fmt: "days"    },
     ]
 
     const activeKeys = activeDefs.map(d => d.key)
@@ -1187,6 +1188,11 @@ export default function Planning() {
                       📊 dados reais
                     </span>
                   )}
+                  {!histLoading && !histIsReal && (
+                    <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                      exemplo
+                    </span>
+                  )}
                 </div>
               </div>
               <select
@@ -1200,6 +1206,13 @@ export default function Planning() {
               </select>
             </div>
 
+            {!histLoading && !histIsReal && (
+              <div className="mx-4 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] leading-relaxed text-amber-800">
+                <strong>Sem histórico de vendas importado.</strong> Estes números são um exemplo
+                para explorar a ferramenta, não são da marca. Importe as vendas em
+                Configurações → Importar dados para comparar com o seu ano real.
+              </div>
+            )}
             <div className="p-4">
               <div className="space-y-0">
                 {refRows.map((item, i) => {
